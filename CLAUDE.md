@@ -1,142 +1,144 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 ## 产品定位
 
-RemoteLab 是一个让用户通过手机浏览器远程操控 macOS 上 AI 编程工具（Claude Code、Copilot、Codex 等）的 Web 应用。核心场景是：用户不在电脑前，但想用手机指挥 AI 帮忙写代码、处理任务。
+RemoteLab 是一个让用户通过手机浏览器远程操控 macOS/Linux 上 AI 编程工具（Claude Code、Codex 等）的 Web 应用。核心场景是：用户不在电脑前，但想用手机指挥 AI 帮忙写代码、处理任务。
 
-**目标用户**：有 macOS 开发机的程序员，需要在移动端（通勤、外出）远程控制 AI 编程工具。
+## 开发命令
 
-**核心价值**：不在电脑前也能让 AI 干活。
+```bash
+# 启动 chat server（主线服务，端口 7690）
+npm run chat
+# 或直接：node chat-server.mjs
+
+# 启动 auth-proxy（终端备用服务，端口 7681）—— 已冻结，不做改动
+npm start
+
+# 运行测试
+node test-chat.mjs
+node test-codex-adapter.mjs  # 等多个 test-codex-*.mjs 文件
+
+# 生成 token
+node generate-token.mjs
+
+# 生产环境管理（macOS LaunchAgent / Linux systemd）
+./start.sh    # 启动所有服务
+./stop.sh     # 停止所有服务
+./restart.sh  # 重启
+./logs.sh     # 查看日志
+```
 
 ## 架构概览
 
+### 双服务架构（主线 + 备用）
+
 ```
-手机浏览器 ──HTTPS──→ Cloudflare Tunnel ──→ auth-proxy (Node.js :7681)
-                                                  │
-                                          ┌───────┼───────┐
-                                          ↓       ↓       ↓
-                                       ttyd:7700 ttyd:7701 ttyd:77xx  (每个 session 一个)
-                                          │       │       │
-                                       dtach    dtach   dtach  (会话持久化)
-                                          │       │       │
-                                       claude  copilot  codex  (实际 CLI 工具)
+手机浏览器 ──HTTPS──→ Cloudflare Tunnel ──→ chat-server (Node.js :7690)  ← 主线
+                                          └──→ auth-proxy (Node.js :7681)  ← 冻结备用
 ```
 
-### 核心组件
+**chat-server**：WebSocket 实时聊天，spawn CLI 工具子进程，事件广播给浏览器。
+**auth-proxy**：通过 ttyd + dtach 暴露终端，仅在 chat server 崩溃时用于应急访问。
 
-| 组件 | 职责 |
+### chat server 核心模块（`chat/`）
+
+| 模块 | 职责 |
 |------|------|
-| `auth-proxy.mjs` | HTTP 服务入口，监听 127.0.0.1:7681 |
-| `lib/router.mjs` | 所有 HTTP 路由和 API 处理 |
-| `lib/auth.mjs` | Token 验证、Cookie 会话管理 |
-| `lib/sessions.mjs` | Session CRUD、ttyd 进程生命周期（spawn/kill/respawn） |
-| `lib/proxy.mjs` | HTTP/WebSocket 反向代理，将 `/terminal/{id}` 转发到对应 ttyd 端口 |
+| `chat/router.mjs` | HTTP 路由：静态资源、API、登录/登出 |
+| `chat/ws.mjs` | WebSocket 消息分发（list/create/attach/send/cancel/delete） |
+| `chat/session-manager.mjs` | Session CRUD、进程生命周期、事件广播到订阅者 |
+| `chat/process-runner.mjs` | spawn CLI 子进程，逐行解析 JSONL 输出，回调事件 |
+| `chat/history.mjs` | Session 历史持久化（JSONL，每个 session 一个文件） |
+| `chat/normalizer.mjs` | 标准化事件工厂（message/toolUse/toolResult/fileChange/reasoning/status/usage） |
+| `chat/summarizer.mjs` | 进程退出后异步调用 Claude 生成 sidebar 摘要 |
+| `chat/middleware.mjs` | 认证检查、安全头、登录失败限流 |
+| `chat/adapters/claude.mjs` | Claude Code JSONL 输出解析 |
+| `chat/adapters/codex.mjs` | Codex CLI JSONL 输出解析，支持 auto-continue |
+
+### 共享模块（`lib/`，两个服务都可用）
+
+| 模块 | 职责 |
+|------|------|
+| `lib/auth.mjs` | Token/密码验证、Cookie 会话管理 |
+| `lib/config.mjs` | 端口、超时、文件路径等环境变量配置 |
 | `lib/tools.mjs` | CLI 工具发现（which）、自定义工具注册 |
-| `lib/config.mjs` | 端口、超时等环境变量配置 |
-| `lib/templates.mjs` | HTML 模板加载 |
-| `claude-ttyd-session` | zsh 脚本，ttyd 的 wrapper，负责 source 环境变量 → cd 工作目录 → dtach 启动工具 |
+| `lib/utils.mjs` | 通用工具函数（readBody 等） |
 
-### 数据流
+### 消息流（发送一条消息的完整路径）
 
-1. **认证**：用户访问 `?token=xxx` → 验证 token → 种 HttpOnly Cookie → 后续请求用 Cookie
-2. **创建 Session**：POST `/api/sessions` → 分配端口 → spawn ttyd 进程 → ttyd 执行 wrapper → dtach 启动 CLI 工具
-3. **终端交互**：浏览器 iframe 加载 `/terminal/{id}` → auth-proxy 代理到 ttyd → WebSocket 双向传输终端 I/O
-4. **会话持久**：dtach 保持进程不死，浏览器断开再连时 ttyd 重新 attach 到同一个 dtach socket
+```
+Browser WebSocket ──send──→ ws.mjs
+  → session-manager.sendMessage()
+    → 保存用户消息到 history，广播 message 事件
+    → process-runner.spawnTool() 启动子进程
+      → 读取 JSONL，adapter 解析 → onEvent() 回调
+        → 追加到 history，广播给所有监听者
+  → 进程退出 → 保存 claudeSessionId/codexThreadId（用于下次恢复）
+             → 异步触发 summarizer → sidebar-state.json
+```
 
-### 关键外部依赖
+### 前端（Vanilla JS，无框架，无构建）
 
-| 工具 | 用途 | 安装方式 |
-|------|------|----------|
-| ttyd | 将终端暴露为 HTTP/WebSocket 服务 | `brew install ttyd` |
-| dtach | 终端会话持久化（类似 tmux 但更轻量） | `brew install dtach` |
-| cloudflared | Cloudflare Tunnel，提供 HTTPS 公网访问 | `brew install cloudflared` |
+| 文件 | 用途 |
+|------|------|
+| `templates/chat.html` | 主界面 HTML 结构（侧边栏 + 聊天区 + 输入区） |
+| `static/chat.js` | 前端逻辑：WebSocket 客户端、消息渲染、session 管理、图片上传 |
+| `templates/login.html` | 登录页 |
 
-### 文件存储
+**热重载**：`chat/router.mjs` 每次请求时从磁盘读取 `chat.html`，开发时改 HTML 刷新即生效，JS 同理（浏览器缓存）。
 
-所有运行时数据存在 `~/.config/claude-web/`：
+### 数据存储（`~/.config/claude-web/`）
 
-- `auth.json` — 访问 token
-- `sessions.json` — 所有 session 元数据
-- `tools.json` — 自定义工具配置
-- `auth-sessions.json` — 浏览器会话 cookie
-- `sockets/` — dtach socket 文件
+| 文件/目录 | 内容 |
+|-----------|------|
+| `auth.json` | Token 和密码 hash |
+| `chat-sessions.json` | 所有 session 元数据 |
+| `chat-history/{id}.jsonl` | 每个 session 的事件历史 |
+| `images/` | 用户上传的图片文件 |
+| `sidebar-state.json` | 各 session 的 AI 生成进度摘要 |
+| `auth-sessions.json` | 浏览器会话 Cookie |
 
-## 当前 UI 结构
-
-三个页面，全部是 Vanilla JS + HTML，无框架：
-
-| 页面 | 路径 | 模板文件 | 用途 |
-|------|------|----------|------|
-| 登录页 | `/login` | `templates/login.html` | Token 输入/跳转 |
-| 仪表盘 | `/` | `templates/dashboard.html` | 文件夹列表、新建 session、工具管理 |
-| 文件夹视图 | `/folder/{path}` | `templates/folder-view.html` | 多 tab 终端，每个 tab 是一个 session 的 iframe |
-
-终端展示方式：ttyd 自带的 xterm.js 前端，通过 iframe 嵌入到 folder-view 页面。
-
-## API 列表
+## API 列表（chat server）
 
 | 方法 | 路径 | 用途 |
 |------|------|------|
-| GET | `/api/folders` | 获取按文件夹分组的 sessions |
-| GET | `/api/sessions?folder=` | 获取 sessions（可按文件夹过滤） |
-| POST | `/api/sessions` | 创建新 session |
+| GET | `/api/sessions` | 获取所有 sessions |
+| POST | `/api/sessions` | 创建 session（body: `{folder, tool, name}`） |
 | DELETE | `/api/sessions/{id}` | 删除 session |
-| GET | `/api/tools` | 获取所有可用工具 |
-| POST | `/api/tools` | 添加自定义工具 |
-| DELETE | `/api/tools/{id}` | 删除自定义工具 |
+| GET | `/api/tools` | 获取可用工具列表 |
+| GET | `/api/sidebar` | 获取 sidebar 进度摘要 |
 | GET | `/api/autocomplete?q=` | 文件夹路径自动补全 |
 | GET | `/api/browse?path=` | 目录浏览 |
-| GET | `/api/diff?folder=` | 获取 Git diff |
-| POST | `/api/clipboard-image` | 将图片写入 macOS 剪贴板 |
-| ALL | `/terminal/{sessionId}/*` | 代理到 ttyd（HTTP + WebSocket） |
+| GET | `/api/images/{filename}` | 获取上传的图片 |
+| WS | `/ws` | WebSocket（list/create/rename/delete/attach/send/cancel） |
+
+## 添加新工具 Adapter
+
+1. 在 `chat/adapters/` 创建新文件（参考 `claude.mjs` 或 `codex.mjs`）
+2. 实现 `parse(line)` 函数，将 JSONL 行转为 normalizer 事件
+3. 实现 `buildArgs(prompt, options)` 构建 CLI 命令参数
+4. 在 `chat/process-runner.mjs` 中注册新 adapter
 
 ## 安全机制
 
 - Token：256-bit 随机 hex，timing-safe 比较
 - Cookie：HttpOnly + Secure + SameSite=Strict，默认 24h 过期
-- 限流：登录失败指数退避（最长 15min），API 写操作 30次/分钟
+- 限流：登录失败指数退避（最长 15min）
 - 网络：服务只监听 127.0.0.1，外部通过 Cloudflare Tunnel 访问
-- CSP：nonce-based script allowlist
+- CSP：nonce-based script allowlist（模板用 `{{NONCE}}` 占位符）
 - 输入校验：工具命令禁止 shell 元字符，文件夹必须存在
 
-## 已知问题与技术债
+## 平台支持
 
-详见 `notes/体验问题与需求思考.md`，核心问题：
-
-1. **手机上看终端体验差** — 终端原始输出在小屏幕上难以阅读，需要考虑做 chat UI 封装
-2. **移动端无法新建 tab** — 功能缺失
-3. **切换文件夹成本高** — 操作繁琐
-4. **Login 流程不完善** — PWA 场景下异常兜底不足
-5. **项目只支持 macOS** — 依赖 Homebrew、dtach、osascript 等 macOS 特有工具
-6. **HTML 模板巨大** — login.html 1500+ 行，folder-view.html 2000+ 行，全是 inline JS
-
-## 开发约定
-
-- **语言**：Node.js ES Modules（`"type": "module"`），纯 Node.js 内置模块，不用 Express
-- **前端**：Vanilla JS，无构建工具，无框架
-- **平台**：仅 macOS（`"os": ["darwin"]`）
-- **CLI 入口**：`cli.js` → `remotelab` 命令
-- **服务管理**：macOS LaunchAgent plist
-- **代码风格**：模板用 `{{PLACEHOLDER}}` 占位符，nonce 注入防 XSS
-
-## 迭代方向（已决定）
-
-**路线 B 已选定**：chat server (`chat-server.mjs` + `chat/`) 是主线，终端架构是备用。
-
-### 双服务架构
-
-| 服务 | 端口 | 域名 | 状态 |
-|------|------|------|------|
-| `chat-server.mjs` | 7690 | `claude-v2.*` | **主线，持续迭代** |
-| `auth-proxy.mjs` | 7681 | `claude.*` | **冻结，仅应急使用** |
-
-终端服务（auth-proxy + lib/ + ttyd）**不做功能迭代，不做改动**。它存在的唯一价值是：chat server 崩了的时候，还有一条路能接触到终端去修问题。
-
-`lib/` 目录下的公共模块（`auth.mjs`、`config.mjs`、`tools.mjs`、`utils.mjs`）两个服务都可以使用，不需要复制。
+- **macOS**：LaunchAgent plist + Homebrew 路径（`/opt/homebrew/bin/`）
+- **Linux**：systemd user unit + snap 路径（`/snap/bin/`）、`~/.local/bin/`
 
 ## 项目原则
 
-1. **单用户项目，速度优先**：只有一个用户（自己），搞崩了可以慢慢修。不要让完美主义阻碍迭代速度。
-2. **终端服务冻结**：`auth-proxy.mjs`、`lib/router.mjs`、`lib/sessions.mjs`、`lib/proxy.mjs` 这些文件不做改动，不做功能演进。
-3. **必要的抽象可以做**：公共实现（如认证、安全中间件）可以提取复用，但不过度抽象。
-4. **不引外部框架**：Node.js 内置模块 + `ws` 包，保持依赖最小。
+1. **终端服务冻结**：`auth-proxy.mjs`、`lib/router.mjs`、`lib/sessions.mjs`、`lib/proxy.mjs` 不做改动。
+2. **单用户，速度优先**：不要让完美主义阻碍迭代速度。
+3. **不引外部框架**：Node.js 内置模块 + `ws` 包，保持依赖最小。
+4. **代码风格**：ES Modules（`.mjs`），模板用 `{{PLACEHOLDER}}` 占位符，nonce 注入防 XSS。
+5. **禁止自动执行 `/restart` skill**：调用 restart skill 会通过 systemd 重启 chat-server，导致所有正在运行的 session 和 Claude 子进程被立即终止。**必须先向用户明确确认后才能执行，绝不能自动默认调用。**

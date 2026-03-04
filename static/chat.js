@@ -48,6 +48,8 @@
   // Default thinking to enabled; only disable if explicitly set to 'false'
   let thinkingEnabled = localStorage.getItem("thinkingEnabled") !== "false";
   let sidebarCollapsed = localStorage.getItem("sidebarCollapsed") === "true";
+  let themeMode = localStorage.getItem("themeMode") || "auto"; // 'auto' | 'dark' | 'light'
+  const themeBtn = document.getElementById("themeBtn");
   let toolsList = [];
   let isDesktop = window.matchMedia("(min-width: 768px)").matches;
   let collapsedFolders = JSON.parse(
@@ -76,6 +78,28 @@
       window.focus();
       n.close();
     };
+  }
+
+  // ---- Theme ----
+  function isDarkByTime() {
+    const h = new Date().getHours();
+    return h < 7 || h >= 19;
+  }
+
+  function applyTheme() {
+    const dark = themeMode === "dark" || (themeMode === "auto" && isDarkByTime());
+    document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+    const icons = { auto: "◑", dark: "●", light: "○" };
+    const titles = { auto: "自动（时间段）", dark: "深色模式", light: "浅色模式" };
+    themeBtn.textContent = icons[themeMode];
+    themeBtn.title = titles[themeMode];
+  }
+
+  function toggleTheme() {
+    const cycle = { auto: "dark", dark: "light", light: "auto" };
+    themeMode = cycle[themeMode];
+    localStorage.setItem("themeMode", themeMode);
+    applyTheme();
   }
 
   // ---- Responsive layout ----
@@ -328,6 +352,12 @@
       case "usage":
         renderUsage(evt);
         break;
+      case "question":
+        renderQuestion(evt);
+        break;
+      case "plan_approval":
+        renderPlanApproval(evt);
+        break;
     }
 
     if (shouldScroll) scrollToBottom();
@@ -531,6 +561,168 @@
     const output = evt.outputTokens || 0;
     div.textContent = `${input.toLocaleString()} in · ${output.toLocaleString()} out`;
     messagesInner.appendChild(div);
+  }
+
+  // ---- Interactive events (AskUserQuestion / ExitPlanMode passthrough) ----
+
+  function sendQuickReply(text) {
+    if (!currentSessionId) return;
+    const msg = { action: "send", text };
+    if (selectedTool) msg.tool = selectedTool;
+    msg.thinking = thinkingEnabled;
+    wsSend(msg);
+  }
+
+  function renderQuestion(evt) {
+    if (inThinkingBlock) finalizeThinkingBlock();
+
+    const questions = evt.questions;
+    if (!Array.isArray(questions) || questions.length === 0) return;
+
+    for (const q of questions) {
+      const card = document.createElement("div");
+      card.className = "interactive-card question-card";
+
+      if (q.header) {
+        const tag = document.createElement("span");
+        tag.className = "interactive-tag";
+        tag.textContent = q.header;
+        card.appendChild(tag);
+      }
+
+      const qText = document.createElement("div");
+      qText.className = "interactive-question";
+      qText.textContent = q.question || "";
+      card.appendChild(qText);
+
+      const optionsWrap = document.createElement("div");
+      optionsWrap.className = "interactive-options";
+
+      const options = q.options || [];
+      for (const opt of options) {
+        const btn = document.createElement("button");
+        btn.className = "interactive-option-btn";
+        const labelSpan = document.createElement("span");
+        labelSpan.className = "option-label";
+        labelSpan.textContent = opt.label;
+        btn.appendChild(labelSpan);
+        if (opt.description) {
+          const descSpan = document.createElement("span");
+          descSpan.className = "option-desc";
+          descSpan.textContent = opt.description;
+          btn.appendChild(descSpan);
+        }
+        btn.addEventListener("click", () => {
+          card.querySelectorAll(".interactive-option-btn").forEach(b => b.disabled = true);
+          btn.classList.add("selected");
+          otherWrap.style.display = "none";
+          sendQuickReply(opt.label);
+        });
+        optionsWrap.appendChild(btn);
+      }
+      card.appendChild(optionsWrap);
+
+      // "Other" free-text option
+      const otherWrap = document.createElement("div");
+      otherWrap.className = "interactive-other";
+      const otherInput = document.createElement("input");
+      otherInput.type = "text";
+      otherInput.placeholder = "Other...";
+      otherInput.className = "interactive-other-input";
+      const otherBtn = document.createElement("button");
+      otherBtn.className = "interactive-other-send";
+      otherBtn.textContent = "Send";
+      otherBtn.addEventListener("click", () => {
+        const val = otherInput.value.trim();
+        if (!val) return;
+        card.querySelectorAll(".interactive-option-btn").forEach(b => b.disabled = true);
+        otherInput.disabled = true;
+        otherBtn.disabled = true;
+        sendQuickReply(val);
+      });
+      otherInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); otherBtn.click(); }
+      });
+      otherWrap.appendChild(otherInput);
+      otherWrap.appendChild(otherBtn);
+      card.appendChild(otherWrap);
+
+      messagesInner.appendChild(card);
+    }
+  }
+
+  function renderPlanApproval(evt) {
+    if (inThinkingBlock) finalizeThinkingBlock();
+
+    const card = document.createElement("div");
+    card.className = "interactive-card plan-approval-card";
+
+    const tag = document.createElement("span");
+    tag.className = "interactive-tag";
+    tag.textContent = "Plan";
+    card.appendChild(tag);
+
+    if (evt.plan) {
+      const planBody = document.createElement("div");
+      planBody.className = "plan-body md-content";
+      planBody.innerHTML = marked.parse(evt.plan);
+      card.appendChild(planBody);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "plan-actions";
+
+    const approveBtn = document.createElement("button");
+    approveBtn.className = "plan-btn approve";
+    approveBtn.textContent = "Approve";
+    approveBtn.addEventListener("click", () => {
+      approveBtn.disabled = true;
+      rejectBtn.disabled = true;
+      approveBtn.classList.add("selected");
+      feedbackWrap.style.display = "none";
+      sendQuickReply("Plan approved, proceed with implementation.");
+    });
+
+    const rejectBtn = document.createElement("button");
+    rejectBtn.className = "plan-btn reject";
+    rejectBtn.textContent = "Reject";
+    rejectBtn.addEventListener("click", () => {
+      feedbackWrap.style.display = feedbackWrap.style.display === "none" ? "flex" : "none";
+    });
+
+    actions.appendChild(approveBtn);
+    actions.appendChild(rejectBtn);
+    card.appendChild(actions);
+
+    // Feedback input for rejection
+    const feedbackWrap = document.createElement("div");
+    feedbackWrap.className = "interactive-other";
+    feedbackWrap.style.display = "none";
+    const feedbackInput = document.createElement("input");
+    feedbackInput.type = "text";
+    feedbackInput.placeholder = "Feedback (what to change)...";
+    feedbackInput.className = "interactive-other-input";
+    const feedbackBtn = document.createElement("button");
+    feedbackBtn.className = "interactive-other-send";
+    feedbackBtn.textContent = "Send";
+    feedbackBtn.addEventListener("click", () => {
+      const val = feedbackInput.value.trim();
+      if (!val) return;
+      approveBtn.disabled = true;
+      rejectBtn.disabled = true;
+      rejectBtn.classList.add("selected");
+      feedbackInput.disabled = true;
+      feedbackBtn.disabled = true;
+      sendQuickReply("Plan rejected: " + val);
+    });
+    feedbackInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); feedbackBtn.click(); }
+    });
+    feedbackWrap.appendChild(feedbackInput);
+    feedbackWrap.appendChild(feedbackBtn);
+    card.appendChild(feedbackWrap);
+
+    messagesInner.appendChild(card);
   }
 
   function esc(s) {
@@ -1065,6 +1257,9 @@
   }
 
   // ---- Init ----
+  applyTheme();
+  setInterval(applyTheme, 60000); // recheck time every minute for auto mode
+  themeBtn.addEventListener("click", toggleTheme);
   initResponsiveLayout();
   loadInlineTools();
   connect();

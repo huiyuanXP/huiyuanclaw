@@ -43,3 +43,11 @@ export function statusEvent(content) {
 export function usageEvent(inputTokens, outputTokens) {
   return createEvent('usage', { role: 'system', inputTokens, outputTokens });
 }
+
+export function questionEvent(questions) {
+  return createEvent('question', { role: 'assistant', questions });
+}
+
+export function planApprovalEvent(plan, allowedPrompts) {
+  return createEvent('plan_approval', { role: 'assistant', plan, allowedPrompts });
+}

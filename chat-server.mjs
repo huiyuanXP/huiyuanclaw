@@ -1,4 +1,11 @@
 #!/usr/bin/env node
+// Prepend HH:mm:ss.mmm timestamps to all console output
+const _ts = () => new Date().toISOString().slice(11, 23);
+const [_log, _error, _warn] = [console.log, console.error, console.warn];
+console.log   = (...a) => _log(`[${_ts()}]`, ...a);
+console.error = (...a) => _error(`[${_ts()}]`, ...a);
+console.warn  = (...a) => _warn(`[${_ts()}]`, ...a);
+
 import http from 'http';
 import { CHAT_PORT, SECURE_COOKIES } from './lib/config.mjs';
 import { handleRequest } from './chat/router.mjs';

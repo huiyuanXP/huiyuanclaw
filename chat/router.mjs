@@ -57,6 +57,7 @@ export async function handleRequest(req, res) {
   if (queryToken) {
     const ip = getClientIp(req);
     if (isRateLimited(ip)) {
+      console.warn(`[router] 429 token-auth ip=${ip}`);
       res.writeHead(429, { 'Content-Type': 'text/plain', 'Retry-After': '60' });
       res.end('Too many failed attempts. Please try again later.');
       return;
@@ -80,6 +81,7 @@ export async function handleRequest(req, res) {
   if (pathname === '/login' && req.method === 'POST') {
     const ip = getClientIp(req);
     if (isRateLimited(ip)) {
+      console.warn(`[router] 429 login ip=${ip}`);
       res.writeHead(429, { 'Content-Type': 'text/plain', 'Retry-After': '60' });
       res.end('Too many failed attempts. Please try again later.');
       return;
@@ -103,6 +105,7 @@ export async function handleRequest(req, res) {
     } else {
       recordFailedAttempt(ip);
       const mode = type === 'password' ? 'pw' : 'token';
+      console.warn(`[router] login failed mode=${mode} ip=${ip}`);
       res.writeHead(302, { 'Location': `/login?error=1&mode=${mode}` });
     }
     res.end();
@@ -153,6 +156,7 @@ export async function handleRequest(req, res) {
     let body;
     try { body = await readBody(req, 10240); } catch (err) {
       if (err.code === 'BODY_TOO_LARGE') {
+        console.warn('[router] 413 POST /api/sessions body too large');
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Request body too large' }));
         return;
@@ -162,6 +166,7 @@ export async function handleRequest(req, res) {
     try {
       const { folder, tool } = JSON.parse(body);
       if (!folder || !tool) {
+        console.warn('[router] 400 POST /api/sessions missing folder or tool');
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'folder and tool are required' }));
         return;
@@ -170,6 +175,7 @@ export async function handleRequest(req, res) {
         ? join(homedir(), folder.slice(1))
         : resolve(folder);
       if (!existsSync(resolvedFolder) || !statSync(resolvedFolder).isDirectory()) {
+        console.warn(`[router] 400 POST /api/sessions folder not found: ${resolvedFolder}`);
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Folder does not exist' }));
         return;
@@ -191,6 +197,7 @@ export async function handleRequest(req, res) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
     } else {
+      console.warn(`[router] 404 DELETE /api/sessions/${id} not found`);
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Session not found' }));
     }
@@ -258,7 +265,8 @@ export async function handleRequest(req, res) {
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ path: resolvedPath, parent, children }));
-    } catch {
+    } catch (err) {
+      console.error(`[router] 500 GET /api/browse path=${pathQuery}:`, err.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Failed to browse directory' }));
     }
@@ -303,6 +311,7 @@ export async function handleRequest(req, res) {
     return;
   }
 
+  console.warn(`[router] 404 ${req.method} ${pathname}`);
   res.writeHead(404, { 'Content-Type': 'text/plain' });
   res.end('Not Found');
 }

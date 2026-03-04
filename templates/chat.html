@@ -8,6 +8,12 @@
 <link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <title>RemoteLab Chat</title>
+<script nonce="{{NONCE}}">(function(){
+  var m=localStorage.getItem('themeMode')||'auto';
+  var h=new Date().getHours();
+  if(m==='dark'||(m==='auto'&&(h<7||h>=19)))
+    document.documentElement.setAttribute('data-theme','dark');
+}());</script>
 <style nonce="{{NONCE}}">
 :root {
   --bg: #ffffff;
@@ -33,6 +39,29 @@
   --sidebar-collapsed-width: 48px;
   --content-max: 740px;
 }
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0f0f0f;
+  --bg-secondary: #171717;
+  --bg-tertiary: #222222;
+  --border: #2a2a2a;
+  --border-strong: #383838;
+  --text: #e8e8e8;
+  --text-secondary: #999999;
+  --text-muted: #5a5a5a;
+  --accent: #e8e8e8;
+  --accent-dim: #222222;
+  --user-bubble: #1e1e1e;
+  --tool-bg: #171717;
+  --success: #4ade80;
+  --success-bg: #052e16;
+  --error: #f87171;
+  --error-bg: #1c0a0a;
+  --warning: #fbbf24;
+}
+[data-theme="dark"] .input-wrapper:focus-within { border-color: #555; }
+[data-theme="dark"] .modal { box-shadow: 0 8px 40px rgba(0,0,0,0.5); }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -478,6 +507,89 @@ body {
 .change-type.edit, .change-type.update { background: var(--bg-tertiary); color: var(--text-secondary); }
 .change-type.delete { background: var(--error-bg); color: var(--error); }
 
+/* ---- Interactive cards (AskUserQuestion / ExitPlanMode passthrough) ---- */
+.interactive-card {
+  border: 1px solid var(--border-strong); border-radius: 10px;
+  padding: 14px 16px; margin-bottom: 16px;
+  background: var(--bg-secondary);
+  animation: fadeIn 0.15s ease;
+}
+.interactive-tag {
+  display: inline-block; font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--text-muted); background: var(--bg-tertiary);
+  padding: 2px 8px; border-radius: 4px; margin-bottom: 8px;
+}
+.interactive-question {
+  font-size: 14px; line-height: 1.5; color: var(--text);
+  margin-bottom: 12px;
+}
+.interactive-options {
+  display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;
+}
+.interactive-option-btn {
+  display: flex; flex-direction: column; gap: 2px;
+  text-align: left; padding: 10px 14px;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px; cursor: pointer; font-family: inherit;
+  transition: border-color 0.1s, background 0.1s;
+}
+.interactive-option-btn:hover:not(:disabled) {
+  border-color: var(--border-strong); background: var(--bg-tertiary);
+}
+.interactive-option-btn:disabled { opacity: 0.5; cursor: default; }
+.interactive-option-btn.selected {
+  border-color: var(--accent); background: var(--accent-dim);
+}
+.option-label { font-size: 13px; font-weight: 500; color: var(--text); }
+.option-desc { font-size: 11px; color: var(--text-secondary); }
+
+.interactive-other {
+  display: flex; gap: 6px; margin-top: 6px;
+}
+.interactive-other-input {
+  flex: 1; padding: 8px 12px; font-size: 13px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--text); outline: none;
+  font-family: inherit;
+}
+.interactive-other-input:focus { border-color: var(--border-strong); }
+.interactive-other-send {
+  padding: 8px 14px; border: none; border-radius: 8px;
+  background: var(--text); color: var(--bg); font-size: 13px;
+  font-weight: 500; cursor: pointer; font-family: inherit;
+  white-space: nowrap;
+}
+.interactive-other-send:disabled { opacity: 0.4; cursor: default; }
+
+/* Plan approval */
+.plan-body {
+  max-height: 300px; overflow-y: auto;
+  margin-bottom: 12px; font-size: 13px; line-height: 1.55;
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px 14px; background: var(--bg);
+}
+.plan-actions {
+  display: flex; gap: 8px;
+}
+.plan-btn {
+  flex: 1; padding: 10px 16px; border: none; border-radius: 8px;
+  font-size: 13px; font-weight: 500; cursor: pointer;
+  font-family: inherit; transition: opacity 0.1s;
+}
+.plan-btn:disabled { opacity: 0.4; cursor: default; }
+.plan-btn.approve {
+  background: var(--success); color: white;
+}
+.plan-btn.approve.selected { opacity: 1; }
+.plan-btn.reject {
+  background: var(--bg-tertiary); color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+.plan-btn.reject.selected {
+  background: var(--error-bg); color: var(--error); border-color: var(--error);
+}
+
 /* ---- Input area ---- */
 .input-area {
   flex-shrink: 0;
@@ -606,6 +718,7 @@ body {
 <div class="header">
   <button class="header-btn" id="menuBtn" title="Sessions">&#9776;</button>
   <h1 id="headerTitle">RemoteLab Chat</h1>
+  <button class="header-btn" id="themeBtn" title="主题"></button>
   <span class="status-dot" id="statusDot"></span>
   <span id="statusText">disconnected</span>
 </div>
