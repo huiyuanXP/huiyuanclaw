@@ -997,6 +997,13 @@
     if (e.target === sidebarOverlay && !isDesktop) closeSidebarFn();
   });
 
+  // Clear "done" badge when user returns to tab (read-receipt semantics)
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && currentSessionId && finishedUnread.delete(currentSessionId)) {
+      renderSessionList();
+    }
+  });
+
   // ---- New Session ----
   newSessionBtn.addEventListener("click", () => {
     if (!isDesktop) closeSidebarFn();

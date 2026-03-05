@@ -11,6 +11,8 @@ import {
 } from '../lib/auth.mjs';
 import { getAvailableTools } from '../lib/tools.mjs';
 import { listSessions, listArchivedSessions, getSession, createSession, archiveSession, unarchiveSession } from './session-manager.mjs';
+import { appendEvent } from './history.mjs';
+import { messageEvent } from './normalizer.mjs';
 import { getSidebarState } from './summarizer.mjs';
 import { getPublicKey, addSubscription } from './push.mjs';
 import { getModelsForTool } from './models.mjs';
@@ -161,6 +163,10 @@ export async function handleRequest(req, res) {
       app.name,
       { appId: app.id, visitorId, systemPrompt: app.systemPrompt }
     );
+    // Inject welcome message as first assistant event so visitor sees it immediately
+    if (app.welcomeMessage) {
+      appendEvent(chatSession.id, messageEvent('assistant', app.welcomeMessage));
+    }
     const sessionToken = generateToken();
     sessions.set(sessionToken, {
       expiry: Date.now() + SESSION_EXPIRY,
@@ -434,8 +440,8 @@ export async function handleRequest(req, res) {
       return;
     }
     try {
-      const { name, systemPrompt, skills, tool } = JSON.parse(body);
-      const app = createApp({ name, systemPrompt, skills, tool });
+      const { name, systemPrompt, welcomeMessage, skills, tool } = JSON.parse(body);
+      const app = createApp({ name, systemPrompt, welcomeMessage, skills, tool });
       res.writeHead(201, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ app }));
     } catch {

@@ -35,13 +35,14 @@ export function getAppByShareToken(shareToken) {
   return loadApps().find(a => a.shareToken === shareToken && !a.deleted) || null;
 }
 
-export function createApp({ name, systemPrompt, skills, tool }) {
+export function createApp({ name, systemPrompt, welcomeMessage, skills, tool }) {
   const id = 'app_' + randomBytes(16).toString('hex');
   const shareToken = 'share_' + randomBytes(32).toString('hex');
   const app = {
     id,
     name: name || 'Untitled App',
     systemPrompt: systemPrompt || '',
+    welcomeMessage: welcomeMessage || '',
     skills: skills || [],
     tool: tool || 'claude',
     shareToken,
@@ -57,7 +58,7 @@ export function updateApp(id, updates) {
   const apps = loadApps();
   const idx = apps.findIndex(a => a.id === id && !a.deleted);
   if (idx === -1) return null;
-  const allowed = ['name', 'systemPrompt', 'skills', 'tool'];
+  const allowed = ['name', 'systemPrompt', 'welcomeMessage', 'skills', 'tool'];
   for (const key of allowed) {
     if (updates[key] !== undefined) {
       apps[idx][key] = updates[key];
