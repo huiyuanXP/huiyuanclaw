@@ -4,142 +4,129 @@ _Started: 2026-03-04_
 
 > Status: directional note for post-request-response interaction design.
 > For the current shipped chat/runtime baseline, use `docs/project-architecture.md`.
-> Use `notes/message-transport-architecture.md` only as background rationale for the runtime discussion.
+> For the current domain baseline, use `notes/current/core-domain-contract.md`.
 
 ---
 
 ## The Shift
 
-Current model: **human initiates → AI responds**. Every session, every action, every context switch is triggered by the user. The user is the scheduling layer.
+Today, the default model is still:
 
-Target model: **AI can initiate**. The user is a decision authority, not an operator. The gap between these two states is what this doc explores.
-
----
-
-## Foundational Abstraction
-
-The chat service is not a UI. It is a **communication channel between two agents** — one human, one AI. The human happens to be in control of when the channel is opened. But that's an implementation constraint, not a philosophical one.
-
-The minimal extension needed to get AI-initiated interaction:
-
-> The model can write a deferred message to itself. RemoteLab stores it and delivers it at the right moment.
-
-This preserves the two-party dialogue primitive. The model is still "replying to a message." The message just happens to be one it wrote earlier. This is not a new abstraction — it's a scheduled trigger that feeds back into the same pipe.
-
----
-
-## Mechanism: Deferred Triggers
-
-**How it works:**
-
-1. During any session, the model can emit a structured trigger:
-   ```json
-   { "type": "schedule", "at": "2026-03-05T09:00:00Z", "message": "Check build status and report." }
-   ```
-   or condition-based:
-   ```json
-   { "type": "on_complete", "session": "auth-refactor", "message": "Review what auth-refactor finished and continue." }
-   ```
-
-2. RemoteLab stores these triggers (a simple `~/.config/remotelab/triggers.json`).
-
-3. A background process polls triggers and delivers them to the target session at the right time — which looks identical to a human sending a message.
-
-4. The model responds. It can emit new triggers. The loop is closed.
-
-**What this enables:**
-- Long-running async tasks without human babysitting
-- Cross-session coordination ("after X is done, do Y")
-- Periodic check-ins ("every morning, summarize overnight progress")
-- The model proactively surfacing blockers to the human without the human asking
-
----
-
-## Session Organization
-
-Sessions should be organized by **task context**, not by filesystem path. The folder concept leaks implementation details into the UX.
-
-**New session schema:**
-```js
-{
-  id, name, tool,
-  created, lastActivity,
-  workdir,           // optional — where to run commands, defaults to ~
-  project,           // string tag ("remotelab", "video-editing", ...)
-  status,            // "active" | "pending" | "blocked" | "archived"
-  priority,          // "high" | "normal" | "low"
-  tags,              // string[]
-  summary,           // AI-generated one-liner, updated after each exchange
-  blockedReason,     // if status=blocked: what's blocking
-  nextAction         // what the human needs to decide
-}
+```text
+human sends message -> AI responds -> session waits
 ```
 
-**The model manages this.** The model updates its own session's metadata after each exchange. The human never touches it unless overriding.
+The directional extension is:
+
+```text
+human and AI can both create future work inside the same session system
+```
+
+That does **not** require inventing a second product universe.
+It means letting the model schedule, annotate, and resume work through the same durable session grammar.
 
 ---
 
-## The Control Surface
+## Smallest Useful Extension
 
-What the model needs to manage sessions:
+The minimal new primitive is a **deferred trigger**.
 
-| Tool | What it does |
-|------|-------------|
-| `update_session` | Set status, project, tags, blockedReason, nextAction for current session |
-| `create_session` | Spawn a new task in a new session with given context |
-| `list_sessions` | Read the full session board (all sessions, their status/summary) |
-| `schedule_trigger` | Write a deferred or condition-based message |
+Conceptually:
 
-Implementation path: expose these as HTTP endpoints in RemoteLab, document them in AGENTS.md so the model knows they exist. No new protocol — the agent runtime can call `curl` already.
+- the model writes a future message or wake-up condition
+- RemoteLab stores it durably
+- the system delivers it back into the target session later
+- the resulting work still appears as normal session activity
 
----
+That keeps the core abstraction stable:
 
-## Human Role
-
-The human is:
-- A **decision authority** for things the model flags as `nextAction`
-- An **interrupt handler** for `blocked` sessions
-- An **observer** of the session board (sidebar)
-
-The human is not:
-- The session scheduler
-- The progress tracker
-- The one remembering what each session is doing
+> the product remains session-first, even when the AI becomes more proactive.
 
 ---
 
-## Sidebar as the Control Panel
+## Session Metadata As The Control Surface
 
-The sidebar is not a session list. It is a **live board** showing what the AI workforce is doing and what decisions are pending. Default sort: blocked (needs human) → active → pending → archived.
+Before full autonomy, the most useful AI-owned surface is lighter:
 
-The model writes to this board. The human reads it.
+- title / name
+- group
+- description
+- later: status, priority, tags, blocker, next action
+
+These fields should be treated as:
+
+- model-writable operational metadata
+- derived control-surface state
+- never the permission system
+
+The browser then becomes less of a “chat window only” product and more of a lightweight board of ongoing AI work.
 
 ---
 
-## Implementation Phases
+## Browser Role
 
-### Phase 1 — Task-first session foundation
-- [x] Make `workdir` optional
-- [x] Persist model-written presentation fields (`title`/name, `group`, `description`) in session state
-- [ ] Make model-written presentation fields the fully consistent public session-management surface; the UI still falls back to folder grouping when `group` is absent
-- [ ] Extend the same pattern to richer metadata (`project`, `status`, `priority`, `tags`)
+The browser should remain:
 
-### Phase 2 — AI session control
-- Expand `PATCH /api/sessions/:id` beyond rename/archive so presentation metadata can be updated through the public session API
-- Document the intended session-management surface in `AGENTS.md` so the model uses it consistently
-- Let the model update richer status/summary metadata after each exchange
+- HTTP-canonical for truth
+- lightweight in orchestration
+- optimized for status, intervention, approval, and quick redirects into the right session
 
-### Phase 3 — Deferred triggers
-- `triggers.json` storage + background delivery loop
-- `schedule_trigger` tool exposed to model
-- Model can schedule its own follow-ups and cross-session handoffs
+The important shift is not “make the frontend heavier.”
+The important shift is “make the current work state more visible and actionable.”
+
+---
+
+## Practical Phases
+
+### Phase 1 — better session-owned metadata
+
+Keep improving the session surface so the model can reliably maintain:
+
+- title/name
+- group
+- description
+- later richer status fields
+
+### Phase 2 — explicit session-management surface
+
+Expose a consistent public API for model-written presentation/status updates so the behavior is not split across ad hoc internals.
+
+### Phase 3 — deferred triggers and background continuation
+
+Once the metadata/control surface is stable, add:
+
+- scheduled follow-ups
+- event-driven wake-ups
+- AI-initiated check-ins
+- more autonomous long-running workflows
+
+---
+
+## What This Note Is Not Trying To Solve Yet
+
+This note is intentionally not the place to lock down:
+
+- scheduler implementation details
+- daemon topology
+- exact trigger storage schema
+- full autonomy safety policy
+- external connector protocol details
+
+Those should remain separate architecture/execution decisions.
 
 ---
 
 ## Open Questions
 
-1. **Trigger delivery**: how to handle a trigger for a session the user is actively viewing? Interrupt or queue?
-2. **Trigger safety**: what stops the model from scheduling an infinite loop of self-messages? (probably: a simple max-depth counter per trigger chain)
-3. **Session creation limits**: should the model be able to create unlimited sessions? Probably cap at N concurrent active sessions.
-4. **Human override**: if the model marks a session as `archived`, can the human undo that? Yes — human always has authority over model's organizational decisions.
-5. **Cross-session context**: when a trigger fires and says "continue from where X left off", how much context is passed? Probably the summary from `sidebar-state.json`, not the full history.
+- which session fields deserve first-class public mutation APIs?
+- when is a session “waiting for human” vs merely “still working”?
+- what minimal trigger model gives value before the system becomes overly scheduler-heavy?
+- how should notifications and summaries relate to AI-initiated work?
+
+---
+
+## Related Docs
+
+- `notes/directional/autonomous-execution.md` — longer-horizon autonomy direction
+- `notes/directional/product-vision.md` — higher-level product motivation
+- `notes/message-transport-architecture.md` — historical runtime rationale

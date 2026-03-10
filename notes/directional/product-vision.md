@@ -1,254 +1,121 @@
 # RemoteLab Product Vision
 
-_Last updated: 2026-03-09_
+_Last updated: 2026-03-10_
 
-> 状态：产品动机与开放问题记录，不是当前实现状态总表。
+> 状态：产品判断与开放问题记录。
 > 当前 shipped 架构请看 `docs/project-architecture.md`。
 > 当前 domain/refactor 基线请看 `notes/current/core-domain-contract.md`。
 
 ---
 
-## 核心重构认知
+## 核心判断
 
-RemoteLab 不是一个"我和某个模型对话的工具"。
-它是一个**管理 AI 工人的控制台**。
+RemoteLab 不是“远程和模型聊天”的工具。
 
-用户不是执行者，是 director。交互模型应该从"对话框"迁移到"工作台"。
+它更像：
 
----
+- 一个管理 AI 工人的控制台
+- 一个把长期机器上下文交给 AI 的协作系统
+- 一个让用户从“亲自操作的人”变成“发目标、做判断的人”的产品
 
-## 两个核心痛点
+它的真正价值，不只是远程访问，而是：
 
-### 1. 认知负载 vs. Session 并发管理
-
-**问题本质**：用户每个需求创建一个独立 session，当并发 session 增多时，人脑成为整合瓶颈——用户要记住每个 session 在做什么、卡在哪、需要什么决策。这是纯粹的认知开销，不是工作本身。
-
-**目标**：在不降低管控力的前提下，让用户能够平行处理更多 session，同时脑子里装的东西更少。
-
-### 2. 移动端场景的真实性
-
-移动端是**预期场景**，不一定是实际场景。需要验证实际使用中：
-- 手机端的主要操作是什么（快速审批？状态查看？长文本输入？）
-- 移动端是否真正产生价值，还是桌面才是主场
-
-**暂定结论**：移动端应该是"审批+快速指令"层，不是完整工作台。具体功能优先级等实际使用数据验证后再决定。
+- AI 有一台真实、长期存在的机器
+- 任务、经验和中间产物可以沉淀
+- 后续工作会越来越依赖这份持续存在的上下文
 
 ---
 
-## 输入/输出比例假设
+## 当前最值得解决的问题
 
-用户个人工作模式：写完消息 → 切 session → 等模型完成 → 回来看结果。
+### 1. 并发 Session 的认知负担
 
-假设：**用户和模型的信息输出量接近**，导致阅读时间 < 写作时间。
+用户当前最大的成本，不是发消息，而是记住：
 
-如果假设成立，UI 应该给输入框更高权重，而非把大量视觉面积分配给模型输出。需要用使用数据验证这个假设（后续埋点方向之一）。
+- 每个 session 在做什么
+- 哪些 session 卡住了
+- 哪些 session 需要自己决策
+- 各 session 之间有没有依赖
 
----
+所以产品重点不是“把单轮对话做得更花”，而是**让用户能管理更多并发工作，同时脑子里装更少状态**。
 
-## 2026-03-08 外部交流补充：产品抽象与增长飞轮
+### 2. 明确移动端角色
 
-### 1. RemoteLab 的真正优势不是“远程控制”，而是“给 AI 一台完整机器”
+移动端应该优先承担：
 
-把 RemoteLab 只理解成“远程控制本地 Claude / Codex”的工具，会低估它的产品空间。更深的价值是：
+- 查看全局状态
+- 快速确认/审批
+- 发短指令
+- 跳到需要自己介入的 session
 
-- AI 拥有一台真实、完整、长期存在的机器环境
-- 它可以自己写经验总结、做调研、沉淀中间产物
-- 这些沉淀会反过来增强后续任务表现
+它不一定要变成完整工作台，更不应该先按“手机版 IDE”设计。
 
-远程访问只是人类与这个 agent 协作的入口，不是最本质的护城河。
+### 3. 输出要优先服务决策，而不是堆细节
 
-### 2. App 的更深层含义：被验证过的自然语言 SOP
+长输出不是问题本身。
 
-当一个任务的自然语言工作流被描述清楚，并且已经在真实机器上验证可行，它就不再只是一个 prompt，而接近于一个可复用、可分享的应用能力。
+真正的问题是：用户经常只想先知道：
 
-这意味着：
+- 现在需不需要我决定什么？
+- 这轮到底做成了什么？
+- 有没有 blocker？
 
-- “做应用”的成本可以从“写软件 + 部署软件”下降到“定义并验证 workflow”
-- 被分享出去的不是一句 prompt，而是一套 agent 在真实环境中可执行的 SOP
-- 它特别适合那些想做自动化、但没有研发资源去做传统软件的长尾场景
+所以后续 UI/后处理应该优先突出：
 
-### 3. 不要把“团队”当成默认产品抽象
+- decision
+- summary
+- blocker / next action
+- details on demand
 
-“A/B/C 多 bot 团队”更像是人类协作的投影，不一定适合作为产品底层模型。对用户来说，更自然的心智应该是：
+### 4. App 的价值是“已验证 workflow 的包装”
 
-- 当前对话的 AI 就是项目负责人
-- 它自己决定何时写代码、何时搜索、何时开 sub agent
-- 用户只需要表达目标，不需要先学习一套多角色编排语言
+App 不只是 prompt 分享。
 
-因此，产品重点应该放在：记忆激活、delegation、执行透明度，而不是预设很多命名身份。
+更准确地说，它是：
 
-### 4. 早期增长飞轮的关键，不是先商业化，而是先提高反馈密度
+- 一套已经在真实机器上验证过的 workflow
+- 一套可复用、可分享的 agent SOP
+- RemoteLab 作为“能力分发工具”的自然载体
 
-在这个阶段，最宝贵的资产不是融资材料或复杂商业包装，而是：
+### 5. 增长关键是反馈密度，不是先做商业包装
 
-- 可分享的 App / workflow
-- 足够多、足够真实的用户案例
-- 愿意持续表达问题与需求的核心用户
-- 能帮助项目滚起飞轮的高质量运营动作
+当前阶段更重要的是：
 
-OpenClaw 带来的启发，不是必须照抄它的抽象，而是：**分享性 + 案例密度 + 社区反馈速度** 会直接决定增长速度。
+- 更多真实案例
+- 更多可分享 workflow
+- 更高密度的外部反馈
+- 更快的产品学习速度
 
-### 5. 对外策略：开源优先，运营驱动反馈，商业化后置
-
-当前更合理的节奏是：
-
-1. 先把项目作为开源产品做出影响力
-2. 主动组织讨论、案例共创、社区活动，补上自然反馈不足的问题
-3. 优先接入反馈密度更高的社区（尤其技术表达更积极的国际用户群）
-4. 商业化只做最小验证，不让融资、销售材料或云包装打断主线迭代
-
-长期看，云端开箱即用当然有商业价值，也更有利于降低门槛和控制安全边界；但它属于“规模化包装层”，不是当前最本质的问题。
+这比过早堆商业包装、团队抽象或复杂云架构更重要。
 
 ---
 
-## 未来产品方向（已讨论，待细化）
+## 当前产品下注
 
-### 分层输出（Post-LLM 处理）
+目前最值得继续加注的方向是：
 
-每条模型回复，用第二次 LLM 调用将内容拆解为：
-
-1. **决策层**：这条回复是否需要你做决定？如果是，决定什么？
-2. **结果摘要**：做了什么 / 有什么结论（一句话）
-3. **推理过程**：为什么这样做（可折叠）
-4. **实现细节**：具体代码 / 操作步骤（深度折叠）
-
-用户默认只看决策层 + 结果摘要，其余按需展开。
-
-### 跨 Session 进度侧边栏（Sidebar）
-
-见下一节详细设计。
+- `Session` 继续作为核心产品单位
+- sidebar / progress 继续承担“卸载用户记忆”的职责
+- App 继续向 reusable policy / workflow package 发展
+- 不把“多 bot 团队”当默认产品抽象
+- 不把移动端强行做成重交互工作台
 
 ---
 
-## Sidebar 详细设计
+## 仍然开放的问题
 
-### 它解决什么问题
+这些问题值得继续观察，但不必现在提前定死：
 
-用户当前痛点：多 session 并发时，**用户的大脑是唯一的状态整合点**。
-
-- 要记住每个 session 在做什么
-- 要记住哪些 session 在等自己的回复
-- 要记住各 session 之间的依赖关系
-- 切换 session 时需要重新读上下文来"恢复现场"
-
-Sidebar 的核心功能是**把这些状态从用户大脑里卸载出来**，外化到一个实时更新的"进度文档"里。
-
-### 不是什么
-
-- 不是另一个对话框
-- 不是项目管理工具（Jira/Notion）
-- 不是 session 列表（那是已有的 UI）
-- 不是用来替代用户思考的，而是**减少用户重复记忆的**
-
-### 第一期形态（轻量）
-
-**产品表现**：一个始终可见的侧边栏，展示当前所有活跃 session 的状态摘要，当任何 session 有新的完成状态时自动更新。
-
-**核心 UI 结构**：
-
-```
-=== 项目全局状态 ===
-更新时间: 2 分钟前
-
-[ 需要你介入 ]
-• auth-refactor   等待输入 → 问了 token 过期策略
-• chat-layout     等待输入 → 需要确认 CSS 方案
-
-[ 运行中 ]
-• sidebar-impl    正在实现布局结构
-
-[ 已完成 ]
-• ws-bugfix       修复了 WS 断连问题 (指数退避, 最多5次重试)
-• config-cleanup  清理了环境变量加载逻辑
-```
-
-用户扫一眼就知道：有2个 session 在等我，1个在跑，2个完事了。可以直接点击对应 session 跳过去处理。
-
-### 底层实现（v1 已实现）
-
-**架构**：每个 session 完成一轮对话（`onExit` 触发），异步发起一次独立的一次性模型调用，让模型总结本轮内容，更新 `~/.config/remotelab/sidebar-state.json`。这个后台调用默认复用该轮用户实际选用的 tool / model / reasoning 配置，而不是硬编码某个 agent。
-
-**关键决策**：
-- **不用持久 session**：持久 session context 线性增长。改用单次 LLM 调用，输入固定有界（上次 background + 本轮 events），输出覆盖旧记录
-- **每个 session 只保留最新一条记录**，不追加历史——sidebar 是当前状态快照，不是历史记录
-- **两层内容**：`background`（这个 session 整体在做什么）+ `lastAction`（本轮最重要的动作）
-- **触发时机**：`onExit` 后异步触发，完全不阻塞正常对话流程
-- **UI 刷新**：切换到 Progress tab 时立即 fetch，并每 30 秒轮询一次
-
-**实现文件**：
-- `chat/summarizer.mjs` — 核心逻辑
-- hook: `chat/session-manager.mjs` `onExit` 调用 `triggerSummary`
-- API: `GET /api/sidebar` → 返回 state file 内容
-- UI: 左侧边栏新增 Sessions / Progress tab 切换
-
-**v2 扩展**：可以在 sidebar 加入一个能对状态文件提问的 AI session（"现在整体进度怎样？"），该 session 只读状态文件，不读原始历史。
-
-### 状态文件结构（草案）
-
-```markdown
-# Project State
-_Updated: 2026-03-01 14:32_
-
-## Sessions
-
-### auth-refactor [WAITING]
-Working repo: ~/code/remotelab
-Tool: claude
-Last action: Asked about token expiry strategy — needs user decision
-Key context: Refactoring auth.mjs, token expiry currently hardcoded to 24h
-
-### chat-layout [WAITING]
-Working repo: ~/code/remotelab
-Tool: claude
-Last action: Proposed two CSS layout options for sidebar, needs approval
-Key context: Implementing CSS grid, has dependency on sidebar-impl
-
-### sidebar-impl [RUNNING]
-Working repo: ~/code/remotelab
-Tool: claude
-Last action: Writing initial layout structure
-Key context: Brand new session, task is to build the sidebar component
-
-### ws-bugfix [DONE]
-Completed: Fixed WebSocket reconnection with exponential backoff
-Key output: Modified chat/ws.mjs lines 61-67
-
-### config-cleanup [DONE]
-Completed: Cleaned up env var loading in lib/config.mjs
-```
-
-### 未解决的设计问题
-
-1. **触发时机**：每条消息完成都触发？还是有 debounce（模型一次回复可能很快，避免频繁调用）？
-2. **状态文件压缩**：状态文件本身如何避免增长？DONE 状态的 session 保留多久？删除后用什么摘要替代？
-3. **"需要介入"的判断**：如何可靠地识别一个 session 是在等用户输入 vs 还在思考？（Claude 有时候会自己继续，有时候会问问题）
-4. **折叠/展开**：状态文件里 key context 写多少合适？太少没用，太多 context window 还是会爆
-5. **依赖关系**：session 间的依赖能否被自动识别（"chat-layout 依赖 sidebar-impl 完成"）？还是只能靠用户手动标注？
-6. **从 sidebar 直接操作**：是否支持在 sidebar 里直接回复某个 session？（避免切换 tab）
+- 移动端真实使用分布到底是什么？
+- 分层输出何时值得进入主线？
+- session metadata 里哪些字段值得长期暴露给 agent 写？
+- App 的 share / onboarding / guided UI 应该做到什么程度？
+- 哪些反馈机制最能提高外部案例密度？
 
 ---
 
-## 仍然开放的产品问题
+## 相关方向文档
 
-- 移动端场景优先级（等实际使用数据再定）
-- 分层输出（Post-LLM 处理）何时排进迭代
-- 埋点系统是否需要（低优先级，先把产品方向定了）
-
----
-
-## App 系统参考入口
-
-App / visitor 相关的当前 shipped 行为不再在本文件里维护逐项状态表，以免随代码演进过期。
-
-- 当前 shipped 行为与代码入口：`docs/project-architecture.md`
-- 当前 domain/object 抽象：`notes/current/core-domain-contract.md`
-- 更长线的 app-centric 方向：`notes/directional/app-centric-architecture.md`
-
----
-
-## 不做的事（当前阶段）
-
-- 不引入外部框架（保持 Node.js 内置 + ws）
-- 不做通用化（单用户工具，不需要多租户、权限系统）
-- 不过早优化（先把功能跑起来，再考虑性能边界）
-- 终端服务（auth-proxy 那套）不改动
+- `notes/directional/app-centric-architecture.md` — App 作为通用 policy layer 的方向
+- `notes/directional/ai-driven-interaction.md` — AI 主动发起与 deferred triggers
+- `notes/directional/provider-architecture.md` — provider/model 开放化
