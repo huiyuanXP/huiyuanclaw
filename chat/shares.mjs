@@ -1,12 +1,13 @@
 import { randomBytes } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { CHAT_IMAGES_DIR, CHAT_SHARE_SNAPSHOTS_DIR } from '../lib/config.mjs';
+import { createSerialTaskQueue, ensureDir, readJson, writeJsonAtomic } from './fs-utils.mjs';
 
-function ensureSharesDir() {
-  if (!existsSync(CHAT_SHARE_SNAPSHOTS_DIR)) {
-    mkdirSync(CHAT_SHARE_SNAPSHOTS_DIR, { recursive: true });
-  }
+const runShareMutation = createSerialTaskQueue();
+
+async function ensureSharesDir() {
+  await ensureDir(CHAT_SHARE_SNAPSHOTS_DIR);
 }
 
 function shareSnapshotPath(id) {
@@ -14,10 +15,10 @@ function shareSnapshotPath(id) {
 }
 
 function generateShareId() {
-  return 'snap_' + randomBytes(24).toString('hex');
+  return `snap_${randomBytes(24).toString('hex')}`;
 }
 
-function readImageBase64(image) {
+async function readImageBase64(image) {
   if (!image || typeof image !== 'object') return null;
   if (typeof image.data === 'string' && image.data) return image.data;
 
@@ -32,17 +33,15 @@ function readImageBase64(image) {
 
   for (const filepath of candidates) {
     try {
-      if (existsSync(filepath)) {
-        return readFileSync(filepath).toString('base64');
-      }
+      return (await readFile(filepath)).toString('base64');
     } catch {}
   }
 
   return null;
 }
 
-function sanitizeImage(image) {
-  const data = readImageBase64(image);
+async function sanitizeImage(image) {
+  const data = await readImageBase64(image);
   if (!data) return null;
   return {
     filename: typeof image?.filename === 'string' ? image.filename : undefined,
@@ -51,7 +50,7 @@ function sanitizeImage(image) {
   };
 }
 
-function sanitizeMessageEvent(event) {
+async function sanitizeMessageEvent(event) {
   const snapshot = {
     type: 'message',
     id: event.id,
@@ -60,13 +59,13 @@ function sanitizeMessageEvent(event) {
     content: typeof event.content === 'string' ? event.content : '',
   };
   if (Array.isArray(event.images) && event.images.length > 0) {
-    const images = event.images.map(sanitizeImage).filter(Boolean);
+    const images = (await Promise.all(event.images.map(sanitizeImage))).filter(Boolean);
     if (images.length > 0) snapshot.images = images;
   }
   return snapshot;
 }
 
-function sanitizeEvent(event) {
+async function sanitizeEvent(event) {
   if (!event || typeof event !== 'object' || typeof event.type !== 'string') return null;
 
   switch (event.type) {
@@ -131,36 +130,32 @@ function sanitizeSession(session) {
   };
 }
 
-export function createShareSnapshot(session, history) {
-  ensureSharesDir();
+export async function createShareSnapshot(session, history) {
+  return runShareMutation(async () => {
+    await ensureSharesDir();
 
-  const id = generateShareId();
-  const createdAt = new Date().toISOString();
-  const events = Array.isArray(history)
-    ? history.map(sanitizeEvent).filter(Boolean)
-    : [];
+    const id = generateShareId();
+    const createdAt = new Date().toISOString();
+    const events = Array.isArray(history)
+      ? (await Promise.all(history.map(sanitizeEvent))).filter(Boolean)
+      : [];
 
-  const snapshot = {
-    version: 1,
-    id,
-    createdAt,
-    session: sanitizeSession(session),
-    events,
-  };
+    const snapshot = {
+      version: 1,
+      id,
+      createdAt,
+      session: sanitizeSession(session),
+      events,
+    };
 
-  writeFileSync(shareSnapshotPath(id), JSON.stringify(snapshot, null, 2), 'utf8');
-  return snapshot;
+    await writeJsonAtomic(shareSnapshotPath(id), snapshot);
+    return snapshot;
+  });
 }
 
-export function getShareSnapshot(id) {
+export async function getShareSnapshot(id) {
   if (!id || typeof id !== 'string' || !/^snap_[a-f0-9]{48}$/.test(id)) return null;
-  try {
-    const filepath = shareSnapshotPath(id);
-    if (!existsSync(filepath)) return null;
-    const snapshot = JSON.parse(readFileSync(filepath, 'utf8'));
-    if (!snapshot || snapshot.id !== id || !Array.isArray(snapshot.events)) return null;
-    return snapshot;
-  } catch {
-    return null;
-  }
+  const snapshot = await readJson(shareSnapshotPath(id), null);
+  if (!snapshot || snapshot.id !== id || !Array.isArray(snapshot.events)) return null;
+  return snapshot;
 }

@@ -2,6 +2,7 @@
 
 > 状态：P2（长期演进），已确认方向，尚未启动实现。
 > 记录于 2026-03-06。
+> Ongoing consolidated architecture discussion now lives in `notes/message-transport-architecture.md`; this file stays as the higher-level product vision for autonomy.
 
 ---
 

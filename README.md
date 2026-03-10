@@ -18,6 +18,8 @@ Your sessions persist across disconnects. History is kept on disk. Multiple sess
 
 New sessions now start from `~` by default. For project-scoped work outside RemoteLab itself, tell the agent the repo path once and let it locate the relevant files.
 
+After the first turn, RemoteLab can now let the agent assign a short session title, a one-level display group, and a hidden work description so the sidebar stays organized without turning groups back into real folders.
+
 ### Get set up in 5 minutes — hand it to an AI
 
 The fastest way to set this up is to paste the following prompt into Claude Code on your Mac or Linux server. The AI handles everything automatically. The only thing it'll stop and ask you for is a browser login to Cloudflare (unavoidable — they need to confirm you own the domain).
@@ -55,7 +57,8 @@ Open `https://[subdomain].[domain]/?token=YOUR_TOKEN` on your phone:
 
 - Create a session: pick an AI tool — sessions start from `~` by default
 - For non-RemoteLab projects, tell the agent the repo path once
-- Send messages — responses stream back in real time
+- Let the agent auto-group related sessions in the sidebar without managing filesystem folders
+- Send messages — the UI re-fetches canonical HTTP state while runs progress
 - Close the browser, come back later — session is still alive
 - Paste screenshots directly into the chat
 - Share a read-only snapshot link of the current session without exposing any other sessions
@@ -80,7 +83,7 @@ Two services run on your Mac behind a Cloudflare tunnel:
 
 | Service | Port | Role |
 |---------|------|------|
-| `chat-server.mjs` | 7690 | **Primary.** Chat UI, spawns CLI tools, WebSocket streaming |
+| `chat-server.mjs` | 7690 | **Primary.** HTTP control plane, detached runner supervisor, WS invalidation hints |
 | `auth-proxy.mjs` | 7681 | **Fallback.** Raw terminal via ttyd — for emergencies only |
 
 The Cloudflare tunnel routes your domain to the chat server (7690). The auth-proxy is localhost-only — if chat breaks badly enough, you SSH in and hit it directly.
@@ -88,17 +91,18 @@ The Cloudflare tunnel routes your domain to the chat server (7690). The auth-pro
 ```
 Phone ──HTTPS──→ Cloudflare Tunnel ──→ chat-server :7690
                                               │
-                                        spawns subprocess
-                                        (claude / codex / cline)
+                                        HTTP control plane
                                               │
-                                        streams events → WebSocket → browser
+                          durable event log + run state + detached runners
+                                              │
+                               browser reads via HTTP, `/ws` only hints refresh
 ```
 
 ### Session persistence
 
-Each chat session is a subprocess. When you disconnect, the process keeps running. When you reconnect, the server replays history and reattaches to the live stream.
+Session metadata, normalized history, and per-run state are persisted on disk. The browser renders from HTTP reads, so refresh/reconnect converges on the same canonical state without depending on transport continuity.
 
-If the `chat-server` itself restarts during an active run, that subprocess is interrupted. RemoteLab now marks the session as `interrupted` and exposes a `Resume` action when Claude/Codex resume metadata was captured, so restart recovery is explicit instead of silently losing the turn.
+Active runs now execute in detached sidecars. If `chat-server` restarts mid-run, the control plane can come back, re-scan run output, and recover the final result. `Resume` remains available for explicitly interrupted legacy/manual cases when Claude/Codex resume metadata exists.
 
 For self-hosting development, keep two chat-server planes active: use `7690` as the stable coding/operator plane and `7692` as the restartable validation plane. Avoid doing active coding work from `7692`; use it to verify changes, restart freely, and confirm behavior. Once `7692` is good, finish your current message on `7690` and only then restart/reload `7690` if needed. For custom-port dev instances, use `scripts/chat-instance.sh`.
 

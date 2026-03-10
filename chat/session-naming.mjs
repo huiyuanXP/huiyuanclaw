@@ -1,8 +1,26 @@
 export const DEFAULT_SESSION_NAME = 'new session';
 export const TEMP_SESSION_NAME_MAX_CHARS = 12;
+export const SESSION_GROUP_MAX_CHARS = 32;
+export const SESSION_DESCRIPTION_MAX_CHARS = 160;
+
+function normalizeSessionText(value, maxChars) {
+  const normalized = typeof value === 'string'
+    ? value.replace(/\s+/g, ' ').trim()
+    : '';
+  if (!normalized) return '';
+  return Array.from(normalized).slice(0, maxChars).join('');
+}
 
 export function normalizeSessionName(name) {
   return typeof name === 'string' ? name.trim() : '';
+}
+
+export function normalizeSessionGroup(group) {
+  return normalizeSessionText(group, SESSION_GROUP_MAX_CHARS);
+}
+
+export function normalizeSessionDescription(description) {
+  return normalizeSessionText(description, SESSION_DESCRIPTION_MAX_CHARS);
 }
 
 export function resolveInitialSessionName(name) {

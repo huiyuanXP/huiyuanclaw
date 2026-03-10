@@ -27,7 +27,7 @@ function runTest(prompt, label) {
     const startTime = Date.now();
     const events = [];
 
-    const runner = spawnTool('codex', testDir, prompt,
+    spawnTool('codex', testDir, prompt,
       (evt) => {
         events.push(evt);
         const elapsed = Date.now() - startTime;
@@ -62,7 +62,19 @@ function runTest(prompt, label) {
         resolve({ label, code, duration, dirContents, autoContinues, success });
       },
       {}
-    );
+    ).catch((error) => {
+      console.error(error);
+      try { rmSync(testDir, { recursive: true }); } catch {}
+      resolve({
+        label,
+        code: 1,
+        duration: Date.now() - startTime,
+        dirContents: [],
+        autoContinues: 0,
+        success: false,
+        error,
+      });
+    });
   });
 }
 

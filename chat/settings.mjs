@@ -1,35 +1,34 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { CHAT_SETTINGS_FILE } from '../lib/config.mjs';
+import { createSerialTaskQueue, ensureDir, readJson, writeJsonAtomic } from './fs-utils.mjs';
 
 const DEFAULTS = { progressEnabled: false };
+const runSettingsMutation = createSerialTaskQueue();
 
-function loadSettings() {
-  try {
-    if (!existsSync(CHAT_SETTINGS_FILE)) return { ...DEFAULTS };
-    return { ...DEFAULTS, ...JSON.parse(readFileSync(CHAT_SETTINGS_FILE, 'utf8')) };
-  } catch {
-    return { ...DEFAULTS };
-  }
+async function loadSettings() {
+  const loaded = await readJson(CHAT_SETTINGS_FILE, DEFAULTS);
+  return { ...DEFAULTS, ...(loaded || {}) };
 }
 
-function saveSettings(settings) {
+async function saveSettings(settings) {
   const dir = dirname(CHAT_SETTINGS_FILE);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(CHAT_SETTINGS_FILE, JSON.stringify(settings, null, 2), 'utf8');
+  await ensureDir(dir);
+  await writeJsonAtomic(CHAT_SETTINGS_FILE, settings);
 }
 
-export function getSettings() {
+export async function getSettings() {
   return loadSettings();
 }
 
-export function updateSettings(patch) {
-  const current = loadSettings();
-  const updated = { ...current, ...patch };
-  saveSettings(updated);
-  return updated;
+export async function updateSettings(patch) {
+  return runSettingsMutation(async () => {
+    const current = await loadSettings();
+    const updated = { ...current, ...patch };
+    await saveSettings(updated);
+    return updated;
+  });
 }
 
-export function isProgressEnabled() {
-  return loadSettings().progressEnabled === true;
+export async function isProgressEnabled() {
+  return (await loadSettings()).progressEnabled === true;
 }

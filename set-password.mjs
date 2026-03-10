@@ -1,12 +1,21 @@
 #!/usr/bin/env node
 import { createInterface } from 'readline';
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { access, mkdir, readFile, writeFile } from 'fs/promises';
 import { dirname } from 'path';
 import { hashPassword } from './lib/auth.mjs';
 import { AUTH_FILE } from './lib/config.mjs';
 
 const authFile = AUTH_FILE;
 const authDir = dirname(authFile);
+
+async function pathExists(path) {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const rl = createInterface({ input: process.stdin, output: process.stdout });
 const ask = (prompt) => new Promise(resolve => rl.question(prompt, resolve));
@@ -20,15 +29,15 @@ if (!username || !password) {
   process.exit(1);
 }
 
-mkdirSync(authDir, { recursive: true });
+await mkdir(authDir, { recursive: true });
 
 let existing = {};
-if (existsSync(authFile)) {
-  try { existing = JSON.parse(readFileSync(authFile, 'utf8')); } catch {}
+if (await pathExists(authFile)) {
+  try { existing = JSON.parse(await readFile(authFile, 'utf8')); } catch {}
 }
 
 existing.username = username;
 existing.passwordHash = hashPassword(password);
 
-writeFileSync(authFile, JSON.stringify(existing, null, 2), 'utf8');
+await writeFile(authFile, JSON.stringify(existing, null, 2), 'utf8');
 console.log(`Password set for user "${username}".`);

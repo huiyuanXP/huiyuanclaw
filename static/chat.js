@@ -71,13 +71,20 @@
   let sessionStatus = "idle";
   let reconnectTimer = null;
   let sessions = [];
-  let archivedSessions = []; // sessions sorted by archivedAt desc
   let visitorMode = false;
   let visitorSessionId = null;
   let pendingSummary = new Set(); // sessionIds awaiting summary generation
   let finishedUnread = new Set(); // sessionIds finished but not yet opened
   let lastSidebarUpdatedAt = {}; // sessionId -> last known updatedAt
-  let messageQueue = []; // messages queued while disconnected
+  let lastSeqBySession = {};
+  let currentSessionRefreshPromise = null;
+  let pendingCurrentSessionRefresh = false;
+  let pendingCurrentSessionRefreshReset = false;
+  const sidebarSessionRefreshPromises = new Map();
+  const pendingSidebarSessionRefreshes = new Set();
+  const jsonResponseCache = new Map();
+  const eventBodyCache = new Map();
+  const eventBodyRequests = new Map();
 
   let currentTokens = 0;
 
@@ -100,9 +107,12 @@
   let toolsList = [];
   let isDesktop = window.matchMedia("(min-width: 768px)").matches;
   const ADD_MORE_TOOL_VALUE = "__add_more__";
+  const COLLAPSED_GROUPS_STORAGE_KEY = "collapsedSessionGroups";
   let isSavingToolConfig = false;
   let collapsedFolders = JSON.parse(
-    localStorage.getItem("collapsedFolders") || "{}",
+    localStorage.getItem(COLLAPSED_GROUPS_STORAGE_KEY) ||
+      localStorage.getItem("collapsedFolders") ||
+      "{}",
   );
 
   // Thinking block state
@@ -262,8 +272,29 @@
     sessions.sort((a, b) => getSessionSortTime(b) - getSessionSortTime(a));
   }
 
+  function getArchivedSessionSortTime(session) {
+    const stamp = session?.archivedAt || session?.updatedAt || session?.created || "";
+    const time = new Date(stamp).getTime();
+    return Number.isFinite(time) ? time : 0;
+  }
+
+  function getActiveSessions() {
+    return sessions.filter((session) => !session.archived);
+  }
+
+  function getArchivedSessions() {
+    return sessions
+      .filter((session) => session.archived)
+      .slice()
+      .sort((a, b) => getArchivedSessionSortTime(b) - getArchivedSessionSortTime(a));
+  }
+
   function getLatestSession() {
     return sessions[0] || null;
+  }
+
+  function getLatestActiveSession() {
+    return sessions.find((session) => !session.archived) || null;
   }
 
   function resolveRestoreTargetSession() {
@@ -277,7 +308,7 @@
       const current = sessions.find((session) => session.id === currentSessionId);
       if (current) return current;
     }
-    return getLatestSession();
+    return getLatestActiveSession() || getLatestSession();
   }
 
   function applyNavigationState(rawState) {
@@ -291,8 +322,8 @@
       if (target) {
         attachSession(target.id, target);
         pendingNavigationState = null;
-      } else if (ws && ws.readyState === WebSocket.OPEN) {
-        wsSend({ action: "list" });
+      } else {
+        dispatchAction({ action: "list" });
       }
       syncBrowserState({
         sessionId: next.sessionId,
@@ -374,14 +405,43 @@
     }
   }
 
-  async function fetchJsonOrRedirect(url, options) {
-    const res = await fetch(url, options);
+  function buildJsonCacheKey(url) {
+    try {
+      const resolved = new URL(url, window.location.origin);
+      return `${resolved.pathname}${resolved.search}`;
+    } catch {
+      return String(url);
+    }
+  }
+
+  async function fetchJsonOrRedirect(url, options = {}) {
+    const method = String(options.method || "GET").toUpperCase();
+    const isGet = method === "GET";
+    const cacheKey = isGet ? buildJsonCacheKey(url) : null;
+    const cached = cacheKey ? jsonResponseCache.get(cacheKey) : null;
+    const headers = new Headers(options.headers || {});
+    if (cached?.etag) {
+      headers.set("If-None-Match", cached.etag);
+    }
+
+    const res = await fetch(url, {
+      ...options,
+      method,
+      headers,
+    });
     const redirectedToLogin =
       res.redirected && new URL(res.url, window.location.href).pathname === "/login";
 
     if (res.status === 401 || redirectedToLogin) {
       redirectToLogin();
       throw new Error("Authentication required");
+    }
+
+    if (res.status === 304) {
+      if (!cached) {
+        throw new Error("Cache revalidation failed");
+      }
+      return cached.data;
     }
 
     const contentType = res.headers.get("content-type") || "";
@@ -397,7 +457,230 @@
       throw new Error("Expected JSON response");
     }
 
+    if (cacheKey) {
+      const etag = res.headers.get("etag");
+      if (etag) {
+        jsonResponseCache.set(cacheKey, { etag, data });
+      } else {
+        jsonResponseCache.delete(cacheKey);
+      }
+    }
+
     return data;
+  }
+
+  function createRequestId() {
+    if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+    return `req_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  }
+
+  function upsertSession(session) {
+    if (!session?.id) return null;
+    const previous = sessions.find((entry) => entry.id === session.id);
+    const normalized = {
+      ...session,
+      status: normalizeSessionStatus(session.status, previous?.status),
+    };
+    const index = sessions.findIndex((entry) => entry.id === session.id);
+    if (index === -1) {
+      sessions.push(normalized);
+    } else {
+      sessions[index] = normalized;
+    }
+    sortSessionsInPlace();
+    return normalized;
+  }
+
+  async function fetchSessionsList() {
+    if (visitorMode) return [];
+    const data = await fetchJsonOrRedirect("/api/sessions");
+    const previousMap = new Map(sessions.map((session) => [session.id, session]));
+    sessions = (data.sessions || []).map((session) => ({
+      ...session,
+      status: normalizeSessionStatus(session.status, previousMap.get(session.id)?.status),
+    }));
+    sortSessionsInPlace();
+    renderSessionList();
+    if (activeTab === "progress") {
+      renderProgressPanel(lastProgressState);
+    }
+    if (currentSessionId && !sessions.some((session) => session.id === currentSessionId)) {
+      currentSessionId = null;
+      hasAttachedSession = false;
+      clearMessages();
+      showEmpty();
+    }
+    return sessions;
+  }
+
+  function applyAttachedSessionState(id, session) {
+    currentSessionId = id;
+    hasAttachedSession = true;
+    currentTokens = 0;
+    contextTokens.style.display = "none";
+    compactBtn.style.display = "none";
+    dropToolsBtn.style.display = "none";
+    finishedUnread.delete(id);
+
+    const displayName = getSessionDisplayName(session);
+    headerTitle.textContent = displayName;
+    updateStatus("connected", session?.status || "idle", session?.renameState, session?.archived === true);
+
+    if (session?.tool && toolsList.some((tool) => tool.id === session.tool)) {
+      inlineToolSelect.value = session.tool;
+      const previousTool = selectedTool;
+      selectedTool = session.tool;
+      if (previousTool !== selectedTool) {
+        loadModelsForCurrentTool();
+      }
+    }
+
+    restoreDraft();
+    renderSessionList();
+    updateResumeButton();
+    syncBrowserState();
+    syncShareButton();
+  }
+
+  async function fetchSessionState(sessionId) {
+    const data = await fetchJsonOrRedirect(`/api/sessions/${encodeURIComponent(sessionId)}`);
+    const normalized = upsertSession(data.session);
+    if (normalized && currentSessionId === sessionId) {
+      applyAttachedSessionState(sessionId, normalized);
+    }
+    return normalized;
+  }
+
+  async function fetchSessionEvents(sessionId, { reset = false } = {}) {
+    const afterSeq = reset ? 0 : lastSeqBySession[sessionId] || 0;
+    const data = await fetchJsonOrRedirect(
+      `/api/sessions/${encodeURIComponent(sessionId)}/events?afterSeq=${afterSeq}&limit=500`,
+    );
+    const events = data.events || [];
+    if (reset) {
+      clearMessages();
+      if (events.length === 0) {
+        showEmpty();
+      }
+      for (const event of events) {
+        renderEvent(event, false);
+      }
+      if (events.length > 0) scrollToBottom();
+      checkPendingMessage(events);
+    } else {
+      for (const event of events) {
+        if (event.type === "message" && event.role === "user") {
+          const optimistic = document.getElementById("optimistic-msg");
+          if (optimistic) optimistic.remove();
+          const pending = getPendingMessage();
+          if (pending && (!pending.requestId || pending.requestId === event.requestId)) {
+            clearPendingMessage();
+          }
+        }
+        renderEvent(event, true);
+      }
+    }
+    lastSeqBySession[sessionId] = data.cursor?.nextAfterSeq || afterSeq;
+    return events;
+  }
+
+  async function runCurrentSessionRefresh(sessionId, { resetEvents = false } = {}) {
+    const session = await fetchSessionState(sessionId);
+    if (currentSessionId !== sessionId) return session;
+    await fetchSessionEvents(sessionId, { reset: resetEvents });
+    return session;
+  }
+
+  async function refreshCurrentSession({ resetEvents = false } = {}) {
+    const sessionId = currentSessionId;
+    if (!sessionId) return null;
+    if (currentSessionRefreshPromise) {
+      pendingCurrentSessionRefresh = true;
+      pendingCurrentSessionRefreshReset = pendingCurrentSessionRefreshReset || resetEvents;
+      return currentSessionRefreshPromise;
+    }
+    currentSessionRefreshPromise = (async () => {
+      try {
+        return await runCurrentSessionRefresh(sessionId, { resetEvents });
+      } finally {
+        currentSessionRefreshPromise = null;
+        if (pendingCurrentSessionRefresh) {
+          const nextReset = pendingCurrentSessionRefreshReset;
+          pendingCurrentSessionRefresh = false;
+          pendingCurrentSessionRefreshReset = false;
+          refreshCurrentSession({ resetEvents: nextReset }).catch(() => {});
+        }
+      }
+    })();
+    return currentSessionRefreshPromise;
+  }
+
+  async function refreshSidebarSession(sessionId) {
+    if (!sessionId || visitorMode) return null;
+    if (sessionId === currentSessionId) {
+      return refreshCurrentSession();
+    }
+    if (sidebarSessionRefreshPromises.has(sessionId)) {
+      pendingSidebarSessionRefreshes.add(sessionId);
+      return sidebarSessionRefreshPromises.get(sessionId);
+    }
+    const request = (async () => {
+      try {
+        return await fetchSessionState(sessionId);
+      } catch (error) {
+        if (error?.message === "Session not found") {
+          const nextSessions = sessions.filter((session) => session.id !== sessionId);
+          if (nextSessions.length !== sessions.length) {
+            sessions = nextSessions;
+            renderSessionList();
+          }
+          return null;
+        }
+        throw error;
+      } finally {
+        sidebarSessionRefreshPromises.delete(sessionId);
+        if (pendingSidebarSessionRefreshes.delete(sessionId)) {
+          refreshSidebarSession(sessionId).catch(() => {});
+        }
+      }
+    })();
+    sidebarSessionRefreshPromises.set(sessionId, request);
+    return request;
+  }
+
+  async function refreshRealtimeViews() {
+    if (visitorMode) {
+      if (currentSessionId) {
+        await refreshCurrentSession().catch(() => {});
+      }
+      return;
+    }
+
+    await fetchSessionsList().catch(() => {});
+    if (currentSessionId) {
+      await refreshCurrentSession().catch(() => {});
+    }
+    if (activeTab === "progress") {
+      await fetchSidebarState().catch(() => {});
+    }
+  }
+
+  async function bootstrapViaHttp() {
+    if (visitorMode && visitorSessionId) {
+      currentSessionId = visitorSessionId;
+      attachSession(visitorSessionId, { id: visitorSessionId, name: "Session", status: "idle" });
+      await refreshCurrentSession({ resetEvents: true });
+      return;
+    }
+    await fetchSessionsList();
+    if (currentSessionId) {
+      await refreshCurrentSession({ resetEvents: true });
+    } else {
+      const initialSession = getLatestActiveSession() || getLatestSession();
+      if (initialSession) {
+        attachSession(initialSession.id, initialSession);
+      }
+    }
   }
 
   async function setupPushNotifications() {
@@ -578,7 +861,7 @@
       modelLines,
       ``,
       `Work in the RemoteLab repo root (usually \`~/code/remotelab\`; adjust if your checkout lives elsewhere).`,
-      `Read \`CLAUDE.md\` and \`notes/provider-architecture.md\` first.`,
+      `Read \`AGENTS.md\` (legacy \`CLAUDE.md\` is only a compatibility shim) and \`notes/provider-architecture.md\` first.`,
       ``,
       `Please:`,
       `1. Decide whether this can stay a simple provider bound to an existing runtime family or needs full provider code.`,
@@ -1016,26 +1299,13 @@
     ws = new WebSocket(`${proto}//${location.host}/ws`);
 
     ws.onopen = () => {
-      updateStatus("connected", "idle");
-      if (visitorMode && visitorSessionId) {
-        // Visitor: skip session list, directly attach to assigned session
-        currentSessionId = visitorSessionId;
-        hasAttachedSession = true;
-        ws.send(JSON.stringify({ action: "attach", sessionId: visitorSessionId }));
-      } else {
-        ws.send(JSON.stringify({ action: "list" }));
-        ws.send(JSON.stringify({ action: "list_archived" }));
-        if (currentSessionId && hasAttachedSession) {
-          ws.send(
-            JSON.stringify({ action: "attach", sessionId: currentSessionId }),
-          );
-        }
-      }
-      // Flush messages queued while disconnected
-      for (const m of messageQueue) {
-        ws.send(JSON.stringify(m));
-      }
-      messageQueue = [];
+      updateStatus(
+        "connected",
+        getCurrentSession()?.status || "idle",
+        getCurrentSession()?.renameState,
+        getCurrentSession()?.archived === true,
+      );
+      refreshRealtimeViews().catch(() => {});
     };
 
     ws.onmessage = (e) => {
@@ -1049,7 +1319,12 @@
     };
 
     ws.onclose = () => {
-      updateStatus("disconnected", "idle");
+      updateStatus(
+        "disconnected",
+        getCurrentSession()?.status || "idle",
+        getCurrentSession()?.renameState,
+        getCurrentSession()?.archived === true,
+      );
       scheduleReconnect();
     };
 
@@ -1064,9 +1339,122 @@
     }, 3000);
   }
 
-  function wsSend(msg) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(msg));
+  async function dispatchAction(msg) {
+    try {
+      switch (msg.action) {
+        case "list":
+          await fetchSessionsList();
+          return;
+        case "attach":
+          currentSessionId = msg.sessionId;
+          hasAttachedSession = true;
+          lastSeqBySession[msg.sessionId] = 0;
+          await refreshCurrentSession({ resetEvents: true });
+          return;
+        case "create": {
+          const data = await fetchJsonOrRedirect("/api/sessions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ folder: msg.folder || "~", tool: msg.tool, name: msg.name || "" }),
+          });
+          if (data.session) {
+            const session = upsertSession(data.session) || data.session;
+            renderSessionList();
+            attachSession(session.id, session);
+          } else {
+            await fetchSessionsList();
+          }
+          return;
+        }
+        case "rename": {
+          const data = await fetchJsonOrRedirect(`/api/sessions/${encodeURIComponent(msg.sessionId)}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: msg.name }),
+          });
+          if (data.session) {
+            const session = upsertSession(data.session) || data.session;
+            renderSessionList();
+            if (currentSessionId === msg.sessionId) {
+              applyAttachedSessionState(msg.sessionId, session);
+            }
+          } else if (currentSessionId === msg.sessionId) {
+            await refreshCurrentSession();
+          } else {
+            await refreshSidebarSession(msg.sessionId);
+          }
+          return;
+        }
+        case "archive":
+        case "unarchive": {
+          const data = await fetchJsonOrRedirect(`/api/sessions/${encodeURIComponent(msg.sessionId)}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ archived: msg.action === "archive" }),
+          });
+          if (data.session) {
+            const session = upsertSession(data.session) || data.session;
+            renderSessionList();
+            if (currentSessionId === msg.sessionId) {
+              applyAttachedSessionState(msg.sessionId, session);
+            }
+          } else if (currentSessionId === msg.sessionId) {
+            await refreshCurrentSession();
+          } else {
+            await fetchSessionsList();
+          }
+          return;
+        }
+        case "send": {
+          const pending = getPendingMessage();
+          const requestId = msg.requestId || pending?.requestId || createRequestId();
+          savePendingMessage(msg.text, requestId);
+          await fetchJsonOrRedirect(`/api/sessions/${encodeURIComponent(currentSessionId)}/messages`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              requestId,
+              text: msg.text,
+              ...(msg.images ? { images: msg.images } : {}),
+              ...(msg.tool ? { tool: msg.tool } : {}),
+              ...(msg.model ? { model: msg.model } : {}),
+              ...(msg.effort ? { effort: msg.effort } : {}),
+              ...(msg.thinking ? { thinking: true } : {}),
+            }),
+          });
+          await refreshCurrentSession();
+          return;
+        }
+        case "cancel":
+          await fetchJsonOrRedirect(`/api/sessions/${encodeURIComponent(currentSessionId)}/cancel`, {
+            method: "POST",
+          });
+          await refreshCurrentSession();
+          return;
+        case "resume_interrupted":
+          await fetchJsonOrRedirect(`/api/sessions/${encodeURIComponent(currentSessionId)}/resume`, {
+            method: "POST",
+          });
+          await refreshCurrentSession();
+          return;
+        case "compact":
+          await fetchJsonOrRedirect(`/api/sessions/${encodeURIComponent(currentSessionId)}/compact`, {
+            method: "POST",
+          });
+          await refreshCurrentSession();
+          return;
+        case "drop_tools":
+          await fetchJsonOrRedirect(`/api/sessions/${encodeURIComponent(currentSessionId)}/drop-tools`, {
+            method: "POST",
+          });
+          lastSeqBySession[currentSessionId] = 0;
+          await refreshCurrentSession({ resetEvents: true });
+          return;
+        default:
+          return;
+      }
+    } catch (error) {
+      console.error("HTTP action failed:", error.message);
     }
   }
 
@@ -1084,151 +1472,32 @@
 
   function updateResumeButton() {
     const session = getCurrentSession();
-    const canResume = !!session && session.status === "interrupted" && session.recoverable;
+    const canResume = !!session && !session.archived && session.status === "interrupted" && session.recoverable;
     resumeBtn.style.display = canResume ? "" : "none";
     resumeBtn.disabled = !canResume;
   }
 
   function handleWsMessage(msg) {
     switch (msg.type) {
-      case "sessions":
-        sessions = (msg.sessions || []).map((session) => {
-          const prevEntry = sessions.find((s) => s.id === session.id);
-          return {
-            ...session,
-            status: normalizeSessionStatus(
-              session.status || "idle",
-              prevEntry?.status || "idle",
-            ),
-          };
-        });
-        sortSessionsInPlace();
-        renderSessionList();
-        restoreOwnerSessionSelection();
-        syncShareButton();
+      case "sessions_invalidated":
+        fetchSessionsList().catch(() => {});
         break;
 
-      case "session":
-        if (msg.session) {
-          const prevEntry = sessions.find((s) => s.id === msg.session.id);
-          const wasRunning = prevEntry?.status === "running";
-          const isCurrentSession = msg.session.id === currentSessionId;
-          const prevStatus = isCurrentSession ? sessionStatus : prevEntry?.status || "idle";
-          const nextStatus = normalizeSessionStatus(
-            msg.session.status || "idle",
-            prevEntry?.status || "idle",
-          );
-          const normalizedSession = { ...msg.session, status: nextStatus };
-          const idx = sessions.findIndex((s) => s.id === msg.session.id);
-          if (idx >= 0) sessions[idx] = normalizedSession;
-          else sessions.push(normalizedSession);
-          sortSessionsInPlace();
-          if (isCurrentSession) {
-            const displayName =
-              normalizedSession.name || normalizedSession.folder?.split("/").pop() || "Session";
-            headerTitle.textContent = displayName;
-            sessionStatus = normalizedSession.status || "idle";
-            updateStatus("connected", sessionStatus, normalizedSession.renameState);
-          }
-          if (
-            isCurrentSession &&
-            prevStatus === "running" &&
-            sessionStatus === "done"
-          ) {
-            notifyCompletion(normalizedSession);
-          }
-          // Mark finished-unread for sessions that completed without being viewed
-          if (wasRunning && nextStatus === "done") {
-            const isActiveAndVisible =
-              msg.session.id === currentSessionId &&
-              document.visibilityState === "visible";
-            if (!isActiveAndVisible) {
-              finishedUnread.add(msg.session.id);
-            }
-          }
-          // Mark as pending summary when any session completes (only if progress enabled)
-          if (wasRunning && nextStatus === "done" && progressEnabled) {
-            pendingSummary.add(msg.session.id);
-            if (activeTab === "progress") renderProgressPanel(lastProgressState);
-          }
-          renderSessionList();
-          updateResumeButton();
-          syncShareButton();
+      case "session_invalidated":
+        if (!msg.sessionId) {
+          refreshRealtimeViews().catch(() => {});
+          break;
+        }
+        if (msg.sessionId === currentSessionId) {
+          refreshCurrentSession().catch(() => {});
+        } else if (!visitorMode) {
+          refreshSidebarSession(msg.sessionId).catch(() => {});
         }
         break;
 
-      case "history":
-        clearMessages();
-        if (msg.events && msg.events.length > 0) {
-          for (const evt of msg.events) renderEvent(evt, false);
-          scrollToBottom();
-        }
-        // Check for unconfirmed messages from a previous page load
-        checkPendingMessage(msg.events || []);
-        updateResumeButton();
-        break;
-
-      case "event":
-        if (msg.event) {
-          // Server confirmed our user message — remove optimistic bubble & clear pending
-          if (msg.event.type === "message" && msg.event.role === "user") {
-            const optimistic = document.getElementById("optimistic-msg");
-            if (optimistic) optimistic.remove();
-            clearPendingMessage();
-          }
-          renderEvent(msg.event, true);
-        }
-        break;
-
-      case "deleted":
-      case "archived":
-        sessions = sessions.filter((s) => s.id !== msg.sessionId);
-        localStorage.removeItem(`draft_${msg.sessionId}`);
-        clearPendingMessage(msg.sessionId);
-        if (currentSessionId === msg.sessionId) {
-          messageQueue = [];
-          currentSessionId = null;
-          hasAttachedSession = false;
-          clearMessages();
-          showEmpty();
-          updateStatus("connected", "idle");
-        }
-        renderSessionList();
-        restoreOwnerSessionSelection();
-        syncShareButton();
-        wsSend({ action: "list_archived" });
-        break;
-
-      case "archived_list":
-        archivedSessions = msg.sessions || [];
-        renderArchivedSection();
-        break;
-
-      case "unarchived":
-        if (msg.session) {
-          archivedSessions = archivedSessions.filter((s) => s.id !== msg.session.id);
-          const exists = sessions.find((s) => s.id === msg.session.id);
-          if (!exists) sessions.push(msg.session);
-          sortSessionsInPlace();
-          renderSessionList();
-          renderArchivedSection();
-        }
-        break;
-
-      case "sidebar_update":
-        if (msg.state) {
-          // Clear pending flags for sessions with new data
-          for (const [sessionId, entry] of Object.entries(msg.state.sessions || {})) {
-            if (pendingSummary.has(sessionId)) {
-              const prev = lastSidebarUpdatedAt[sessionId] || 0;
-              if ((entry.updatedAt || 0) > prev) {
-                pendingSummary.delete(sessionId);
-              }
-            }
-            lastSidebarUpdatedAt[sessionId] = entry.updatedAt || 0;
-          }
-          lastProgressState = msg.state;
-          if (activeTab === "progress") renderProgressPanel(msg.state);
+      case "sidebar_invalidated":
+        if (!visitorMode) {
+          fetchSidebarState().catch(() => {});
         }
         break;
 
@@ -1239,18 +1508,14 @@
   }
 
   // ---- Status ----
-  function updateStatus(connState, sessState, renameState) {
+  function updateStatus(connState, sessState, renameState, archived = false) {
     if (connState === "disconnected") {
       statusDot.className = "status-dot";
-      statusText.textContent = "reconnecting…";
-      // Keep input usable if we have a session — messages will be queued
-      if (!currentSessionId) {
-        msgInput.disabled = true;
-        sendBtn.style.display = "";
-        sendBtn.disabled = true;
-      }
-      cancelBtn.style.display = "none";
-      resumeBtn.style.display = "none";
+      statusText.textContent = "Reconnecting…";
+      msgInput.disabled = !currentSessionId || archived;
+      msgInput.placeholder = archived ? "Archived session — restore to continue" : "Message...";
+      sendBtn.style.display = "";
+      sendBtn.disabled = !currentSessionId || archived;
       return;
     }
     sessionStatus = sessState;
@@ -1261,33 +1526,37 @@
     const renameFailed = renameState === "failed";
     if (isRunning) {
       statusDot.className = "status-dot running";
-      statusText.textContent = "running";
+      statusText.textContent = archived ? "running · archived" : "running";
     } else if (isDone) {
-      statusDot.className = "status-dot done";
-      statusText.textContent = "done";
+      statusDot.className = archived ? "status-dot" : "status-dot done";
+      statusText.textContent = archived ? "archived" : "done";
     } else if (isInterrupted) {
-      statusDot.className = "status-dot interrupted";
-      statusText.textContent = "interrupted";
+      statusDot.className = archived ? "status-dot" : "status-dot interrupted";
+      statusText.textContent = archived ? "archived" : "interrupted";
     } else if (isRenaming) {
       statusDot.className = "status-dot renaming";
       statusText.textContent = "renaming…";
     } else if (renameFailed) {
       statusDot.className = "status-dot rename-failed";
       statusText.textContent = "rename failed";
+    } else if (archived) {
+      statusDot.className = "status-dot";
+      statusText.textContent = "archived";
     } else {
       statusDot.className = "status-dot";
       statusText.textContent = currentSessionId ? "idle" : "connected";
     }
     const hasSession = !!currentSessionId;
-    msgInput.disabled = !hasSession;
+    msgInput.disabled = !hasSession || archived;
+    msgInput.placeholder = archived ? "Archived session — restore to continue" : "Message...";
     sendBtn.style.display = isRunning ? "none" : "";
-    sendBtn.disabled = !hasSession;
+    sendBtn.disabled = !hasSession || archived;
     cancelBtn.style.display = isRunning && hasSession ? "flex" : "none";
-    imgBtn.disabled = !hasSession;
-    inlineToolSelect.disabled = visitorMode;
-    inlineModelSelect.disabled = !hasSession;
-    thinkingToggle.disabled = !hasSession;
-    effortSelect.disabled = !hasSession;
+    imgBtn.disabled = !hasSession || archived;
+    inlineToolSelect.disabled = visitorMode || archived;
+    inlineModelSelect.disabled = !hasSession || archived;
+    thinkingToggle.disabled = !hasSession || archived;
+    effortSelect.disabled = !hasSession || archived;
     updateResumeButton();
     syncShareButton();
   }
@@ -1363,8 +1632,11 @@
     const body = document.createElement("div");
     body.className = "thinking-body";
 
-    header.addEventListener("click", () => {
+    header.addEventListener("click", async () => {
       block.classList.toggle("collapsed");
+      if (!block.classList.contains("collapsed")) {
+        await hydrateLazyNodes(block);
+      }
     });
 
     block.appendChild(header);
@@ -1463,6 +1735,51 @@
     return currentThinkingBlock.body;
   }
 
+  function eventBodyCacheKey(sessionId, seq) {
+    return `${sessionId}:${seq}`;
+  }
+
+  async function fetchEventBody(sessionId, seq) {
+    const key = eventBodyCacheKey(sessionId, seq);
+    if (eventBodyCache.has(key)) return eventBodyCache.get(key);
+    if (eventBodyRequests.has(key)) return eventBodyRequests.get(key);
+    const request = fetchJsonOrRedirect(
+      `/api/sessions/${encodeURIComponent(sessionId)}/events/${seq}/body`,
+    )
+      .then((data) => {
+        const body = data.body || null;
+        eventBodyCache.set(key, body);
+        eventBodyRequests.delete(key);
+        return body;
+      })
+      .catch((error) => {
+        eventBodyRequests.delete(key);
+        throw error;
+      });
+    eventBodyRequests.set(key, request);
+    return request;
+  }
+
+  async function hydrateLazyNode(node) {
+    const sessionId = currentSessionId;
+    const seq = parseInt(node?.dataset?.eventSeq || "", 10);
+    if (!sessionId || !seq || node.dataset.bodyPending !== "true") return;
+    node.dataset.bodyPending = "loading";
+    try {
+      const body = await fetchEventBody(sessionId, seq);
+      node.textContent = body?.value || node.dataset.preview || "";
+      node.dataset.bodyPending = "false";
+    } catch (error) {
+      console.warn("[event-body] Failed to load body:", error.message);
+      node.dataset.bodyPending = "true";
+    }
+  }
+
+  async function hydrateLazyNodes(root) {
+    const nodes = root?.querySelectorAll?.('[data-body-pending="true"]') || [];
+    await Promise.all([...nodes].map((node) => hydrateLazyNode(node)));
+  }
+
   // ---- Render functions ----
   function renderMessage(evt) {
     const role = evt.role || "assistant";
@@ -1527,12 +1844,20 @@
     body.className = "tool-body";
     body.id = "tool_" + evt.id;
     const pre = document.createElement("pre");
-    pre.textContent = evt.toolInput || "";
+    pre.textContent = evt.toolInput || (evt.bodyAvailable ? "Load command…" : "");
+    if (evt.bodyAvailable && !evt.bodyLoaded) {
+      pre.dataset.eventSeq = String(evt.seq || "");
+      pre.dataset.bodyPending = "true";
+      pre.dataset.preview = evt.toolInput || "";
+    }
     body.appendChild(pre);
 
-    header.addEventListener("click", () => {
+    header.addEventListener("click", async () => {
       header.classList.toggle("expanded");
       body.classList.toggle("expanded");
+      if (body.classList.contains("expanded")) {
+        await hydrateLazyNodes(body);
+      }
     });
 
     card.appendChild(header);
@@ -1568,12 +1893,18 @@
           : "");
       const pre = document.createElement("pre");
       pre.className = "tool-result";
-      pre.textContent = evt.output || "";
+      pre.textContent = evt.output || (evt.bodyAvailable ? "Load result…" : "");
+      if (evt.bodyAvailable && !evt.bodyLoaded) {
+        pre.dataset.eventSeq = String(evt.seq || "");
+        pre.dataset.bodyPending = "true";
+        pre.dataset.preview = evt.output || "";
+      }
       body.appendChild(label);
       body.appendChild(pre);
       if (evt.exitCode && evt.exitCode !== 0) {
         targetCard.querySelector(".tool-header").classList.add("expanded");
         body.classList.add("expanded");
+        hydrateLazyNodes(body).catch(() => {});
       }
     }
   }
@@ -1592,7 +1923,12 @@
     const container = getThinkingBody();
     const div = document.createElement("div");
     div.className = "reasoning";
-    div.textContent = evt.content || "";
+    div.textContent = evt.content || (evt.bodyAvailable ? "Load thinking…" : "");
+    if (evt.bodyAvailable && !evt.bodyLoaded) {
+      div.dataset.eventSeq = String(evt.seq || "");
+      div.dataset.bodyPending = "true";
+      div.dataset.preview = evt.content || "";
+    }
     container.appendChild(div);
   }
 
@@ -1644,56 +1980,70 @@
     return el.innerHTML;
   }
 
+  function getShortFolder(folder) {
+    return (folder || "").replace(/^\/Users\/[^/]+/, "~");
+  }
+
+  function getFolderLabel(folder) {
+    const shortFolder = getShortFolder(folder);
+    return shortFolder.split("/").pop() || shortFolder || "Session";
+  }
+
+  function getSessionDisplayName(session) {
+    return session?.name || getFolderLabel(session?.folder) || "Session";
+  }
+
+  function getSessionGroupInfo(session) {
+    const group = typeof session?.group === "string" ? session.group.trim() : "";
+    if (group) {
+      return {
+        key: `group:${group}`,
+        label: group,
+        title: group,
+      };
+    }
+
+    const folder = session?.folder || "?";
+    const shortFolder = getShortFolder(folder);
+    return {
+      key: `folder:${folder}`,
+      label: getFolderLabel(folder),
+      title: shortFolder,
+    };
+  }
+
   // ---- Session list ----
   function renderSessionList() {
     sessionList.innerHTML = "";
 
     const groups = new Map();
-    for (const s of sessions) {
-      const folder = s.folder || "?";
-      if (!groups.has(folder)) groups.set(folder, []);
-      groups.get(folder).push(s);
+    for (const s of getActiveSessions()) {
+      const groupInfo = getSessionGroupInfo(s);
+      if (!groups.has(groupInfo.key)) {
+        groups.set(groupInfo.key, { ...groupInfo, sessions: [] });
+      }
+      groups.get(groupInfo.key).sessions.push(s);
     }
 
-    for (const [folder, folderSessions] of groups) {
+    for (const [groupKey, groupEntry] of groups) {
+      const folderSessions = groupEntry.sessions;
       const group = document.createElement("div");
       group.className = "folder-group";
 
-      const shortFolder = folder.replace(/^\/Users\/[^/]+/, "~");
-      const folderName = shortFolder.split("/").pop() || shortFolder;
-
       const header = document.createElement("div");
       header.className =
-        "folder-group-header" + (collapsedFolders[folder] ? " collapsed" : "");
+        "folder-group-header" +
+        (collapsedFolders[groupKey] ? " collapsed" : "");
       header.innerHTML = `<span class="folder-chevron">&#9660;</span>
-        <span class="folder-name" title="${esc(shortFolder)}">${esc(folderName)}</span>
-        <span class="folder-count">${folderSessions.length}</span>
-        <button class="folder-add-btn" title="New session">+</button>`;
+        <span class="folder-name" title="${esc(groupEntry.title)}">${esc(groupEntry.label)}</span>
+        <span class="folder-count">${folderSessions.length}</span>`;
       header.addEventListener("click", (e) => {
-        if (e.target.classList.contains("folder-add-btn")) return;
         header.classList.toggle("collapsed");
-        collapsedFolders[folder] = header.classList.contains("collapsed");
+        collapsedFolders[groupKey] = header.classList.contains("collapsed");
         localStorage.setItem(
-          "collapsedFolders",
+          COLLAPSED_GROUPS_STORAGE_KEY,
           JSON.stringify(collapsedFolders),
         );
-      });
-      header.querySelector(".folder-add-btn").addEventListener("click", (e) => {
-        e.stopPropagation();
-        const tool = preferredTool || selectedTool || toolsList[0]?.id;
-        if (!tool) return;
-        if (!isDesktop) closeSidebarFn();
-        wsSend({ action: "create", folder, tool });
-        const handler = (evt) => {
-          let msg;
-          try { msg = JSON.parse(evt.data); } catch { return; }
-          if (msg.type === "session" && msg.session) {
-            ws.removeEventListener("message", handler);
-            attachSession(msg.session.id, msg.session);
-            wsSend({ action: "list" });
-          }
-        };
-        ws.addEventListener("message", handler);
       });
 
       const items = document.createElement("div");
@@ -1704,7 +2054,7 @@
         div.className =
           "session-item" + (s.id === currentSessionId ? " active" : "");
 
-        const displayName = s.name || s.tool || "session";
+        const displayName = getSessionDisplayName(s);
         const metaParts = [];
         if (s.name && s.tool) metaParts.push(s.tool);
         if (s.status === "running") metaParts.push("●&nbsp;running");
@@ -1750,7 +2100,7 @@
 
         div.querySelector(".archive").addEventListener("click", (e) => {
           e.stopPropagation();
-          wsSend({ action: "archive", sessionId: s.id });
+          dispatchAction({ action: "archive", sessionId: s.id });
         });
 
         items.appendChild(div);
@@ -1760,12 +2110,14 @@
       group.appendChild(items);
       sessionList.appendChild(group);
     }
+
+    renderArchivedSection();
   }
 
   function renderArchivedSection() {
+    const archivedSessions = getArchivedSessions();
     const existing = document.getElementById("archivedSection");
     if (existing) existing.remove();
-    if (archivedSessions.length === 0) return;
 
     const section = document.createElement("div");
     section.id = "archivedSection";
@@ -1784,26 +2136,39 @@
     const items = document.createElement("div");
     items.className = "archived-items";
 
-    for (const s of archivedSessions) {
-      const div = document.createElement("div");
-      div.className = "session-item archived-item";
-      const displayName = s.name || s.tool || "session";
-      const shortFolder = (s.folder || "").replace(/^\/Users\/[^/]+/, "~");
-      const folderName = shortFolder.split("/").pop() || shortFolder;
-      const date = s.archivedAt ? new Date(s.archivedAt).toLocaleDateString() : "";
-      div.innerHTML = `
-        <div class="session-item-info">
-          <div class="session-item-name">${esc(displayName)}</div>
-          <div class="session-item-meta"><span title="${esc(shortFolder)}">${esc(folderName)}</span>${date ? ` · ${date}` : ""}</div>
-        </div>
-        <div class="session-item-actions">
-          <button class="session-action-btn restore" title="Restore" data-id="${s.id}">&#8617;</button>
-        </div>`;
-      div.querySelector(".restore").addEventListener("click", (e) => {
-        e.stopPropagation();
-        wsSend({ action: "unarchive", sessionId: s.id });
-      });
-      items.appendChild(div);
+    if (archivedSessions.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "archived-empty";
+      empty.textContent = "No archived sessions";
+      items.appendChild(empty);
+    } else {
+      for (const s of archivedSessions) {
+        const div = document.createElement("div");
+        div.className =
+          "session-item archived-item" + (s.id === currentSessionId ? " active" : "");
+        const displayName = getSessionDisplayName(s);
+        const groupInfo = getSessionGroupInfo(s);
+        const shortFolder = getShortFolder(s.folder || "");
+        const date = s.archivedAt ? new Date(s.archivedAt).toLocaleDateString() : "";
+        div.innerHTML = `
+          <div class="session-item-info">
+            <div class="session-item-name">${esc(displayName)}</div>
+            <div class="session-item-meta"><span title="${esc(shortFolder || groupInfo.title)}">${esc(groupInfo.label)}</span>${date ? ` · ${date}` : ""}</div>
+          </div>
+          <div class="session-item-actions">
+            <button class="session-action-btn restore" title="Restore" data-id="${s.id}">&#8617;</button>
+          </div>`;
+        div.addEventListener("click", (e) => {
+          if (e.target.classList.contains("restore")) return;
+          attachSession(s.id, s);
+          if (!isDesktop) closeSidebarFn();
+        });
+        div.querySelector(".restore").addEventListener("click", (e) => {
+          e.stopPropagation();
+          dispatchAction({ action: "unarchive", sessionId: s.id });
+        });
+        items.appendChild(div);
+      }
     }
 
     section.appendChild(header);
@@ -1824,7 +2189,7 @@
     function commit() {
       const newName = input.value.trim();
       if (newName && newName !== current) {
-        wsSend({ action: "rename", sessionId: session.id, name: newName });
+        dispatchAction({ action: "rename", sessionId: session.id, name: newName });
       } else {
         renderSessionList(); // revert
       }
@@ -1845,45 +2210,12 @@
 
   function attachSession(id, session) {
     const shouldReattach = !hasAttachedSession || currentSessionId !== id;
-    currentSessionId = id;
-    hasAttachedSession = true;
-    currentTokens = 0;
-    contextTokens.style.display = "none";
-    compactBtn.style.display = "none";
-    dropToolsBtn.style.display = "none";
-    finishedUnread.delete(id);
     if (shouldReattach) {
       clearMessages();
-      wsSend({ action: "attach", sessionId: id });
+      dispatchAction({ action: "attach", sessionId: id });
     }
-
-    const displayName =
-      session?.name || session?.folder?.split("/").pop() || "Session";
-    headerTitle.textContent = displayName;
-    updateStatus("connected", session?.status || "idle", session?.renameState);
-    msgInput.disabled = false;
-    sendBtn.disabled = false;
-    imgBtn.disabled = false;
-    inlineToolSelect.disabled = false;
-    inlineModelSelect.disabled = false;
-    thinkingToggle.disabled = false;
-    effortSelect.disabled = false;
-
-    if (session?.tool && toolsList.some((t) => t.id === session.tool)) {
-      inlineToolSelect.value = session.tool;
-      const prevTool = selectedTool;
-      selectedTool = session.tool;
-      if (prevTool !== selectedTool) {
-        loadModelsForCurrentTool();
-      }
-    }
-
-    restoreDraft();
+    applyAttachedSessionState(id, session);
     msgInput.focus();
-    renderSessionList();
-    updateResumeButton();
-    syncBrowserState();
-    syncShareButton();
   }
 
   // ---- Sidebar ----
@@ -1912,17 +2244,7 @@
     if (!isDesktop) closeSidebarFn();
     const tool = preferredTool || selectedTool || toolsList[0]?.id;
     if (!tool) return;
-    wsSend({ action: "create", folder: "~", tool });
-    const handler = (e) => {
-      let msg;
-      try { msg = JSON.parse(e.data); } catch { return; }
-      if (msg.type === "session" && msg.session) {
-        ws.removeEventListener("message", handler);
-        attachSession(msg.session.id, msg.session);
-        wsSend({ action: "list" });
-      }
-    };
-    ws.addEventListener("message", handler);
+    dispatchAction({ action: "create", folder: "~", tool });
   });
 
   // ---- Image handling ----
@@ -2000,17 +2322,21 @@
   });
 
   // ---- Send message ----
-  function sendMessage() {
+  function sendMessage(existingRequestId) {
     const text = msgInput.value.trim();
-    if ((!text && pendingImages.length === 0) || !currentSessionId) return;
+    const currentSession = getCurrentSession();
+    if ((!text && pendingImages.length === 0) || !currentSessionId || currentSession?.archived) return;
+
+    const requestId = existingRequestId || createRequestId();
 
     // Protect the message: save to localStorage before anything else
-    savePendingMessage(text);
+    savePendingMessage(text, requestId);
 
     // Render optimistic bubble BEFORE revoking image URLs
     renderOptimisticMessage(text, pendingImages);
 
     const msg = { action: "send", text: text || "(image)" };
+    msg.requestId = requestId;
     if (!visitorMode) {
       if (selectedTool) msg.tool = selectedTool;
       if (selectedModel) msg.model = selectedModel;
@@ -2029,27 +2355,23 @@
       pendingImages = [];
       renderImagePreviews();
     }
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(msg));
-    } else {
-      messageQueue.push(msg);
-    }
+    dispatchAction(msg);
     msgInput.value = "";
     clearDraft();
     autoResizeInput();
   }
 
-  cancelBtn.addEventListener("click", () => wsSend({ action: "cancel" }));
-  resumeBtn.addEventListener("click", () => wsSend({ action: "resume_interrupted" }));
+  cancelBtn.addEventListener("click", () => dispatchAction({ action: "cancel" }));
+  resumeBtn.addEventListener("click", () => dispatchAction({ action: "resume_interrupted" }));
 
   compactBtn.addEventListener("click", () => {
     if (!currentSessionId) return;
-    wsSend({ action: "compact" });
+    dispatchAction({ action: "compact" });
   });
 
   dropToolsBtn.addEventListener("click", () => {
     if (!currentSessionId) return;
-    wsSend({ action: "drop_tools" });
+    dispatchAction({ action: "drop_tools" });
   });
 
   sendBtn.addEventListener("click", sendMessage);
@@ -2098,11 +2420,11 @@
   // ---- Pending message protection ----
   // Saves sent message to localStorage until server confirms receipt.
   // Prevents message loss on refresh, network failure, or server crash.
-  function savePendingMessage(text) {
+  function savePendingMessage(text, requestId) {
     if (!currentSessionId) return;
     localStorage.setItem(
       `pending_msg_${currentSessionId}`,
-      JSON.stringify({ text, timestamp: Date.now() }),
+      JSON.stringify({ text, requestId, timestamp: Date.now() }),
     );
   }
   function clearPendingMessage(sessionId) {
@@ -2178,7 +2500,7 @@
       wrap.remove();
       clearPendingMessage();
       msgInput.value = pending.text;
-      sendMessage();
+      sendMessage(pending.requestId);
     };
 
     const editBtn = document.createElement("button");
@@ -2221,8 +2543,9 @@
       .find((e) => e.type === "message" && e.role === "user");
     if (
       lastUserMsg &&
-      lastUserMsg.content === pending.text &&
-      lastUserMsg.timestamp >= pending.timestamp - 5000
+      ((pending.requestId && lastUserMsg.requestId === pending.requestId) ||
+        (lastUserMsg.content === pending.text &&
+          lastUserMsg.timestamp >= pending.timestamp - 5000))
     ) {
       clearPendingMessage();
       return;
@@ -2238,7 +2561,6 @@
       localStorage.getItem(ACTIVE_SIDEBAR_TAB_STORAGE_KEY) ||
       "sessions",
   ); // "sessions" | "progress"
-  let progressPollTimer = null;
   let lastProgressState = { sessions: {} };
   let progressEnabled = false; // loaded from backend, default off
 
@@ -2259,12 +2581,6 @@
     newSessionBtn.classList.toggle("hidden", activeTab === "progress");
     if (activeTab === "progress") {
       fetchSidebarState();
-      if (progressEnabled && !progressPollTimer) {
-        progressPollTimer = setInterval(fetchSidebarState, 30_000);
-      }
-    } else {
-      clearInterval(progressPollTimer);
-      progressPollTimer = null;
     }
     if (syncState) {
       syncBrowserState();
@@ -2303,11 +2619,8 @@
           body: JSON.stringify({ progressEnabled }),
         });
       } catch {}
-      if (progressEnabled && !progressPollTimer) {
-        progressPollTimer = setInterval(fetchSidebarState, 30_000);
-      } else if (!progressEnabled) {
-        clearInterval(progressPollTimer);
-        progressPollTimer = null;
+      if (progressEnabled && activeTab === "progress") {
+        fetchSidebarState().catch(() => {});
       }
       renderProgressPanel(lastProgressState);
     });
@@ -2316,10 +2629,17 @@
 
   function renderProgressPanel(state) {
     progressPanel.innerHTML = "";
-    const stateEntries = Object.entries(state.sessions || {});
+    const stateEntries = Object.entries(state.sessions || {}).filter(([sessionId]) => {
+      const session = sessions.find((entry) => entry.id === sessionId);
+      return !session?.archived;
+    });
 
     // Collect all session IDs to render: those with data + those pending without data yet
-    const pendingOnly = [...pendingSummary].filter(id => !state.sessions[id]);
+    const pendingOnly = [...pendingSummary].filter((id) => {
+      if (state.sessions[id]) return false;
+      const session = sessions.find((entry) => entry.id === id);
+      return !session?.archived;
+    });
     const allEntries = [
       ...stateEntries,
       ...pendingOnly.map(id => {
@@ -2353,8 +2673,11 @@
       const card = document.createElement("div");
       card.className = "progress-card";
 
-      const folderName = (entry.folder || "").split("/").pop() || entry.folder || "unknown";
-      const displayName = entry.name || folderName;
+      const groupInfo = getSessionGroupInfo(entry);
+      const displayName = entry.name || getFolderLabel(entry.folder) || "Session";
+      const groupingTitle = entry.group
+        ? entry.description || entry.folder || groupInfo.title
+        : groupInfo.title;
 
       const summaryIndicator = isSummarizing
         ? '<div class="progress-summarizing">Summarizing...</div>'
@@ -2365,7 +2688,7 @@
           <div class="progress-card-header">
             <div class="progress-card-name">${escapeHtml(displayName)}</div>
           </div>
-          <div class="progress-card-folder">${escapeHtml(entry.folder || "")}</div>
+          <div class="progress-card-folder" title="${escapeHtml(groupingTitle || "")}">${escapeHtml(groupInfo.label)}</div>
           <div class="progress-summarizing">Summarizing...</div>
         `;
       } else {
@@ -2374,7 +2697,7 @@
             ${isRunning ? '<div class="progress-running-dot"></div>' : ''}
             <div class="progress-card-name">${escapeHtml(displayName)}</div>
           </div>
-          <div class="progress-card-folder">${escapeHtml(entry.folder || "")}</div>
+          <div class="progress-card-folder" title="${escapeHtml(groupingTitle || "")}">${escapeHtml(groupInfo.label)}</div>
           <div class="progress-card-bg">${escapeHtml(entry.background || "")}</div>
           <div class="progress-card-action">↳ ${escapeHtml(entry.lastAction || "")}</div>
           <div class="progress-card-footer">
@@ -2528,6 +2851,7 @@
       await loadInlineTools();
       initializePushNotifications();
     }
+    await bootstrapViaHttp();
     connect();
   }
 

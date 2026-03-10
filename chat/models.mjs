@@ -1,7 +1,7 @@
 import { readFile } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
-import { getToolDefinition } from '../lib/tools.mjs';
+import { getToolDefinitionAsync } from '../lib/tools.mjs';
 
 // Claude Code has no model cache file — hardcode the known aliases.
 // These alias names are stable; the full model IDs behind them update automatically.
@@ -10,6 +10,7 @@ const CLAUDE_MODELS = [
   { id: 'opus',   label: 'Opus 4.6'   },
   { id: 'haiku',  label: 'Haiku 4.5'  },
 ];
+let codexModelsCache = null;
 
 /**
  * Returns { models, effortLevels } for a given tool.
@@ -29,7 +30,7 @@ export async function getModelsForTool(toolId) {
     return getCodexModels();
   }
 
-  const tool = getToolDefinition(toolId);
+  const tool = await getToolDefinitionAsync(toolId);
   if (tool?.runtimeFamily) {
     const reasoning = tool.reasoning || { kind: 'none', label: 'Thinking' };
     const models = (tool.models || []).map(model => ({
@@ -57,6 +58,9 @@ export async function getModelsForTool(toolId) {
 }
 
 async function getCodexModels() {
+  if (codexModelsCache) {
+    return codexModelsCache;
+  }
   try {
     const raw = await readFile(join(homedir(), '.codex', 'models_cache.json'), 'utf-8');
     const data = JSON.parse(raw);
@@ -70,7 +74,7 @@ async function getCodexModels() {
       }));
     // Union of all effort levels across all visible models
     const effortLevels = [...new Set(models.flatMap(m => m.effortLevels))];
-    return {
+    codexModelsCache = {
       models,
       effortLevels,
       defaultModel: null,
@@ -81,8 +85,9 @@ async function getCodexModels() {
         default: models[0]?.defaultEffort || effortLevels[0] || 'medium',
       },
     };
+    return codexModelsCache;
   } catch {
-    return {
+    codexModelsCache = {
       models: [],
       effortLevels: ['low', 'medium', 'high', 'xhigh'],
       defaultModel: null,
@@ -93,5 +98,6 @@ async function getCodexModels() {
         default: 'medium',
       },
     };
+    return codexModelsCache;
   }
 }

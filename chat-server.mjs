@@ -1,22 +1,24 @@
 #!/usr/bin/env node
 import http from 'http';
-import { existsSync, mkdirSync } from 'fs';
 import { CHAT_PORT, SECURE_COOKIES, MEMORY_DIR } from './lib/config.mjs';
 import { handleRequest } from './chat/router.mjs';
+import { closeApiRequestLog, initApiRequestLog, startApiRequestLog } from './chat/api-request-log.mjs';
 import { attachWebSocket } from './chat/ws.mjs';
-import { killAll } from './chat/session-manager.mjs';
+import { killAll, startDetachedRunObservers } from './chat/session-manager.mjs';
 import { join } from 'path';
+import { ensureDir } from './chat/fs-utils.mjs';
 
 // Ensure memory directory structure exists
 for (const dir of [MEMORY_DIR, join(MEMORY_DIR, 'tasks')]) {
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-    console.log(`[setup] Created ${dir}`);
-  }
+  await ensureDir(dir);
 }
 
+await initApiRequestLog();
+
 const server = http.createServer((req, res) => {
+  const requestLog = startApiRequestLog(req, res);
   handleRequest(req, res).catch(err => {
+    requestLog.markError(err);
     console.error('Unhandled request error:', err);
     if (!res.headersSent) {
       res.writeHead(500, { 'Content-Type': 'text/plain' });
@@ -26,9 +28,15 @@ const server = http.createServer((req, res) => {
 });
 
 attachWebSocket(server);
+try {
+  await startDetachedRunObservers();
+} catch (error) {
+  console.error('Failed to rehydrate detached runs on startup:', error);
+}
 
-function shutdown() {
+async function shutdown() {
   console.log('Shutting down chat server...');
+  await closeApiRequestLog();
   killAll();
   process.exit(0);
 }

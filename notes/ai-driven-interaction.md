@@ -2,6 +2,8 @@
 
 _Started: 2026-03-04_
 
+> Current merge point for transport/runtime/autonomy architecture discussion: `notes/message-transport-architecture.md`.
+
 ---
 
 ## The Shift
@@ -86,7 +88,7 @@ What the model needs to manage sessions:
 | `list_sessions` | Read the full session board (all sessions, their status/summary) |
 | `schedule_trigger` | Write a deferred or condition-based message |
 
-Implementation path: expose these as HTTP endpoints in RemoteLab, document them in CLAUDE.md so the model knows they exist. No new protocol — Claude Code can call `curl` already.
+Implementation path: expose these as HTTP endpoints in RemoteLab, document them in AGENTS.md so the model knows they exist. No new protocol — the agent runtime can call `curl` already.
 
 ---
 
@@ -114,15 +116,15 @@ The model writes to this board. The human reads it.
 
 ## Implementation Phases
 
-### Phase 1 — Remove folder dependency
-- Make `workdir` optional
-- Remove folder-grouped sidebar, flatten to list sorted by lastActivity
-- Add `project` + `status` fields to session schema
-- UI: filter chips by project, status tabs
+### Phase 1 — Task-first session foundation
+- [x] Make `workdir` optional
+- [x] Remove folder-grouped sidebar, flatten to list sorted by lastActivity
+- [ ] Add model-writable presentation / metadata fields (`title`, `group`, `description`, later `project`, `status`)
+- [ ] Expose those fields through session APIs and sidebar rendering
 
 ### Phase 2 — AI session control
 - Add `update_session`, `list_sessions`, `create_session` API endpoints
-- Document them in CLAUDE.md so the model uses them automatically
+- Document them in AGENTS.md so the model uses them automatically
 - Model updates its own status/summary after each exchange
 
 ### Phase 3 — Deferred triggers

@@ -1,89 +1,91 @@
 import { randomBytes } from 'crypto';
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { dirname } from 'path';
 import { APPS_FILE } from '../lib/config.mjs';
+import { createSerialTaskQueue, ensureDir, readJson, writeJsonAtomic } from './fs-utils.mjs';
 
-// ---- Persistence ----
+const runAppsMutation = createSerialTaskQueue();
 
-function loadApps() {
-  try {
-    if (!existsSync(APPS_FILE)) return [];
-    return JSON.parse(readFileSync(APPS_FILE, 'utf8'));
-  } catch {
-    return [];
-  }
+async function loadApps() {
+  const apps = await readJson(APPS_FILE, []);
+  return Array.isArray(apps) ? apps : [];
 }
 
-function saveApps(list) {
+async function saveApps(list) {
   const dir = dirname(APPS_FILE);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(APPS_FILE, JSON.stringify(list, null, 2), 'utf8');
+  await ensureDir(dir);
+  await writeJsonAtomic(APPS_FILE, list);
 }
 
-// ---- Public API ----
-
-export function listApps() {
-  return loadApps().filter(a => !a.deleted);
+export async function listApps() {
+  return (await loadApps()).filter((app) => !app.deleted);
 }
 
-export function getApp(id) {
-  return loadApps().find(a => a.id === id && !a.deleted) || null;
+export async function getApp(id) {
+  return (await loadApps()).find((app) => app.id === id && !app.deleted) || null;
 }
 
-export function getAppByShareToken(shareToken) {
+export async function getAppByShareToken(shareToken) {
   if (!shareToken) return null;
-  return loadApps().find(a => a.shareToken === shareToken && !a.deleted) || null;
+  return (await loadApps()).find((app) => app.shareToken === shareToken && !app.deleted) || null;
 }
 
-export function createApp({ name, systemPrompt, welcomeMessage, skills, tool }) {
-  const id = 'app_' + randomBytes(16).toString('hex');
-  const shareToken = 'share_' + randomBytes(32).toString('hex');
-  const app = {
-    id,
-    name: name || 'Untitled App',
-    systemPrompt: systemPrompt || '',
-    welcomeMessage: welcomeMessage || '',
-    skills: skills || [],
-    tool: tool || 'claude',
-    shareToken,
-    createdAt: new Date().toISOString(),
-  };
-  const apps = loadApps();
-  apps.push(app);
-  saveApps(apps);
-  return app;
+export async function createApp({ name, systemPrompt, welcomeMessage, skills, tool }) {
+  return runAppsMutation(async () => {
+    const id = `app_${randomBytes(16).toString('hex')}`;
+    const shareToken = `share_${randomBytes(32).toString('hex')}`;
+    const app = {
+      id,
+      name: name || 'Untitled App',
+      systemPrompt: systemPrompt || '',
+      welcomeMessage: welcomeMessage || '',
+      skills: skills || [],
+      tool: tool || 'claude',
+      shareToken,
+      createdAt: new Date().toISOString(),
+    };
+    const apps = await loadApps();
+    apps.push(app);
+    await saveApps(apps);
+    return app;
+  });
 }
 
-export function updateApp(id, updates) {
-  const apps = loadApps();
-  const idx = apps.findIndex(a => a.id === id && !a.deleted);
-  if (idx === -1) return null;
-  const allowed = ['name', 'systemPrompt', 'welcomeMessage', 'skills', 'tool'];
-  for (const key of allowed) {
-    if (updates[key] !== undefined) {
-      apps[idx][key] = updates[key];
+export async function updateApp(id, updates) {
+  return runAppsMutation(async () => {
+    const apps = await loadApps();
+    const idx = apps.findIndex((app) => app.id === id && !app.deleted);
+    if (idx === -1) return null;
+    const allowed = ['name', 'systemPrompt', 'welcomeMessage', 'skills', 'tool'];
+    for (const key of allowed) {
+      if (updates[key] !== undefined) {
+        apps[idx][key] = updates[key];
+      }
     }
-  }
-  apps[idx].updatedAt = new Date().toISOString();
-  saveApps(apps);
-  return apps[idx];
+    apps[idx].updatedAt = new Date().toISOString();
+    await saveApps(apps);
+    return apps[idx];
+  });
 }
 
-export function deleteApp(id) {
-  const apps = loadApps();
-  const idx = apps.findIndex(a => a.id === id && !a.deleted);
-  if (idx === -1) return false;
-  apps[idx].deleted = true;
-  apps[idx].deletedAt = new Date().toISOString();
-  saveApps(apps);
-  return true;
+export async function deleteApp(id) {
+  return runAppsMutation(async () => {
+    const apps = await loadApps();
+    const idx = apps.findIndex((app) => app.id === id && !app.deleted);
+    if (idx === -1) return false;
+    apps[idx].deleted = true;
+    apps[idx].deletedAt = new Date().toISOString();
+    await saveApps(apps);
+    return true;
+  });
 }
 
-export function regenerateShareToken(id) {
-  const apps = loadApps();
-  const idx = apps.findIndex(a => a.id === id && !a.deleted);
-  if (idx === -1) return null;
-  apps[idx].shareToken = 'share_' + randomBytes(32).toString('hex');
-  saveApps(apps);
-  return apps[idx];
+export async function regenerateShareToken(id) {
+  return runAppsMutation(async () => {
+    const apps = await loadApps();
+    const idx = apps.findIndex((app) => app.id === id && !app.deleted);
+    if (idx === -1) return null;
+    apps[idx].shareToken = `share_${randomBytes(32).toString('hex')}`;
+    await saveApps(apps);
+    return apps[idx];
+  });
 }

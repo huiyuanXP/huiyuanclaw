@@ -28,13 +28,15 @@ Always-on memory must stay tiny. It should contain:
 
 This lives in `~/.remotelab/memory/bootstrap.md`.
 
-### 2. Project Pointer Catalog
+### 2. Scope Router Catalog
 
-Project routing needs its own layer. It should contain:
+Scope routing needs its own layer. It should contain:
 
 - repo path
+- recurring non-repo domain pointers
 - one-line summary
 - trigger phrases / task clues
+- the next file, skill, or path to open
 
 This lives in `~/.remotelab/memory/projects.md`.
 
@@ -64,7 +66,7 @@ It should not be loaded wholesale for every new session.
 ## Retrieval Flow
 
 1. Read `bootstrap.md`.
-2. Read `projects.md` only if project routing is needed.
+2. Read `projects.md` only if scope routing is needed.
 3. Read `skills.md` only if capability selection matters.
 4. Infer task scope when obvious.
 5. Ask a clarifying question only when scope is genuinely ambiguous.
@@ -82,7 +84,7 @@ It should not be loaded wholesale for every new session.
 
 - `chat/system-prompt.mjs`: define pointer-first startup behavior
 - `~/.remotelab/memory/bootstrap.md`: tiny startup layer
-- `~/.remotelab/memory/projects.md`: routing layer
+- `~/.remotelab/memory/projects.md`: scope-routing layer
 - `memory/system.md`: shared principles about activation, writeback, and pruning
 
 ## Important Non-Goal

@@ -1,17 +1,32 @@
-import { existsSync, statSync, readdirSync, readFileSync } from 'fs';
+import { readFile, readdir } from 'fs/promises';
 import { homedir } from 'os';
 import { join, resolve, dirname, basename } from 'path';
 import { parse as parseUrl, fileURLToPath } from 'url';
+import { createHash } from 'crypto';
 import { SESSION_EXPIRY, CHAT_IMAGES_DIR } from '../lib/config.mjs';
 import {
-  sessions, saveAuthSessions,
-  verifyToken, verifyPassword, generateToken,
+  sessions, saveAuthSessionsAsync,
+  verifyTokenAsync, verifyPasswordAsync, generateToken,
   parseCookies, setCookie, clearCookie,
   getAuthSession,
 } from '../lib/auth.mjs';
-import { getAvailableTools, saveSimpleTool } from '../lib/tools.mjs';
-import { listSessions, listArchivedSessions, getSession, getHistory, createSession, archiveSession, unarchiveSession } from './session-manager.mjs';
-import { appendEvent } from './history.mjs';
+import { getAvailableToolsAsync, saveSimpleToolAsync } from '../lib/tools.mjs';
+import {
+  cancelActiveRun,
+  compactSession,
+  createSession,
+  dropToolUse,
+  getHistory,
+  getRunState,
+  getSession,
+  getSessionEventsAfter,
+  listSessions,
+  renameSession,
+  resumeInterruptedSession,
+  setSessionArchived,
+  submitHttpMessage,
+} from './session-manager.mjs';
+import { appendEvent, readEventBody } from './history.mjs';
 import { messageEvent } from './normalizer.mjs';
 import { getSidebarState } from './summarizer.mjs';
 import { getPublicKey, addSubscription } from './push.mjs';
@@ -19,11 +34,13 @@ import { getModelsForTool } from './models.mjs';
 import { getSettings, updateSettings } from './settings.mjs';
 import { listApps, getApp, getAppByShareToken, createApp, updateApp, deleteApp } from './apps.mjs';
 import { createShareSnapshot, getShareSnapshot } from './shares.mjs';
+import { parseSessionGetRoute } from './session-route-utils.mjs';
 import { readBody } from '../lib/utils.mjs';
 import {
   getClientIp, isRateLimited, recordFailedAttempt, clearFailedAttempts,
   setSecurityHeaders, generateNonce, requireAuth,
 } from './middleware.mjs';
+import { pathExists, statOrNull } from './fs-utils.mjs';
 
 // Paths (files are read from disk on each request for hot-reload)
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -45,6 +62,93 @@ const staticMimeTypes = {
 function writeJson(res, statusCode, payload) {
   res.writeHead(statusCode, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(payload));
+}
+
+function createEtag(value) {
+  return `"${createHash('sha1').update(value).digest('hex')}"`;
+}
+
+function normalizeEtag(value) {
+  return String(value || '').trim().replace(/^W\//, '');
+}
+
+function requestHasFreshEtag(req, etag) {
+  const header = req.headers['if-none-match'];
+  if (!header) return false;
+  const candidates = String(header)
+    .split(',')
+    .map((value) => normalizeEtag(value))
+    .filter(Boolean);
+  if (candidates.includes('*')) return true;
+  return candidates.includes(normalizeEtag(etag));
+}
+
+function writeCachedResponse(req, res, {
+  statusCode = 200,
+  contentType,
+  body,
+  cacheControl,
+  vary,
+} = {}) {
+  const etag = createEtag(body);
+  const headers = {
+    'Cache-Control': cacheControl,
+    ETag: etag,
+  };
+  if (vary) headers.Vary = vary;
+
+  if (requestHasFreshEtag(req, etag)) {
+    res.writeHead(304, headers);
+    res.end();
+    return;
+  }
+
+  if (contentType) headers['Content-Type'] = contentType;
+  res.writeHead(statusCode, headers);
+  res.end(body);
+}
+
+function writeJsonCached(req, res, payload, {
+  statusCode = 200,
+  cacheControl = 'private, no-cache',
+  vary = 'Cookie',
+} = {}) {
+  writeCachedResponse(req, res, {
+    statusCode,
+    contentType: 'application/json',
+    body: JSON.stringify(payload),
+    cacheControl,
+    vary,
+  });
+}
+
+function writeFileCached(req, res, contentType, body, {
+  cacheControl = 'public, no-cache',
+  vary,
+} = {}) {
+  writeCachedResponse(req, res, {
+    statusCode: 200,
+    contentType,
+    body,
+    cacheControl,
+    vary,
+  });
+}
+
+function canAccessSession(authSession, sessionId) {
+  if (!authSession) return false;
+  if (authSession.role !== 'visitor') return true;
+  return authSession.sessionId === sessionId;
+}
+
+function requireSessionAccess(res, authSession, sessionId) {
+  if (canAccessSession(authSession, sessionId)) return true;
+  writeJson(res, 403, { error: 'Access denied' });
+  return false;
+}
+
+async function isDirectoryPath(path) {
+  return (await statOrNull(path))?.isDirectory() === true;
 }
 
 function setShareSnapshotHeaders(res, nonce) {
@@ -76,10 +180,8 @@ function serializeJsonForScript(value) {
 
 function isOwnerOnlyRoute(pathname, method) {
   if (pathname === '/api/sessions' && (method === 'GET' || method === 'POST')) return true;
-  if (pathname === '/api/sessions/archived' && method === 'GET') return true;
   if (pathname.startsWith('/api/sessions/') && pathname.endsWith('/share') && method === 'POST') return true;
-  if (pathname.startsWith('/api/sessions/') && pathname.endsWith('/unarchive') && method === 'POST') return true;
-  if (pathname.startsWith('/api/sessions/') && method === 'DELETE') return true;
+  if (pathname.startsWith('/api/sessions/') && method === 'PATCH') return true;
   if (pathname === '/api/models' && method === 'GET') return true;
   if (pathname === '/api/tools' && (method === 'GET' || method === 'POST')) return true;
   if (pathname === '/api/sidebar' && method === 'GET') return true;
@@ -101,9 +203,10 @@ export async function handleRequest(req, res) {
   const staticName = pathname.slice(1); // strip leading /
   if (staticMimeTypes[staticName]) {
     try {
-      const content = readFileSync(join(staticDir, staticName));
-      res.writeHead(200, { 'Content-Type': staticMimeTypes[staticName], 'Cache-Control': 'no-cache' });
-      res.end(content);
+      const content = await readFile(join(staticDir, staticName));
+      writeFileCached(req, res, staticMimeTypes[staticName], content, {
+        cacheControl: 'public, no-cache',
+      });
     } catch {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('Not Found');
@@ -123,11 +226,11 @@ export async function handleRequest(req, res) {
       res.end('Too many failed attempts. Please try again later.');
       return;
     }
-    if (verifyToken(queryToken)) {
+    if (await verifyTokenAsync(queryToken)) {
       clearFailedAttempts(ip);
       const sessionToken = generateToken();
       sessions.set(sessionToken, { expiry: Date.now() + SESSION_EXPIRY, role: 'owner' });
-      saveAuthSessions();
+      await saveAuthSessionsAsync();
       res.writeHead(302, { 'Location': '/', 'Set-Cookie': setCookie(sessionToken) });
       res.end();
     } else {
@@ -152,15 +255,15 @@ export async function handleRequest(req, res) {
     const type = params.get('type');
     let valid = false;
     if (type === 'token') {
-      valid = verifyToken(params.get('token') || '');
+      valid = await verifyTokenAsync(params.get('token') || '');
     } else if (type === 'password') {
-      valid = verifyPassword(params.get('username') || '', params.get('password') || '');
+      valid = await verifyPasswordAsync(params.get('username') || '', params.get('password') || '');
     }
     if (valid) {
       clearFailedAttempts(ip);
       const sessionToken = generateToken();
       sessions.set(sessionToken, { expiry: Date.now() + SESSION_EXPIRY, role: 'owner' });
-      saveAuthSessions();
+      await saveAuthSessionsAsync();
       res.writeHead(302, { 'Location': '/', 'Set-Cookie': setCookie(sessionToken) });
     } else {
       recordFailedAttempt(ip);
@@ -176,7 +279,7 @@ export async function handleRequest(req, res) {
     const hasError = parsedUrl.query.error === '1';
     const mode = parsedUrl.query.mode === 'token' ? 'token' : 'pw';
     let loginHtml;
-    try { loginHtml = readFileSync(loginTemplatePath, 'utf8'); } catch { loginHtml = '<h1>Login template missing</h1>'; }
+    try { loginHtml = await readFile(loginTemplatePath, 'utf8'); } catch { loginHtml = '<h1>Login template missing</h1>'; }
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end(loginHtml
       .replace(/\{\{NONCE\}\}/g, nonce)
@@ -189,7 +292,7 @@ export async function handleRequest(req, res) {
   if (pathname === '/logout') {
     const cookies = parseCookies(req.headers.cookie || '');
     const token = cookies.session_token;
-    if (token) { sessions.delete(token); saveAuthSessions(); }
+    if (token) { sessions.delete(token); await saveAuthSessionsAsync(); }
     res.writeHead(302, { 'Location': '/login', 'Set-Cookie': clearCookie() });
     res.end();
     return;
@@ -203,7 +306,7 @@ export async function handleRequest(req, res) {
       res.end('Not Found');
       return;
     }
-    const app = getAppByShareToken(shareToken);
+    const app = await getAppByShareToken(shareToken);
     if (!app) {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('App not found');
@@ -211,7 +314,7 @@ export async function handleRequest(req, res) {
     }
     // Create a visitor auth session + a new chat session from the app template
     const visitorId = 'visitor_' + generateToken().slice(0, 16);
-    const chatSession = createSession(
+    const chatSession = await createSession(
       '~',
       app.tool || 'claude',
       app.name,
@@ -219,7 +322,7 @@ export async function handleRequest(req, res) {
     );
     // Inject welcome message as first assistant event so visitor sees it immediately
     if (app.welcomeMessage) {
-      appendEvent(chatSession.id, messageEvent('assistant', app.welcomeMessage));
+      await appendEvent(chatSession.id, messageEvent('assistant', app.welcomeMessage));
     }
     const sessionToken = generateToken();
     sessions.set(sessionToken, {
@@ -229,7 +332,7 @@ export async function handleRequest(req, res) {
       visitorId,
       sessionId: chatSession.id,
     });
-    saveAuthSessions();
+    await saveAuthSessionsAsync();
     res.writeHead(302, {
       'Location': '/?visitor=1',
       'Set-Cookie': setCookie(sessionToken),
@@ -240,7 +343,7 @@ export async function handleRequest(req, res) {
 
   if (pathname.startsWith('/share/') && req.method === 'GET') {
     const shareId = pathname.slice('/share/'.length);
-    const snapshot = getShareSnapshot(shareId);
+    const snapshot = await getShareSnapshot(shareId);
     if (!snapshot) {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('Shared snapshot not found');
@@ -248,7 +351,7 @@ export async function handleRequest(req, res) {
     }
     setShareSnapshotHeaders(res, nonce);
     try {
-      const sharePage = readFileSync(shareTemplatePath, 'utf8');
+      const sharePage = await readFile(shareTemplatePath, 'utf8');
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
         'Cache-Control': 'public, max-age=31536000, immutable',
@@ -273,15 +376,197 @@ export async function handleRequest(req, res) {
 
   // ---- API endpoints ----
 
-  if (pathname === '/api/sessions' && req.method === 'GET') {
-    const sessionList = listSessions();
+  const sessionGetRoute = req.method === 'GET' ? parseSessionGetRoute(pathname) : null;
+
+  if (sessionGetRoute?.kind === 'list') {
+    const sessionList = await listSessions();
     const folderFilter = parsedUrl.query.folder;
     const filtered = folderFilter
-      ? sessionList.filter(s => s.folder === folderFilter)
+      ? sessionList.filter((session) => session.folder === folderFilter)
       : sessionList;
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ sessions: filtered }));
+    writeJsonCached(req, res, { sessions: filtered });
     return;
+  }
+
+  if (sessionGetRoute?.kind === 'detail') {
+    const { sessionId } = sessionGetRoute;
+    if (!requireSessionAccess(res, authSession, sessionId)) return;
+    const session = await getSession(sessionId);
+    if (!session) {
+      writeJson(res, 404, { error: 'Session not found' });
+      return;
+    }
+    writeJsonCached(req, res, { session });
+    return;
+  }
+
+  if (sessionGetRoute?.kind === 'events') {
+    const { sessionId } = sessionGetRoute;
+    if (!requireSessionAccess(res, authSession, sessionId)) return;
+    const afterSeq = Math.max(0, parseInt(parsedUrl.query.afterSeq || '0', 10) || 0);
+    const limit = Math.min(1000, Math.max(1, parseInt(parsedUrl.query.limit || '500', 10) || 500));
+    const events = await getSessionEventsAfter(sessionId, afterSeq, limit);
+    const session = await getSession(sessionId);
+    writeJsonCached(req, res, {
+      sessionId,
+      events,
+      cursor: {
+        afterSeq,
+        nextAfterSeq: events.length > 0 ? events[events.length - 1].seq : afterSeq,
+        latestSeq: session?.latestSeq || afterSeq,
+      },
+    });
+    return;
+  }
+
+  if (sessionGetRoute?.kind === 'event-body') {
+    const { sessionId, seq } = sessionGetRoute;
+    if (!requireSessionAccess(res, authSession, sessionId)) return;
+    const body = await readEventBody(sessionId, seq);
+    if (!body) {
+      writeJson(res, 404, { error: 'Event body not found' });
+      return;
+    }
+    writeJsonCached(req, res, { body });
+    return;
+  }
+
+  if (pathname.startsWith('/api/sessions/') && req.method === 'PATCH') {
+    const parts = pathname.split('/').filter(Boolean);
+    const sessionId = parts[2];
+    if (parts.length !== 3 || parts[0] !== 'api' || parts[1] !== 'sessions' || !sessionId) {
+      writeJson(res, 400, { error: 'Invalid session path' });
+      return;
+    }
+    let body;
+    try { body = await readBody(req, 10240); } catch {
+      writeJson(res, 400, { error: 'Bad request' });
+      return;
+    }
+    let patch;
+    try { patch = JSON.parse(body); } catch {
+      writeJson(res, 400, { error: 'Invalid request body' });
+      return;
+    }
+    const hasArchivedPatch = Object.prototype.hasOwnProperty.call(patch || {}, 'archived');
+    if (hasArchivedPatch && typeof patch.archived !== 'boolean') {
+      writeJson(res, 400, { error: 'archived must be a boolean' });
+      return;
+    }
+    let session = null;
+    if (typeof patch.name === 'string' && patch.name.trim()) {
+      session = await renameSession(sessionId, patch.name.trim());
+    }
+    if (hasArchivedPatch) {
+      session = await setSessionArchived(sessionId, patch.archived) || session;
+    }
+    if (!session) {
+      session = await getSession(sessionId);
+    }
+    if (!session) {
+      writeJson(res, 404, { error: 'Session not found' });
+      return;
+    }
+    writeJson(res, 200, { session });
+    return;
+  }
+
+  if (pathname.startsWith('/api/sessions/') && req.method === 'POST') {
+    const parts = pathname.split('/').filter(Boolean);
+    const sessionId = parts[2];
+    const action = parts[3] || null;
+    if (parts.length === 4 && parts[0] === 'api' && parts[1] === 'sessions' && sessionId && action === 'messages') {
+      if (!requireSessionAccess(res, authSession, sessionId)) return;
+      let body;
+      try { body = await readBody(req, 15 * 1024 * 1024); } catch (err) {
+        writeJson(res, err.code === 'BODY_TOO_LARGE' ? 413 : 400, { error: err.code === 'BODY_TOO_LARGE' ? 'Request body too large' : 'Bad request' });
+        return;
+      }
+      let payload;
+      try { payload = JSON.parse(body); } catch {
+        writeJson(res, 400, { error: 'Invalid request body' });
+        return;
+      }
+      if (!payload?.requestId || typeof payload.requestId !== 'string') {
+        writeJson(res, 400, { error: 'requestId is required' });
+        return;
+      }
+      if (!payload?.text || typeof payload.text !== 'string') {
+        writeJson(res, 400, { error: 'text is required' });
+        return;
+      }
+      try {
+        const outcome = await submitHttpMessage(sessionId, payload.text.trim(), payload.images || [], {
+          requestId: payload.requestId,
+          tool: authSession?.role === 'visitor' ? undefined : payload.tool || undefined,
+          thinking: authSession?.role === 'visitor' ? false : !!payload.thinking,
+          model: authSession?.role === 'visitor' ? undefined : payload.model || undefined,
+          effort: authSession?.role === 'visitor' ? undefined : payload.effort || undefined,
+        });
+        writeJson(res, outcome.duplicate ? 200 : 202, {
+          requestId: payload.requestId,
+          duplicate: outcome.duplicate,
+          run: outcome.run,
+          session: outcome.session,
+        });
+      } catch (error) {
+        const statusCode = error?.code === 'SESSION_ARCHIVED' ? 409 : 400;
+        writeJson(res, statusCode, { error: error.message || 'Failed to submit message' });
+      }
+      return;
+    }
+
+    if (parts.length === 4 && parts[0] === 'api' && parts[1] === 'sessions' && sessionId && action === 'cancel') {
+      if (!requireSessionAccess(res, authSession, sessionId)) return;
+      const run = await cancelActiveRun(sessionId);
+      if (!run) {
+        writeJson(res, 409, { error: 'No active run' });
+        return;
+      }
+      writeJson(res, 200, { run });
+      return;
+    }
+
+    if (parts.length === 4 && parts[0] === 'api' && parts[1] === 'sessions' && sessionId && action === 'resume') {
+      if (!requireSessionAccess(res, authSession, sessionId)) return;
+      const session = await getSession(sessionId);
+      if (session?.archived) {
+        writeJson(res, 409, { error: 'Session is archived' });
+        return;
+      }
+      if (!await resumeInterruptedSession(sessionId)) {
+        writeJson(res, 409, { error: 'Interrupted run is not recoverable' });
+        return;
+      }
+      writeJson(res, 200, { ok: true, session: await getSession(sessionId) });
+      return;
+    }
+
+    if (parts.length === 4 && parts[0] === 'api' && parts[1] === 'sessions' && sessionId && action === 'compact') {
+      if (authSession?.role === 'visitor') {
+        writeJson(res, 403, { error: 'Owner access required' });
+        return;
+      }
+      if (!await compactSession(sessionId)) {
+        writeJson(res, 409, { error: 'Unable to compact session' });
+        return;
+      }
+      writeJson(res, 200, { ok: true, session: await getSession(sessionId) });
+      return;
+    }
+
+    if (parts.length === 4 && parts[0] === 'api' && parts[1] === 'sessions' && sessionId && action === 'drop-tools') {
+      if (authSession?.role === 'visitor') {
+        writeJson(res, 403, { error: 'Owner access required' });
+        return;
+      }
+      if (!await dropToolUse(sessionId)) {
+        writeJson(res, 409, { error: 'Unable to drop tool results' });
+        return;
+      }
+      writeJson(res, 200, { ok: true, session: await getSession(sessionId) });
+      return;
+    }
   }
 
   if (pathname.startsWith('/api/sessions/') && pathname.endsWith('/share') && req.method === 'POST') {
@@ -292,13 +577,13 @@ export async function handleRequest(req, res) {
       return;
     }
 
-    const session = getSession(id);
+    const session = await getSession(id);
     if (!session) {
       writeJson(res, 404, { error: 'Session not found' });
       return;
     }
 
-    const snapshot = createShareSnapshot(session, getHistory(id));
+    const snapshot = await createShareSnapshot(session, await getHistory(id));
     writeJson(res, 201, {
       share: {
         id: snapshot.id,
@@ -320,7 +605,16 @@ export async function handleRequest(req, res) {
       throw err;
     }
     try {
-      const { folder, tool } = JSON.parse(body);
+      const {
+        folder,
+        tool,
+        name,
+        group,
+        description,
+        systemPrompt,
+        completionTargets,
+        externalTriggerId,
+      } = JSON.parse(body);
       if (!folder || !tool) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'folder and tool are required' }));
@@ -329,12 +623,18 @@ export async function handleRequest(req, res) {
       const resolvedFolder = folder.startsWith('~')
         ? join(homedir(), folder.slice(1))
         : resolve(folder);
-      if (!existsSync(resolvedFolder) || !statSync(resolvedFolder).isDirectory()) {
+      if (!await isDirectoryPath(resolvedFolder)) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Folder does not exist' }));
         return;
       }
-      const session = createSession(resolvedFolder, tool);
+      const session = await createSession(resolvedFolder, tool, name || '', {
+        group: group || '',
+        description: description || '',
+        systemPrompt: typeof systemPrompt === 'string' ? systemPrompt : '',
+        completionTargets: Array.isArray(completionTargets) ? completionTargets : [],
+        externalTriggerId: typeof externalTriggerId === 'string' ? externalTriggerId : '',
+      });
       res.writeHead(201, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ session }));
     } catch {
@@ -344,51 +644,54 @@ export async function handleRequest(req, res) {
     return;
   }
 
-  if (pathname === '/api/sessions/archived' && req.method === 'GET') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ sessions: listArchivedSessions() }));
+  if (pathname.startsWith('/api/runs/') && req.method === 'GET') {
+    const parts = pathname.split('/').filter(Boolean);
+    const runId = parts[2];
+    if (parts.length !== 3 || parts[0] !== 'api' || parts[1] !== 'runs' || !runId) {
+      writeJson(res, 400, { error: 'Invalid run path' });
+      return;
+    }
+    const run = await getRunState(runId);
+    if (!run) {
+      writeJson(res, 404, { error: 'Run not found' });
+      return;
+    }
+    if (!requireSessionAccess(res, authSession, run.sessionId)) return;
+    writeJsonCached(req, res, { run });
     return;
   }
 
-  if (pathname.startsWith('/api/sessions/') && pathname.endsWith('/unarchive') && req.method === 'POST') {
-    const parts = pathname.split('/');
-    const id = parts[parts.length - 2];
-    const restored = unarchiveSession(id);
-    if (restored) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ session: restored }));
-    } else {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Session not found' }));
+  if (pathname.startsWith('/api/runs/') && req.method === 'POST') {
+    const parts = pathname.split('/').filter(Boolean);
+    const runId = parts[2];
+    const action = parts[3];
+    if (parts.length === 4 && parts[0] === 'api' && parts[1] === 'runs' && action === 'cancel' && runId) {
+      const run = await getRunState(runId);
+      if (!run) {
+        writeJson(res, 404, { error: 'Run not found' });
+        return;
+      }
+      if (!requireSessionAccess(res, authSession, run.sessionId)) return;
+      const updated = await cancelActiveRun(run.sessionId);
+      if (!updated) {
+        writeJson(res, 409, { error: 'No active run' });
+        return;
+      }
+      writeJson(res, 200, { run: updated });
+      return;
     }
-    return;
-  }
-
-  if (pathname.startsWith('/api/sessions/') && req.method === 'DELETE') {
-    const id = pathname.split('/').pop();
-    const ok = archiveSession(id);
-    if (ok) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true }));
-    } else {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Session not found' }));
-    }
-    return;
   }
 
   if (pathname === '/api/models' && req.method === 'GET') {
     const toolId = parsedUrl.query ? parsedUrl.query.tool || '' : '';
     const result = await getModelsForTool(toolId);
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(result));
+    writeJsonCached(req, res, result);
     return;
   }
 
   if (pathname === '/api/tools' && req.method === 'GET') {
-    const tools = getAvailableTools();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ tools }));
+    const tools = await getAvailableToolsAsync();
+    writeJsonCached(req, res, { tools });
     return;
   }
 
@@ -409,7 +712,7 @@ export async function handleRequest(req, res) {
 
     try {
       const { name, command, runtimeFamily, models, reasoning } = JSON.parse(body);
-      const tool = saveSimpleTool({ name, command, runtimeFamily, models, reasoning });
+      const tool = await saveSimpleToolAsync({ name, command, runtimeFamily, models, reasoning });
       res.writeHead(201, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ tool }));
     } catch (err) {
@@ -420,14 +723,12 @@ export async function handleRequest(req, res) {
   }
 
   if (pathname === '/api/sidebar' && req.method === 'GET') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(getSidebarState()));
+    writeJsonCached(req, res, await getSidebarState());
     return;
   }
 
   if (pathname === '/api/settings' && req.method === 'GET') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(getSettings()));
+    writeJsonCached(req, res, await getSettings());
     return;
   }
 
@@ -435,7 +736,7 @@ export async function handleRequest(req, res) {
     const body = await readBody(req);
     let patch;
     try { patch = JSON.parse(body); } catch { patch = {}; }
-    const settings = updateSettings(patch);
+    const settings = await updateSettings(patch);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(settings));
     return;
@@ -448,11 +749,11 @@ export async function handleRequest(req, res) {
       const resolvedQuery = query.startsWith('~') ? join(homedir(), query.slice(1)) : query;
       const parentDir = dirname(resolvedQuery);
       const prefix = basename(resolvedQuery);
-      if (existsSync(parentDir) && statSync(parentDir).isDirectory()) {
-        for (const entry of readdirSync(parentDir)) {
+      if (await isDirectoryPath(parentDir)) {
+        for (const entry of await readdir(parentDir)) {
           if (!prefix.startsWith('.') && entry.startsWith('.')) continue;
           const fullPath = join(parentDir, entry);
-          if (existsSync(fullPath) && statSync(fullPath).isDirectory()) {
+          if (await isDirectoryPath(fullPath)) {
             if (entry.toLowerCase().startsWith(prefix.toLowerCase())) {
               suggestions.push(fullPath);
             }
@@ -460,8 +761,7 @@ export async function handleRequest(req, res) {
         }
       }
     } catch {}
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ suggestions: suggestions.slice(0, 20) }));
+    writeJsonCached(req, res, { suggestions: suggestions.slice(0, 20) });
     return;
   }
 
@@ -475,20 +775,19 @@ export async function handleRequest(req, res) {
           : resolve(pathQuery);
       const children = [];
       let parent = null;
-      if (existsSync(resolvedPath) && statSync(resolvedPath).isDirectory()) {
+      if (await isDirectoryPath(resolvedPath)) {
         const parentPath = dirname(resolvedPath);
         parent = parentPath !== resolvedPath ? parentPath : null;
-        for (const entry of readdirSync(resolvedPath)) {
+        for (const entry of await readdir(resolvedPath)) {
           if (entry.startsWith('.')) continue;
           const fullPath = join(resolvedPath, entry);
           try {
-            if (statSync(fullPath).isDirectory()) children.push({ name: entry, path: fullPath });
+            if (await isDirectoryPath(fullPath)) children.push({ name: entry, path: fullPath });
           } catch {}
         }
         children.sort((a, b) => a.name.localeCompare(b.name));
       }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ path: resolvedPath, parent, children }));
+      writeJsonCached(req, res, { path: resolvedPath, parent, children });
     } catch {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Failed to browse directory' }));
@@ -506,25 +805,22 @@ export async function handleRequest(req, res) {
       return;
     }
     const filepath = join(CHAT_IMAGES_DIR, filename);
-    if (!existsSync(filepath)) {
+    if (!await pathExists(filepath)) {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('Not found');
       return;
     }
     const ext = filename.split('.').pop();
     const mimeTypes = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
-    res.writeHead(200, {
-      'Content-Type': mimeTypes[ext] || 'application/octet-stream',
-      'Cache-Control': 'public, max-age=31536000, immutable',
+    writeFileCached(req, res, mimeTypes[ext] || 'application/octet-stream', await readFile(filepath), {
+      cacheControl: 'public, max-age=31536000, immutable',
     });
-    res.end(readFileSync(filepath));
     return;
   }
 
   // Push notification API
   if (pathname === '/api/push/vapid-public-key' && req.method === 'GET') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ publicKey: getPublicKey() }));
+    writeJsonCached(req, res, { publicKey: await getPublicKey() });
     return;
   }
 
@@ -538,7 +834,7 @@ export async function handleRequest(req, res) {
     try {
       const sub = JSON.parse(body);
       if (!sub.endpoint) throw new Error('Missing endpoint');
-      addSubscription(sub);
+      await addSubscription(sub);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
     } catch {
@@ -557,8 +853,7 @@ export async function handleRequest(req, res) {
       res.end(JSON.stringify({ error: 'Owner access required' }));
       return;
     }
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ apps: listApps() }));
+    writeJsonCached(req, res, { apps: await listApps() });
     return;
   }
 
@@ -577,7 +872,7 @@ export async function handleRequest(req, res) {
     }
     try {
       const { name, systemPrompt, welcomeMessage, skills, tool } = JSON.parse(body);
-      const app = createApp({ name, systemPrompt, welcomeMessage, skills, tool });
+      const app = await createApp({ name, systemPrompt, welcomeMessage, skills, tool });
       res.writeHead(201, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ app }));
     } catch {
@@ -603,7 +898,7 @@ export async function handleRequest(req, res) {
     }
     try {
       const updates = JSON.parse(body);
-      const updated = updateApp(id, updates);
+      const updated = await updateApp(id, updates);
       if (updated) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ app: updated }));
@@ -626,7 +921,7 @@ export async function handleRequest(req, res) {
       return;
     }
     const id = pathname.split('/').pop();
-    const ok = deleteApp(id);
+    const ok = await deleteApp(id);
     if (ok) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
@@ -651,15 +946,14 @@ export async function handleRequest(req, res) {
       info.sessionId = authSession.sessionId;
       info.visitorId = authSession.visitorId;
     }
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(info));
+    writeJsonCached(req, res, info);
     return;
   }
 
   // Main page (chat UI) — read from disk each time for hot-reload
   if (pathname === '/') {
     try {
-      const chatPage = readFileSync(chatTemplatePath, 'utf8');
+      const chatPage = await readFile(chatTemplatePath, 'utf8');
       res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' });
       res.end(chatPage.replace(/\{\{NONCE\}\}/g, nonce));
     } catch {

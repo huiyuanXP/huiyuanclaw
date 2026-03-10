@@ -1,6 +1,5 @@
 #!/bin/bash
-echo "Stopping Claude Code web services..."
-# Unload legacy shared ttyd plist if present
+echo "Stopping RemoteLab services..."
 launchctl unload ~/Library/LaunchAgents/com.ttyd.claude.plist 2>/dev/null || true
 launchctl unload ~/Library/LaunchAgents/com.authproxy.claude.plist 2>/dev/null || echo "auth-proxy not loaded"
 launchctl unload ~/Library/LaunchAgents/com.chatserver.claude.plist 2>/dev/null || echo "chat-server not loaded"

@@ -1,7 +1,7 @@
 import { homedir } from 'os';
-import { existsSync } from 'fs';
 import { MEMORY_DIR, SYSTEM_MEMORY_DIR } from '../lib/config.mjs';
 import { join } from 'path';
+import { pathExists } from './fs-utils.mjs';
 
 const BOOTSTRAP_MD = join(MEMORY_DIR, 'bootstrap.md');
 const GLOBAL_MD = join(MEMORY_DIR, 'global.md');
@@ -13,12 +13,14 @@ const SKILLS_MD = join(MEMORY_DIR, 'skills.md');
  * This is a lightweight pointer structure — tells the model how to activate
  * memory progressively instead of front-loading unrelated context.
  */
-export function buildSystemContext() {
+export async function buildSystemContext() {
   const home = homedir();
-  const hasBootstrap = existsSync(BOOTSTRAP_MD);
-  const hasGlobal = existsSync(GLOBAL_MD);
-  const hasProjects = existsSync(PROJECTS_MD);
-  const hasSkills = existsSync(SKILLS_MD);
+  const [hasBootstrap, hasGlobal, hasProjects, hasSkills] = await Promise.all([
+    pathExists(BOOTSTRAP_MD),
+    pathExists(GLOBAL_MD),
+    pathExists(PROJECTS_MD),
+    pathExists(SKILLS_MD),
+  ]);
   const isFirstTime = !hasBootstrap && !hasGlobal;
 
   let context = `You are an AI agent operating on this computer via RemoteLab. The user is communicating with you remotely (likely from a mobile phone). You have full access to this machine.

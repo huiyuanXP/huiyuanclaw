@@ -1,41 +1,31 @@
 import { spawn } from 'child_process';
 import { createInterface } from 'readline';
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { dirname } from 'path';
 import { SIDEBAR_STATE_FILE } from '../lib/config.mjs';
-import { loadHistory } from './history.mjs';
+import { readLastTurnEvents } from './history.mjs';
 import { fullPath } from '../lib/tools.mjs';
 import { createToolInvocation, resolveCommand, resolveCwd } from './process-runner.mjs';
-import { broadcastAll } from './ws-clients.mjs';
-import { isSessionAutoRenamePending } from './session-naming.mjs';
+import { broadcastOwners } from './ws-clients.mjs';
+import { ensureDir, readJson, writeJsonAtomic } from './fs-utils.mjs';
 
-function loadSidebarState() {
-  try {
-    if (!existsSync(SIDEBAR_STATE_FILE)) return { sessions: {} };
-    return JSON.parse(readFileSync(SIDEBAR_STATE_FILE, 'utf8'));
-  } catch {
-    return { sessions: {} };
-  }
+function broadcastSidebarInvalidation() {
+  broadcastOwners({ type: 'sidebar_invalidated' });
+}
+import {
+  isSessionAutoRenamePending,
+  normalizeSessionDescription,
+  normalizeSessionGroup,
+} from './session-naming.mjs';
+
+async function loadSidebarState() {
+  const loaded = await readJson(SIDEBAR_STATE_FILE, { sessions: {} });
+  return loaded && typeof loaded === 'object' ? loaded : { sessions: {} };
 }
 
-function saveSidebarState(state) {
+async function saveSidebarState(state) {
   const dir = dirname(SIDEBAR_STATE_FILE);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(SIDEBAR_STATE_FILE, JSON.stringify(state, null, 2), 'utf8');
-}
-
-/**
- * Extract events belonging to the last turn (from the last user message onward).
- */
-function extractLastTurn(events) {
-  let lastUserIdx = -1;
-  for (let i = events.length - 1; i >= 0; i--) {
-    if (events[i].type === 'message' && events[i].role === 'user') {
-      lastUserIdx = i;
-      break;
-    }
-  }
-  return lastUserIdx === -1 ? events : events.slice(lastUserIdx);
+  await ensureDir(dir);
+  await writeJsonAtomic(SIDEBAR_STATE_FILE, state);
 }
 
 /**
@@ -66,7 +56,7 @@ function formatTurnForPrompt(events) {
 
 /**
  * Trigger a non-blocking summary generation after a session turn completes.
- * sessionMeta: { id, folder, name, tool?, model?, effort?, thinking? }
+ * sessionMeta: { id, folder, name, group?, description?, tool?, model?, effort?, thinking? }
  * onRename: optional callback (newName: string) => void — called when a better name is generated
  * options.updateSidebar: whether to persist sidebar state (default true)
  */
@@ -82,70 +72,36 @@ export function triggerSummary(sessionMeta, onRename, options = {}) {
   });
 }
 
-async function runSummary(sessionMeta, onRename, options = {}) {
+export function triggerTitleSuggestion(sessionMeta, onRename, options = {}) {
+  console.log(`[summarizer] triggerTitleSuggestion called for session ${sessionMeta.id?.slice(0, 8)}`);
+  return runTitleSuggestion(sessionMeta, onRename, options).catch(err => {
+    console.error(`[summarizer] Title suggestion error for ${sessionMeta.id?.slice(0, 8)}: ${err.message}`);
+    return {
+      ok: false,
+      error: err.message,
+      rename: { attempted: false, renamed: false },
+    };
+  });
+}
+
+async function runToolJsonPrompt(sessionMeta, prompt) {
   const {
     id: sessionId,
     folder,
-    name,
-    autoRenamePending,
     tool = 'claude',
     model,
     effort,
     thinking,
   } = sessionMeta;
 
-  const allEvents = loadHistory(sessionId);
-  if (allEvents.length === 0) {
-    console.log(`[summarizer] Skipping ${sessionId.slice(0, 8)}: no history events`);
-    return {
-      ok: false,
-      skipped: 'no_history',
-      rename: { attempted: false, renamed: false },
-    };
-  }
-
-  const lastTurnEvents = extractLastTurn(allEvents);
-  const turnText = formatTurnForPrompt(lastTurnEvents);
-  if (!turnText.trim()) {
-    console.log(`[summarizer] Skipping ${sessionId.slice(0, 8)}: empty turn text (${lastTurnEvents.length} events)`);
-    return {
-      ok: false,
-      skipped: 'empty_turn',
-      rename: { attempted: false, renamed: false },
-    };
-  }
-
-  const state = loadSidebarState();
-  const prevBackground = state.sessions[sessionId]?.background || '';
-
-  const shouldGenerateTitle = isSessionAutoRenamePending({ name, autoRenamePending });
-  const prompt = [
-    'You are updating a developer\'s session status board. Be extremely concise.',
-    '',
-    `Session folder: ${folder}`,
-    `Session name: ${name || '(unnamed)'}`,
-    shouldGenerateTitle && name ? 'The current session name is only a temporary draft. Generate a better final title.' : '',
-    prevBackground ? `Previous background: ${prevBackground}` : '',
-    '',
-    'Last turn:',
-    turnText,
-    '',
-    'Write a JSON object with exactly these fields:',
-    '- "background": One sentence — what is this session working on overall? Update if this turn changes the focus.',
-    '- "lastAction": One sentence — the single most important thing that just happened.',
-    shouldGenerateTitle ? '- "title": 2-5 words — a short descriptive title for this session (e.g. "Fix auth bug", "Add dark mode", "Refactor API layer"). No quotes around the title.' : '',
-    '',
-    'Respond with ONLY valid JSON. No markdown, no explanation.',
-  ].filter(l => l !== null && l !== '').join('\n');
-
-  const { command, adapter, args } = createToolInvocation(tool, prompt, {
+  const { command, adapter, args } = await createToolInvocation(tool, prompt, {
     dangerouslySkipPermissions: true,
     model,
     effort,
     thinking,
     systemPrefix: '',
   });
-  const resolvedCmd = resolveCommand(command);
+  const resolvedCmd = await resolveCommand(command);
   const resolvedFolder = resolveCwd(folder);
   console.log(
     `[summarizer] Calling tool=${tool} cmd=${resolvedCmd} model=${model || 'default'} effort=${effort || 'default'} thinking=${!!thinking} for session ${sessionId.slice(0, 8)}`
@@ -155,7 +111,7 @@ async function runSummary(sessionMeta, onRename, options = {}) {
   delete subEnv.CLAUDECODE;
   delete subEnv.CLAUDE_CODE_ENTRYPOINT;
 
-  const modelText = await new Promise((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     const proc = spawn(resolvedCmd, args, {
       cwd: resolvedFolder,
       env: subEnv,
@@ -181,7 +137,7 @@ async function runSummary(sessionMeta, onRename, options = {}) {
     });
 
     proc.on('error', (err) => {
-      console.error(`[summarizer] ${tool} summary error for ${sessionId.slice(0, 8)}: ${err.message}`);
+      console.error(`[summarizer] ${tool} structured prompt error for ${sessionId.slice(0, 8)}: ${err.message}`);
       reject(err);
     });
 
@@ -197,18 +153,181 @@ async function runSummary(sessionMeta, onRename, options = {}) {
       }
     });
   });
+}
 
-  // The model text itself should be a JSON object
-  let summary;
+function parseJsonObject(modelText) {
   try {
-    summary = JSON.parse(modelText);
+    return JSON.parse(modelText);
   } catch {
-    // Try to extract JSON from the text if wrapped in backticks or similar
     const jsonMatch = modelText.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      try { summary = JSON.parse(jsonMatch[0]); } catch { /* fall through */ }
+    if (!jsonMatch) return null;
+    try {
+      return JSON.parse(jsonMatch[0]);
+    } catch {
+      return null;
     }
   }
+}
+
+async function runTitleSuggestion(sessionMeta, onRename, options = {}) {
+  const {
+    id: sessionId,
+    folder,
+    name,
+    autoRenamePending,
+  } = sessionMeta;
+
+  const shouldGenerateTitle = isSessionAutoRenamePending({ name, autoRenamePending });
+  if (!shouldGenerateTitle) {
+    return {
+      ok: true,
+      skipped: 'rename_not_needed',
+      rename: { attempted: false, renamed: false },
+    };
+  }
+
+  const lastTurnEvents = await readLastTurnEvents(sessionId, { includeBodies: true });
+  if (lastTurnEvents.length === 0) {
+    console.log(`[summarizer] Skipping title suggestion for ${sessionId.slice(0, 8)}: no history events`);
+    return {
+      ok: false,
+      skipped: 'no_history',
+      rename: { attempted: false, renamed: false },
+    };
+  }
+
+  const turnText = formatTurnForPrompt(lastTurnEvents);
+  if (!turnText.trim()) {
+    console.log(`[summarizer] Skipping title suggestion for ${sessionId.slice(0, 8)}: empty turn text`);
+    return {
+      ok: false,
+      skipped: 'empty_turn',
+      rename: { attempted: false, renamed: false },
+    };
+  }
+
+  const prompt = [
+    'You are naming a developer session. Be concise and literal.',
+    '',
+    `Session folder: ${folder}`,
+    `Current session name: ${name || '(unnamed)'}`,
+    'The current name is only a temporary draft. Generate a better final title based mainly on the latest user request.',
+    '',
+    'Latest turn:',
+    turnText,
+    '',
+    'Write a JSON object with exactly this field:',
+    '- "title": 2-5 words — a short descriptive session title (for example: "Fix auth bug", "Refactor naming flow").',
+    '',
+    'Respond with ONLY valid JSON. No markdown, no explanation.',
+  ].join('\n');
+
+  const modelText = await runToolJsonPrompt(sessionMeta, prompt);
+  const titleResult = parseJsonObject(modelText);
+  if (!titleResult?.title) {
+    console.error(`[summarizer] Unexpected title output for ${sessionId.slice(0, 8)}: ${modelText.slice(0, 200)}`);
+    return {
+      ok: false,
+      error: `Unexpected model output: ${modelText.slice(0, 200)}`,
+      rename: { attempted: true, renamed: false, error: 'Unexpected model output' },
+    };
+  }
+
+  if (!onRename) {
+    return {
+      ok: true,
+      title: titleResult.title,
+      rename: { attempted: true, renamed: false, error: 'No rename callback provided' },
+    };
+  }
+
+  const newName = titleResult.title.trim();
+  if (!newName) {
+    return {
+      ok: false,
+      error: 'Empty title generated',
+      rename: { attempted: true, renamed: false, error: 'Empty title generated' },
+    };
+  }
+
+  const renamed = await onRename(newName);
+  return {
+    ok: true,
+    title: newName,
+    rename: renamed
+      ? { attempted: true, renamed: true, title: newName }
+      : { attempted: true, renamed: false, error: options.skipReason || 'Auto-rename no longer needed' },
+  };
+}
+
+async function runSummary(sessionMeta, onRename, options = {}) {
+  const {
+    id: sessionId,
+    folder,
+    name,
+    group,
+    description,
+    autoRenamePending,
+    tool = 'claude',
+    model,
+    effort,
+    thinking,
+  } = sessionMeta;
+
+  const lastTurnEvents = await readLastTurnEvents(sessionId, { includeBodies: true });
+  if (lastTurnEvents.length === 0) {
+    console.log(`[summarizer] Skipping ${sessionId.slice(0, 8)}: no history events`);
+    return {
+      ok: false,
+      skipped: 'no_history',
+      rename: { attempted: false, renamed: false },
+    };
+  }
+
+  const turnText = formatTurnForPrompt(lastTurnEvents);
+  if (!turnText.trim()) {
+    console.log(`[summarizer] Skipping ${sessionId.slice(0, 8)}: empty turn text (${lastTurnEvents.length} events)`);
+    return {
+      ok: false,
+      skipped: 'empty_turn',
+      rename: { attempted: false, renamed: false },
+    };
+  }
+
+  const state = await loadSidebarState();
+  const previousEntry = state.sessions[sessionId] || {};
+  const prevBackground = previousEntry.background || '';
+  const currentGroup = normalizeSessionGroup(group || previousEntry.group || '');
+  const currentDescription = normalizeSessionDescription(description || previousEntry.description || '');
+
+  const shouldGenerateTitle = isSessionAutoRenamePending({ name, autoRenamePending });
+  const shouldGenerateGrouping = !currentGroup || !currentDescription;
+  const prompt = [
+    'You are updating a developer\'s session status board. Be extremely concise.',
+    '',
+    `Session folder: ${folder}`,
+    `Session name: ${name || '(unnamed)'}`,
+    currentGroup ? `Current display group: ${currentGroup}` : '',
+    currentDescription ? `Current session description: ${currentDescription}` : '',
+    shouldGenerateTitle && name ? 'The current session name is only a temporary draft. Generate a better final title.' : '',
+    shouldGenerateGrouping ? 'Generate a stable one-level display group for sidebar organization. This is not a filesystem path.' : '',
+    prevBackground ? `Previous background: ${prevBackground}` : '',
+    '',
+    'Last turn:',
+    turnText,
+    '',
+    'Write a JSON object with exactly these fields:',
+    '- "background": One sentence — what is this session working on overall? Update if this turn changes the focus.',
+    '- "lastAction": One sentence — the single most important thing that just happened.',
+    shouldGenerateTitle ? '- "title": 2-5 words — a short descriptive title for this session (e.g. "Fix auth bug", "Add dark mode", "Refactor API layer"). No quotes around the title.' : '',
+    shouldGenerateGrouping ? '- "group": 1-3 words — a stable display group for similar work (e.g. "RemoteLab", "Video tooling", "Hiring"). Not a path.' : '',
+    shouldGenerateGrouping ? '- "description": One sentence — a compact hidden description of the work, useful for future regrouping.' : '',
+    '',
+    'Respond with ONLY valid JSON. No markdown, no explanation.',
+  ].filter(l => l !== null && l !== '').join('\n');
+
+  const modelText = await runToolJsonPrompt(sessionMeta, prompt);
+  const summary = parseJsonObject(modelText);
 
   if (!summary?.background || !summary?.lastAction) {
     console.error(`[summarizer] Unexpected model output for ${sessionId.slice(0, 8)}: ${modelText.slice(0, 200)}`);
@@ -225,12 +344,14 @@ async function runSummary(sessionMeta, onRename, options = {}) {
     state.sessions[sessionId] = {
       name: name || '',
       folder,
+      group: summary.group || currentGroup || '',
+      description: summary.description || currentDescription || '',
       background: summary.background,
       lastAction: summary.lastAction,
       updatedAt: Date.now(),
     };
-    saveSidebarState(state);
-    broadcastAll({ type: 'sidebar_update', state });
+    await saveSidebarState(state);
+    broadcastSidebarInvalidation();
     console.log(`[summarizer] Updated sidebar for session ${sessionId.slice(0, 8)}: ${summary.lastAction}`);
   }
 
@@ -240,7 +361,7 @@ async function runSummary(sessionMeta, onRename, options = {}) {
     const newName = summary.title.trim();
     if (newName) {
       console.log(`[summarizer] Auto-renaming session ${sessionId.slice(0, 8)} to: ${newName}`);
-      const renamed = onRename(newName);
+      const renamed = await onRename(newName);
       rename = renamed
         ? { attempted: true, renamed: true, title: newName }
         : { attempted: true, renamed: false, error: 'Auto-rename no longer needed' };
@@ -254,26 +375,31 @@ async function runSummary(sessionMeta, onRename, options = {}) {
   return { ok: true, summary, rename };
 }
 
-export function getSidebarState() {
+export async function getSidebarState() {
   return loadSidebarState();
 }
 
-export function removeSidebarEntry(sessionId) {
-  const state = loadSidebarState();
+export async function removeSidebarEntry(sessionId) {
+  const state = await loadSidebarState();
   if (state.sessions[sessionId]) {
     delete state.sessions[sessionId];
-    saveSidebarState(state);
+    await saveSidebarState(state);
+    broadcastSidebarInvalidation();
   }
 }
 
-export function renameSidebarEntry(sessionId, name) {
-  const state = loadSidebarState();
+export async function renameSidebarEntry(sessionId, name) {
+  return updateSidebarEntry(sessionId, { name });
+}
+
+export async function updateSidebarEntry(sessionId, patch) {
+  const state = await loadSidebarState();
   if (!state.sessions[sessionId]) return false;
   state.sessions[sessionId] = {
     ...state.sessions[sessionId],
-    name,
+    ...patch,
   };
-  saveSidebarState(state);
-  broadcastAll({ type: 'sidebar_update', state });
+  await saveSidebarState(state);
+  broadcastSidebarInvalidation();
   return true;
 }

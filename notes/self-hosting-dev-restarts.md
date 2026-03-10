@@ -1,15 +1,26 @@
 # Self-Hosting Dev Restart Strategy
 
+> Transport/runtimes are now HTTP-first with detached runners. This note stays focused on honest restart behavior and the recommended two-plane dev workflow.
+
 ## Brutal truth
 
 If the same `chat-server` process is both:
 
-1. the thing carrying the live conversation, and
+1. the thing carrying your live browser tab, and
 2. the thing you are restarting,
 
-then **mid-turn continuity is impossible by definition**.
+then **transport continuity is still impossible by definition**.
 
-You can improve recovery. You cannot honestly promise zero-loss live streaming unless the runner lifetime is decoupled from the web server lifetime.
+What changed is the important part underneath that transport break:
+
+- the browser no longer depends on live event streaming for correctness
+- active runs can keep going in detached sidecars
+- the control plane can restart, re-scan durable run output, and converge back to the same state
+
+So the honest promise is now stronger than before, but still bounded:
+
+- **No promise:** zero-disruption live socket continuity
+- **Actual promise:** restart-safe control-plane recovery with durable HTTP state and detached active runs
 
 ## Current reusable workflow
 
@@ -19,9 +30,7 @@ You can improve recovery. You cannot honestly promise zero-loss live streaming u
 - **Validation plane:** `7692` test service (or another manual port); use it to verify behavior and restart freely
 - **Emergency fallback:** `7681` auth-proxy terminal
 
-Rule: **do not drive development from the same instance you expect to restart repeatedly**. In practice, avoid using `7692` for active coding work; keep it as the disposable validation plane.
-
-Use `7690` to edit code and maintain the live working conversation. Use `7692` to restart, inspect logs, and verify the test deployment.
+Rule: **do not drive development from the same instance you expect to restart repeatedly**. In practice, keep `7692` disposable and use `7690` as the long-lived operator plane.
 
 ### 2. Standardize manual test-instance management
 
@@ -35,20 +44,15 @@ scripts/chat-instance.sh status --port 7692 --name test
 scripts/chat-instance.sh logs --port 7692 --name test
 ```
 
-This removes the current ad-hoc habit of manually killing whatever happens to be on `7692`.
+### 3. Treat restart as transport interruption, not run loss
 
-### 3. Treat restart as interruption + recovery, not fake continuity
+When the control plane shuts down during an active run:
 
-When the server shuts down during an active run:
+- the browser loses its current socket / page continuity
+- the detached runner keeps writing `status.json`, `spool.jsonl`, and `result.json`
+- after reconnect, HTTP reads rebuild session and run state from durable files
 
-- the run is marked as **interrupted**
-- captured Claude/Codex resume IDs are persisted immediately
-- after reconnect, the UI can show **Resume** for recoverable turns
-
-This is the honest model:
-
-- **No promise:** “your in-flight stream keeps going”
-- **Actual promise:** “your interrupted turn is explicitly recoverable if resume metadata exists”
+For older explicitly interrupted cases where resume metadata was captured, the UI may still show **Resume**. That is now a compatibility recovery path, not the main restart story.
 
 ### 4. Operational sequence
 
@@ -56,53 +60,28 @@ This is the honest model:
 2. Restart `7692`
 3. Re-open / reconnect `7692`
 4. Validate the change on `7692`
-5. If the previous `7692` turn was interrupted and recoverable, press **Resume**
+5. Refresh or re-query the session state by HTTP; do not judge correctness by socket continuity
 6. Once `7692` looks good, finish the current message on `7690`, then restart/reload `7690` if needed
 7. If both chat services are broken, fall back to `7681`
 
-## Why this is only phase 1
+## What the current architecture solves
 
-This still kills the in-process child runner during server restart.
+- repeatable two-plane restart workflow
+- HTTP-canonical recovery after refresh/reconnect
+- detached active runs surviving control-plane restarts
+- optional WS invalidation hints instead of mandatory event streaming
 
-That means phase 1 solves:
+## What is still intentionally out of scope
 
-- repeatable restart workflow
-- explicit interruption state
-- resumable recovery
-
-It does **not** solve:
-
-- true zero-downtime streaming
-- preserving an active subprocess while the web server restarts
-
-## Real phase 2 architecture
-
-If we want genuine restart-safe development, the architecture needs one of these:
-
-### Option A — stable gateway + drainable workers
-
-- one stable front process owns the public port / WebSocket endpoint
-- chat workers run behind it on internal ports
-- restart means: start new worker → health check → switch router → drain old worker
-
-Good for reducing connection churn.
-Still not ideal if session runners live inside workers.
-
-### Option B — detached per-session runners
-
-- each AI session runs under a separate local supervisor / daemon
-- chat-server becomes stateless control plane + event replay layer
-- server restart does not kill the active tool process
-
-This is the first architecture that can honestly claim **restart-safe active runs**.
+- zero-downtime browser transport continuity
+- WebSocket replacement / transport redesign
+- database migration beyond local filesystem storage
 
 ## Recommendation
 
 Prioritize in this order:
 
-1. **Now:** use `7690` as the coding/operator plane and `7692` as the validation plane
-2. **Now:** use `scripts/chat-instance.sh` for custom-port instances
-3. **Now:** rely on interrupted-turn recovery instead of pretending restarts are harmless
-4. **Next major step:** design detached session runners
-
-Anything weaker than that is just nicer failure, not a real fix.
+1. Keep `7690` as the coding/operator plane and `7692` as the validation plane
+2. Use `scripts/chat-instance.sh` for custom-port instances
+3. Validate restart behavior through HTTP state recovery, not stream continuity
+4. Defer transport swaps and DB changes until they are separately justified

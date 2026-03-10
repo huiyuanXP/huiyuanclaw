@@ -840,3 +840,20 @@ chat/providers/builtin/foo.mjs
 - `chat/process-runner.mjs`
 
 因为这三处是当前 provider 抽象最断裂的地方。
+
+---
+
+## 12. 补充项目 TODO：统一 outbound message / email capability
+
+当前 Agent Mailbox 的自动回复链路已经能工作，但它本质上还是一个 **邮箱专用的 completion-target / outbound email flow**。
+
+这对当前验证阶段是对的，因为目标是先把 mail intake → review → AI reply → outbound delivery 这条链路跑通；但从长期看，这个抽象层级还不够通用。
+
+先记录一个项目级 TODO，暂时不在这里提前定死方案：
+
+- 长期要把“发消息 / 发邮件”沉到 **provider 层能力**，而不是继续作为 mailbox-specific implementation 分散在上层流程里。
+- 目标不是只支持更多邮件服务商，而是提供一个统一的 outbound capability，让不同自动化流都可以复用同一层发送抽象。
+- 未来无论是 email、站内消息、IM webhook，还是其他 reply surface，都应该先落到这个统一能力上，再由具体 flow 决定何时触发、如何审批、如何回写状态。
+- 现阶段先保留现有 mailbox reply 实现，不急着抽象；等 provider registry / runtime contract 更稳定后，再决定 capability contract 的具体 shape。
+
+换句话说：**现在先接受“邮箱自动回复能跑”，但不要把它误当成最终抽象。**

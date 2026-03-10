@@ -104,15 +104,33 @@ async function main() {
   const session = JSON.parse(createRes.body).session;
   assert.ok(session?.id, 'session id should exist');
 
-  const historyDir = join(configDir, 'chat-history');
-  mkdirSync(historyDir, { recursive: true });
-  writeFileSync(join(historyDir, `${session.id}.json`), JSON.stringify([
+  const historyDir = join(configDir, 'chat-history', session.id);
+  mkdirSync(join(historyDir, 'events'), { recursive: true });
+  mkdirSync(join(historyDir, 'bodies'), { recursive: true });
+  writeFileSync(join(historyDir, 'meta.json'), JSON.stringify({
+    latestSeq: 6,
+    lastEventAt: 6,
+    size: 6,
+    counts: {
+      message: 2,
+      message_user: 1,
+      message_assistant: 1,
+      status: 1,
+      reasoning: 1,
+      tool_use: 1,
+      tool_result: 1,
+    },
+  }, null, 2), 'utf8');
+  const events = [
     {
       type: 'message',
       id: 'evt_000001',
+      seq: 1,
       timestamp: 1,
       role: 'user',
       content: 'Please review this snippet.',
+      bodyAvailable: true,
+      bodyLoaded: true,
       images: [{
         filename: 'inline.png',
         mimeType: 'image/png',
@@ -122,6 +140,7 @@ async function main() {
     {
       type: 'status',
       id: 'evt_000002',
+      seq: 2,
       timestamp: 2,
       role: 'system',
       content: 'thinking',
@@ -129,35 +148,59 @@ async function main() {
     {
       type: 'reasoning',
       id: 'evt_000003',
+      seq: 3,
       timestamp: 3,
       role: 'assistant',
       content: 'Need to inspect the data flow first.',
+      bodyAvailable: true,
+      bodyLoaded: true,
     },
     {
       type: 'tool_use',
       id: 'evt_000004',
+      seq: 4,
       timestamp: 4,
       role: 'assistant',
       toolName: 'shell',
       toolInput: 'rg -n "share" .',
+      bodyAvailable: true,
+      bodyLoaded: true,
     },
     {
       type: 'tool_result',
       id: 'evt_000005',
+      seq: 5,
       timestamp: 5,
       role: 'system',
       toolName: 'shell',
       output: 'chat/router.mjs: share route',
       exitCode: 0,
+      bodyAvailable: true,
+      bodyLoaded: true,
     },
     {
       type: 'message',
       id: 'evt_000006',
+      seq: 6,
       timestamp: 6,
       role: 'assistant',
       content: 'Done.\n\n```js\nconsole.log("shared snapshot ok");\n```\n\n[external link](https://example.com)',
+      bodyAvailable: true,
+      bodyLoaded: true,
     },
-  ], null, 2), 'utf8');
+  ];
+  for (const event of events) {
+    writeFileSync(
+      join(historyDir, 'events', `${String(event.seq).padStart(9, '0')}.json`),
+      JSON.stringify(event, null, 2),
+      'utf8',
+    );
+  }
+
+  stopServer();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  startServer();
+  await waitForServer();
 
   const shareRes = await request('POST', `/api/sessions/${session.id}/share`, {
     headers: { Cookie: cookie },
@@ -174,14 +217,14 @@ async function main() {
   assert.strictEqual(storedSnapshot.id, shareId, 'snapshot id should match');
   assert.strictEqual(storedSnapshot.session.tool, 'codex', 'tool should be preserved');
   assert.ok(!JSON.stringify(storedSnapshot).includes('savedPath'), 'snapshot should not leak internal file paths');
+  assert.ok(storedSnapshot.events.some((event) => event.type === 'message' && /Please review this snippet/.test(event.content || '')));
+  assert.ok(storedSnapshot.events.some((event) => event.type === 'message' && /shared snapshot ok/.test(event.content || '')));
 
   const publicShareRes = await request('GET', sharePayload.share.url);
   assert.strictEqual(publicShareRes.status, 200, 'public share page should load without auth');
   assert.match(publicShareRes.headers['content-security-policy'] || '', /connect-src 'none'/, 'share page CSP should block network access');
   assert.strictEqual(publicShareRes.headers['referrer-policy'], 'no-referrer', 'share page should suppress referrer leakage');
   assert.match(publicShareRes.body, /Read-only snapshot/, 'share page should be read-only');
-  assert.match(publicShareRes.body, /Please review this snippet\./, 'share page should embed snapshot content');
-  assert.ok(publicShareRes.body.includes('shared snapshot ok'), 'share page should carry assistant code content');
   assert.ok(!publicShareRes.body.includes('msgInput'), 'share page should not include live chat input');
   assert.ok(!publicShareRes.body.includes('/api/auth/me'), 'share page should not bootstrap owner auth UI');
   assert.ok(!publicShareRes.body.includes('/ws'), 'share page should not connect to live websocket');

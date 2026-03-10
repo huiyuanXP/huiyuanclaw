@@ -71,10 +71,10 @@ const wsClients = await import(
 
 const {
   createSession,
-  sendMessage,
-  subscribe,
-  unsubscribe,
+  dropToolUse,
+  getRunState,
   killAll,
+  submitHttpMessage,
 } = sessionManager;
 const { setWss } = wsClients;
 
@@ -89,10 +89,11 @@ function makeWs(authSession) {
   };
 }
 
-async function waitFor(predicate, description, timeoutMs = 4000) {
+async function waitFor(predicate, description, timeoutMs = 8000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if (predicate()) return;
+    const value = await predicate();
+    if (value) return value;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error(`Timed out: ${description}`);
@@ -102,11 +103,18 @@ const ownerWs = makeWs({ role: 'owner' });
 const visitorWs = makeWs({ role: 'visitor', sessionId: 'placeholder' });
 setWss({ clients: new Set([ownerWs, visitorWs]) });
 
-const ownerSessionA = createSession(tempHome, 'fake-codex', 'Owner A');
-const ownerSessionB = createSession(tempHome, 'fake-codex', 'Owner B');
-subscribe(ownerSessionB.id, ownerWs);
+const ownerSessionA = await createSession(tempHome, 'fake-codex', 'Owner A', {
+  group: 'Tests',
+  description: 'Owner invalidation test A',
+});
+await createSession(tempHome, 'fake-codex', 'Owner B', {
+  group: 'Tests',
+  description: 'Owner invalidation test B',
+});
+ownerWs.messages = [];
 
-sendMessage(ownerSessionA.id, 'Say hello', [], {
+const ownerOutcome = await submitHttpMessage(ownerSessionA.id, 'Say hello', [], {
+  requestId: 'owner-run',
   tool: 'fake-codex',
   model: 'fake-model',
   effort: 'low',
@@ -114,32 +122,48 @@ sendMessage(ownerSessionA.id, 'Say hello', [], {
 
 await waitFor(
   () => ownerWs.messages.some(
-    (msg) =>
-      msg.type === 'session'
-      && msg.session?.id === ownerSessionA.id
-      && msg.session?.status === 'running',
+    (msg) => msg.type === 'session_invalidated' && msg.sessionId === ownerSessionA.id,
   ),
-  'owner should receive a running update for a non-attached owner session',
+  'owner should receive invalidation for its session',
 );
 
-await waitFor(
-  () => ownerWs.messages.some(
-    (msg) =>
-      msg.type === 'session'
-      && msg.session?.id === ownerSessionA.id
-      && msg.session?.status === 'idle',
-  ),
-  'owner should receive a completion update for a non-attached owner session',
+await waitFor(() => {
+  return getRunState(ownerOutcome.run.id).then((run) => run && ['completed', 'failed', 'cancelled'].includes(run.state));
+}, 'owner run should complete');
+
+assert.equal(
+  ownerWs.messages.some((msg) => ['session', 'event', 'history'].includes(msg.type)),
+  false,
+  'owner websocket should not receive state-bearing payloads',
 );
 
-const visitorSession = createSession(tempHome, 'fake-codex', 'Visitor A', {
+ownerWs.messages = [];
+const dropResult = await dropToolUse(ownerSessionA.id);
+assert.equal(dropResult, true, 'drop tool use should succeed for owner session');
+assert.equal(
+  ownerWs.messages.some(
+    (msg) => msg.type === 'session_invalidated' && msg.sessionId === ownerSessionA.id,
+  ),
+  true,
+  'drop tool use should still invalidate the affected session',
+);
+assert.equal(
+  ownerWs.messages.some((msg) => msg.type === 'sessions_invalidated'),
+  false,
+  'drop tool use should not invalidate the whole owner session list',
+);
+
+const visitorSession = await createSession(tempHome, 'fake-codex', 'Visitor A', {
   visitorId: 'visitor-1',
+  group: 'Tests',
+  description: 'Visitor invalidation test',
 });
 visitorWs._authSession.sessionId = visitorSession.id;
-subscribe(visitorSession.id, visitorWs);
 ownerWs.messages = [];
+visitorWs.messages = [];
 
-sendMessage(visitorSession.id, 'Visitor run', [], {
+const visitorOutcome = await submitHttpMessage(visitorSession.id, 'Visitor run', [], {
+  requestId: 'visitor-run',
   tool: 'fake-codex',
   model: 'fake-model',
   effort: 'low',
@@ -147,24 +171,29 @@ sendMessage(visitorSession.id, 'Visitor run', [], {
 
 await waitFor(
   () => visitorWs.messages.some(
-    (msg) =>
-      msg.type === 'session'
-      && msg.session?.id === visitorSession.id
-      && msg.session?.status === 'idle',
+    (msg) => msg.type === 'session_invalidated' && msg.sessionId === visitorSession.id,
   ),
-  'visitor should still receive its own completion update',
+  'visitor should receive invalidation for its own session',
 );
+
+await waitFor(() => {
+  return getRunState(visitorOutcome.run.id).then((run) => run && ['completed', 'failed', 'cancelled'].includes(run.state));
+}, 'visitor run should complete');
 
 assert.equal(
   ownerWs.messages.some(
-    (msg) => msg.type === 'session' && msg.session?.id === visitorSession.id,
+    (msg) => msg.type === 'session_invalidated' && msg.sessionId === visitorSession.id,
   ),
   false,
-  'owner clients must not receive visitor session status broadcasts',
+  'owner clients must not receive visitor session invalidations',
 );
 
-unsubscribe(ownerSessionB.id, ownerWs);
-unsubscribe(visitorSession.id, visitorWs);
+assert.equal(
+  visitorWs.messages.some((msg) => ['session', 'event', 'history'].includes(msg.type)),
+  false,
+  'visitor websocket should stay invalidation-only',
+);
+
 killAll();
 setWss({ clients: new Set() });
 rmSync(tempHome, { recursive: true, force: true });

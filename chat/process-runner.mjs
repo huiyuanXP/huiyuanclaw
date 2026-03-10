@@ -1,12 +1,12 @@
-import { spawn, execFileSync } from 'child_process';
-import { existsSync } from 'fs';
+import { spawn } from 'child_process';
 import { homedir } from 'os';
 import { resolve, join } from 'path';
 import { createInterface } from 'readline';
 import { createClaudeAdapter, buildClaudeArgs } from './adapters/claude.mjs';
 import { createCodexAdapter, buildCodexArgs } from './adapters/codex.mjs';
 import { statusEvent } from './normalizer.mjs';
-import { getToolDefinition, getToolCommand, fullPath } from '../lib/tools.mjs';
+import { getToolDefinitionAsync, getToolCommandAsync, fullPath, resolveToolCommandPathAsync } from '../lib/tools.mjs';
+import { pathExists } from './fs-utils.mjs';
 
 export function resolveCwd(folder) {
   if (!folder || folder === '~') return homedir();
@@ -19,46 +19,19 @@ const TAG = '[process-runner]';
 /**
  * Resolve a command name to its full absolute path.
  */
-export function resolveCommand(cmd) {
-  const home = process.env.HOME || '';
-  const isMac = process.platform === 'darwin';
-  const preferred = [
-    `${home}/.local/bin/${cmd}`,
-    // macOS-specific paths
-    ...(isMac ? [
-      `${home}/Library/pnpm/${cmd}`,
-      `/opt/homebrew/bin/${cmd}`,
-    ] : [
-      // Linux-specific paths
-      `/snap/bin/${cmd}`,
-    ]),
-    `/usr/local/bin/${cmd}`,
-    `/usr/bin/${cmd}`,
-  ];
-  for (const p of preferred) {
-    if (p && existsSync(p)) {
-      console.log(`${TAG} Resolved "${cmd}" → ${p} (preferred path)`);
-      return p;
-    }
-  }
-
-  try {
-    const resolved = execFileSync('which', [cmd], {
-      encoding: 'utf8',
-      env: { ...process.env, PATH: fullPath },
-      timeout: 3000,
-    }).trim();
-    console.log(`${TAG} Resolved "${cmd}" → ${resolved} (which)`);
+export async function resolveCommand(cmd) {
+  const resolved = await resolveToolCommandPathAsync(cmd);
+  if (resolved && await pathExists(resolved)) {
+    console.log(`${TAG} Resolved "${cmd}" → ${resolved}`);
     return resolved;
-  } catch {
-    console.log(`${TAG} Could not resolve "${cmd}", using bare name`);
-    return cmd;
   }
+  console.log(`${TAG} Could not resolve "${cmd}", using bare name`);
+  return cmd;
 }
 
-export function createToolInvocation(toolId, prompt, options = {}) {
-  const tool = getToolDefinition(toolId);
-  const command = tool?.command || getToolCommand(toolId);
+export async function createToolInvocation(toolId, prompt, options = {}) {
+  const tool = await getToolDefinitionAsync(toolId);
+  const command = tool?.command || await getToolCommandAsync(toolId);
   const runtimeFamily = tool?.runtimeFamily
     || (toolId === 'claude' ? 'claude-stream-json' : toolId === 'codex' ? 'codex-json' : null);
   const isClaudeFamily = runtimeFamily === 'claude-stream-json';
@@ -104,7 +77,7 @@ export function createToolInvocation(toolId, prompt, options = {}) {
 /**
  * Build a prompt with image file paths prepended.
  */
-function prependImagePaths(prompt, images) {
+export function prependImagePaths(prompt, images) {
   const paths = (images || []).map(img => img.savedPath).filter(Boolean);
   if (paths.length === 0) return prompt;
   const refs = paths.map(p => `[User attached image: ${p}]`).join('\n');
@@ -142,13 +115,13 @@ function codexTurnLooksIncomplete(lastAgentMessage, hadFileChanges, hadCommands)
   return CODEX_UNFINISHED_PATTERNS.some(p => p.test(lastAgentMessage));
 }
 
-export function spawnTool(toolId, folder, prompt, onEvent, onExit, options = {}) {
+export async function spawnTool(toolId, folder, prompt, onEvent, onExit, options = {}) {
   const hasImages = options.images && options.images.length > 0;
 
   // For all tools: prepend image file paths to prompt
   const effectivePrompt = hasImages ? prependImagePaths(prompt, options.images) : prompt;
 
-  const { command, adapter, args, isClaudeFamily, isCodexFamily } = createToolInvocation(toolId, effectivePrompt, {
+  const { command, adapter, args, isClaudeFamily, isCodexFamily } = await createToolInvocation(toolId, effectivePrompt, {
     dangerouslySkipPermissions: true,
     claudeSessionId: options.claudeSessionId,
     codexThreadId: options.codexThreadId,
@@ -157,7 +130,7 @@ export function spawnTool(toolId, folder, prompt, onEvent, onExit, options = {})
     effort: options.effort,
   });
 
-  const resolvedCmd = resolveCommand(command);
+  const resolvedCmd = await resolveCommand(command);
   const resolvedFolder = resolveCwd(folder);
 
   // Clean env: remove CLAUDECODE markers so nested Claude Code sessions work

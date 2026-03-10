@@ -1,60 +1,126 @@
 import webpush from 'web-push';
-import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { VAPID_KEYS_FILE, PUSH_SUBSCRIPTIONS_FILE } from '../lib/config.mjs';
+import { createSerialTaskQueue, ensureDir, readJson, writeJsonAtomic } from './fs-utils.mjs';
 
 let ready = false;
+let initPromise = null;
 let cachedKeys = null;
+const PUSH_TIMEOUT_MS = Number.parseInt(process.env.PUSH_TIMEOUT_MS || '5000', 10);
+const PUSH_NETWORK_FAILURE_THRESHOLD = Number.parseInt(process.env.PUSH_NETWORK_FAILURE_THRESHOLD || '3', 10);
+const PUSH_NETWORK_BACKOFF_MS = Number.parseInt(process.env.PUSH_NETWORK_BACKOFF_MS || `${30 * 60 * 1000}`, 10);
+const runSubscriptionMutation = createSerialTaskQueue();
 
-function ensureDir(filepath) {
-  const dir = dirname(filepath);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-}
-
-function loadOrGenerateKeys() {
+async function loadOrGenerateKeys() {
   if (cachedKeys) return cachedKeys;
-  if (existsSync(VAPID_KEYS_FILE)) {
-    try {
-      cachedKeys = JSON.parse(readFileSync(VAPID_KEYS_FILE, 'utf8'));
-      return cachedKeys;
-    } catch {}
+  const existing = await readJson(VAPID_KEYS_FILE, null);
+  if (existing) {
+    cachedKeys = existing;
+    return cachedKeys;
   }
   cachedKeys = webpush.generateVAPIDKeys();
-  ensureDir(VAPID_KEYS_FILE);
-  writeFileSync(VAPID_KEYS_FILE, JSON.stringify(cachedKeys, null, 2));
+  await ensureDir(dirname(VAPID_KEYS_FILE));
+  await writeJsonAtomic(VAPID_KEYS_FILE, cachedKeys);
   console.log('[push] Generated new VAPID keys');
   return cachedKeys;
 }
 
-function init() {
+async function init() {
   if (ready) return;
-  const keys = loadOrGenerateKeys();
-  webpush.setVapidDetails('mailto:remotelab@localhost', keys.publicKey, keys.privateKey);
-  ready = true;
+  if (!initPromise) {
+    initPromise = (async () => {
+      const keys = await loadOrGenerateKeys();
+      webpush.setVapidDetails('mailto:remotelab@localhost', keys.publicKey, keys.privateKey);
+      ready = true;
+    })();
+  }
+  await initPromise;
 }
 
-export function getPublicKey() {
-  init();
+function buildMeta(meta = {}) {
+  return {
+    failureCount: Number.isFinite(meta.failureCount) ? meta.failureCount : 0,
+    disabledUntil: Number.isFinite(meta.disabledUntil) ? meta.disabledUntil : 0,
+    lastError: typeof meta.lastError === 'string' ? meta.lastError : '',
+  };
+}
+
+function withFreshMeta(sub) {
+  return { ...sub, __meta: buildMeta() };
+}
+
+function normalizeSubs(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((entry) => entry && typeof entry === 'object' && typeof entry.endpoint === 'string')
+    .map((entry) => ({ ...entry, __meta: buildMeta(entry.__meta) }));
+}
+
+function isInBackoff(sub) {
+  return sub?.__meta?.disabledUntil > Date.now();
+}
+
+function clearNetworkFailure(sub) {
+  return withFreshMeta(sub);
+}
+
+function isNetworkFailure(err) {
+  const code = `${err?.code || ''}`.toUpperCase();
+  if (['ETIMEDOUT', 'ECONNRESET', 'EAI_AGAIN', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EPROTO'].includes(code)) {
+    return true;
+  }
+  const message = `${err?.message || ''}`.toLowerCase();
+  return [
+    'socket timeout',
+    'timed out',
+    'tls',
+    'client network socket disconnected',
+    'econnreset',
+    'eai_again',
+    'unexpected response code',
+  ].some((fragment) => message.includes(fragment));
+}
+
+function recordNetworkFailure(sub, err) {
+  const failureCount = (sub?.__meta?.failureCount || 0) + 1;
+  const disabledUntil = failureCount >= PUSH_NETWORK_FAILURE_THRESHOLD
+    ? Date.now() + PUSH_NETWORK_BACKOFF_MS
+    : 0;
+  return {
+    ...sub,
+    __meta: {
+      failureCount,
+      disabledUntil,
+      lastError: `${err?.message || 'network_error'}`,
+    },
+  };
+}
+
+export async function getPublicKey() {
+  await init();
   return cachedKeys.publicKey;
 }
 
-function loadSubs() {
-  if (!existsSync(PUSH_SUBSCRIPTIONS_FILE)) return [];
-  try { return JSON.parse(readFileSync(PUSH_SUBSCRIPTIONS_FILE, 'utf8')); } catch { return []; }
+async function loadSubs() {
+  return normalizeSubs(await readJson(PUSH_SUBSCRIPTIONS_FILE, []));
 }
 
-function saveSubs(subs) {
-  ensureDir(PUSH_SUBSCRIPTIONS_FILE);
-  writeFileSync(PUSH_SUBSCRIPTIONS_FILE, JSON.stringify(subs, null, 2));
+async function saveSubs(subs) {
+  await ensureDir(dirname(PUSH_SUBSCRIPTIONS_FILE));
+  await writeJsonAtomic(PUSH_SUBSCRIPTIONS_FILE, subs);
 }
 
-export function addSubscription(sub) {
-  init();
-  const subs = loadSubs();
-  const idx = subs.findIndex(s => s.endpoint === sub.endpoint);
-  if (idx >= 0) subs[idx] = sub; else subs.push(sub);
-  saveSubs(subs);
-  console.log(`[push] Subscription saved (total: ${subs.length})`);
+export async function addSubscription(sub) {
+  await init();
+  await runSubscriptionMutation(async () => {
+    const subs = await loadSubs();
+    const idx = subs.findIndex((entry) => entry.endpoint === sub.endpoint);
+    const next = withFreshMeta(sub);
+    if (idx >= 0) subs[idx] = next;
+    else subs.push(next);
+    await saveSubs(subs);
+    console.log(`[push] Subscription saved (total: ${subs.length})`);
+  });
 }
 
 function buildSessionUrl(session) {
@@ -66,9 +132,12 @@ function buildSessionUrl(session) {
 }
 
 export async function sendCompletionPush(session) {
-  init();
-  const subs = loadSubs();
+  await init();
+  const subs = await loadSubs();
   if (subs.length === 0) return;
+
+  const activeCount = subs.filter((sub) => !isInBackoff(sub)).length;
+  if (activeCount === 0) return;
 
   const folder = (session?.folder || '').split('/').pop() || 'Session';
   const name = session?.name || folder;
@@ -81,17 +150,40 @@ export async function sendCompletionPush(session) {
   });
 
   const stale = new Set();
+  let changed = false;
+  const nextSubs = [...subs];
   await Promise.allSettled(subs.map(async (sub, i) => {
+    if (isInBackoff(sub)) return;
     try {
-      await webpush.sendNotification(sub, payload);
+      await webpush.sendNotification(sub, payload, { timeout: PUSH_TIMEOUT_MS });
+      if ((sub?.__meta?.failureCount || 0) > 0 || (sub?.__meta?.disabledUntil || 0) > 0 || sub?.__meta?.lastError) {
+        nextSubs[i] = clearNetworkFailure(sub);
+        changed = true;
+      }
     } catch (err) {
       if (err.statusCode === 410 || err.statusCode === 404) stale.add(i);
-      else console.warn(`[push] Send failed: ${err.message}`);
+      else if (isNetworkFailure(err)) {
+        nextSubs[i] = recordNetworkFailure(sub, err);
+        changed = true;
+        const meta = nextSubs[i].__meta;
+        if (meta.disabledUntil > 0) {
+          console.warn(`[push] Backing off subscription for ${Math.round(PUSH_NETWORK_BACKOFF_MS / 60000)}m after ${meta.failureCount} network failures: ${err.message}`);
+        } else {
+          console.warn(`[push] Send failed (${meta.failureCount}/${PUSH_NETWORK_FAILURE_THRESHOLD}): ${err.message}`);
+        }
+      } else {
+        console.warn(`[push] Send failed: ${err.message}`);
+      }
     }
   }));
 
+  if (changed || stale.size > 0) {
+    await runSubscriptionMutation(async () => {
+      await saveSubs(nextSubs.filter((_, i) => !stale.has(i)));
+    });
+  }
+
   if (stale.size > 0) {
-    saveSubs(subs.filter((_, i) => !stale.has(i)));
     console.log(`[push] Removed ${stale.size} stale subscription(s)`);
   }
 }
