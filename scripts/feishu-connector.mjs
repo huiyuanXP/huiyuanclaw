@@ -2,13 +2,15 @@
 
 import { appendFile, mkdir, readFile, writeFile } from 'fs/promises';
 import { homedir } from 'os';
-import { dirname, join } from 'path';
+import { dirname, join, resolve } from 'path';
 import { setTimeout as delay } from 'timers/promises';
+import { pathToFileURL } from 'url';
 import * as Lark from '@larksuiteoapi/node-sdk';
 
 import { AUTH_FILE, CHAT_PORT } from '../lib/config.mjs';
 
 const DEFAULT_CONFIG_PATH = join(homedir(), '.config', 'remotelab', 'feishu-connector', 'config.json');
+const DEFAULT_ALLOWED_SENDERS_FILENAME = 'allowed-senders.json';
 const DEFAULT_CHAT_BASE_URL = `http://127.0.0.1:${CHAT_PORT}`;
 const DEFAULT_SESSION_TOOL = 'codex';
 const DEFAULT_SESSION_SYSTEM_PROMPT = [
@@ -91,6 +93,7 @@ Config shape:
     "systemPrompt": "${DEFAULT_SESSION_SYSTEM_PROMPT.replace(/"/g, '\\"')}",
     "intakePolicy": {
       "mode": "allow_all",
+      "allowedSendersPath": "~/.config/remotelab/feishu-connector/${DEFAULT_ALLOWED_SENDERS_FILENAME}",
       "allowedSenders": {
         "openIds": [],
         "userIds": [],
@@ -137,21 +140,40 @@ function normalizeStringArray(values) {
   return Array.from(new Set(values.map((value) => trimString(value)).filter(Boolean)));
 }
 
-function normalizeIntakePolicy(value) {
+function normalizeAllowedSenders(value) {
+  const allowedSenders = value || {};
+  return {
+    openIds: normalizeStringArray(allowedSenders.openIds),
+    userIds: normalizeStringArray(allowedSenders.userIds),
+    unionIds: normalizeStringArray(allowedSenders.unionIds),
+    tenantKeys: normalizeStringArray(allowedSenders.tenantKeys),
+  };
+}
+
+function resolveOptionalPath(value, baseDir, fallbackPath) {
+  const normalized = trimString(value);
+  if (!normalized) return fallbackPath;
+  if (normalized.startsWith('~')) {
+    return join(homedir(), normalized.slice(1));
+  }
+  if (normalized.startsWith('/')) {
+    return normalized;
+  }
+  return resolve(baseDir, normalized);
+}
+
+function normalizeIntakePolicy(value, options = {}) {
   const mode = trimString(value?.mode || 'allow_all').toLowerCase();
   if (!['allow_all', 'whitelist'].includes(mode)) {
     throw new Error(`Unsupported intakePolicy.mode: ${value?.mode || '(missing)'}`);
   }
 
-  const allowedSenders = value?.allowedSenders || {};
+  const baseDir = options.baseDir || homedir();
+  const defaultAllowedSendersPath = options.defaultAllowedSendersPath || join(baseDir, DEFAULT_ALLOWED_SENDERS_FILENAME);
   return {
     mode,
-    allowedSenders: {
-      openIds: normalizeStringArray(allowedSenders.openIds),
-      userIds: normalizeStringArray(allowedSenders.userIds),
-      unionIds: normalizeStringArray(allowedSenders.unionIds),
-      tenantKeys: normalizeStringArray(allowedSenders.tenantKeys),
-    },
+    allowedSendersPath: resolveOptionalPath(value?.allowedSendersPath, baseDir, defaultAllowedSendersPath),
+    allowedSenders: normalizeAllowedSenders(value?.allowedSenders),
   };
 }
 
@@ -185,13 +207,18 @@ async function loadConfig(pathname) {
   const appSecret = trimString(parsed?.appSecret);
   if (!appId) throw new Error(`Missing appId in ${pathname}`);
   if (!appSecret) throw new Error(`Missing appSecret in ${pathname}`);
+  const configDir = dirname(pathname);
+  const storageDir = trimString(parsed?.storageDir) || configDir;
   return {
     appId,
     appSecret,
     region: normalizeRegion(parsed?.region),
     loggerLevel: trimString(parsed?.loggerLevel || 'info'),
-    storageDir: trimString(parsed?.storageDir) || dirname(pathname),
-    intakePolicy: normalizeIntakePolicy(parsed?.intakePolicy),
+    storageDir,
+    intakePolicy: normalizeIntakePolicy(parsed?.intakePolicy, {
+      baseDir: configDir,
+      defaultAllowedSendersPath: join(configDir, DEFAULT_ALLOWED_SENDERS_FILENAME),
+    }),
     storeRawEvents: parsed?.storeRawEvents === true,
     chatBaseUrl: normalizeBaseUrl(parsed?.chatBaseUrl || DEFAULT_CHAT_BASE_URL),
     sessionFolder: trimString(parsed?.sessionFolder) || homedir(),
@@ -304,6 +331,50 @@ async function writeJson(pathname, value) {
   await writeFile(pathname, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
+async function readAllowedSendersFile(pathname) {
+  try {
+    const raw = await readFile(pathname, 'utf8');
+    return {
+      status: 'ok',
+      allowedSenders: normalizeAllowedSenders(JSON.parse(raw)),
+    };
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return { status: 'missing', allowedSenders: null };
+    }
+    console.error(`[feishu-connector] failed to read whitelist file ${pathname}:`, error?.stack || error?.message || error);
+    return { status: 'error', allowedSenders: null };
+  }
+}
+
+function mergeAllowedSenders(...sources) {
+  return normalizeAllowedSenders({
+    openIds: sources.flatMap((source) => source?.openIds || []),
+    userIds: sources.flatMap((source) => source?.userIds || []),
+    unionIds: sources.flatMap((source) => source?.unionIds || []),
+    tenantKeys: sources.flatMap((source) => source?.tenantKeys || []),
+  });
+}
+
+async function ensureAllowedSendersFile(pathname, seedAllowedSenders) {
+  const current = await readAllowedSendersFile(pathname);
+  if (current.status !== 'missing') {
+    return mergeAllowedSenders(seedAllowedSenders, current.allowedSenders);
+  }
+
+  const seeded = normalizeAllowedSenders(seedAllowedSenders);
+  await writeJson(pathname, seeded);
+  return seeded;
+}
+
+async function loadEffectiveAllowedSenders(policy) {
+  const fileState = await readAllowedSendersFile(policy.allowedSendersPath);
+  if (fileState.status === 'ok' && fileState.allowedSenders) {
+    return fileState.allowedSenders;
+  }
+  return normalizeAllowedSenders(policy.allowedSenders);
+}
+
 function senderIdentity(summary) {
   return {
     openId: summary?.sender?.openId || '',
@@ -348,10 +419,10 @@ async function updateKnownSenders(pathname, summary) {
   await writeJson(pathname, current);
 }
 
-function isAllowedByPolicy(policy, summary) {
+async function isAllowedByPolicy(policy, summary) {
   if (policy.mode !== 'whitelist') return true;
   const sender = summary.sender || {};
-  const allowed = policy.allowedSenders || {};
+  const allowed = await loadEffectiveAllowedSenders(policy);
   return (
     allowed.openIds.includes(sender.openId)
     || allowed.userIds.includes(sender.userId)
@@ -361,7 +432,7 @@ function isAllowedByPolicy(policy, summary) {
 }
 
 async function recordInboundEvent(config, eventsLogPath, knownSendersPath, summary, raw, sourceLabel) {
-  const allowed = isAllowedByPolicy(config.intakePolicy, summary);
+  const allowed = await isAllowedByPolicy(config.intakePolicy, summary);
   const record = {
     receivedAt: nowIso(),
     sourceLabel,
@@ -507,6 +578,11 @@ function normalizeReplyText(text) {
   if (!normalized) return '';
   if (normalized.length <= MAX_FEISHU_TEXT_LENGTH) return normalized;
   return `${normalized.slice(0, MAX_FEISHU_TEXT_LENGTH - 16).trimEnd()}\n\n[truncated]`;
+}
+
+function isMainModule() {
+  if (!process.argv[1]) return false;
+  return import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
 }
 
 function buildFailureReply(summary, reason = '') {
@@ -686,15 +762,13 @@ async function generateRemoteLabReply(runtime, summary) {
     submission.requestId,
   );
   const replyText = normalizeReplyText(replyEvent?.content);
-  if (!replyText) {
-    throw new Error('no assistant reply found for completed run');
-  }
   return {
     sessionId: session.id,
     runId: submission.runId,
     requestId: submission.requestId,
     duplicate: submission.duplicate,
     replyText,
+    silent: !replyText,
   };
 }
 
@@ -723,14 +797,19 @@ function isProcessableMessage(summary) {
   return true;
 }
 
-async function handleMessage(runtime, summary, sourceLabel) {
+async function handleMessage(runtime, summary, sourceLabel, helpers = {}) {
+  const wasHandled = helpers.wasMessageHandled || wasMessageHandled;
+  const markHandled = helpers.markMessageHandled || markMessageHandled;
+  const generateReply = helpers.generateRemoteLabReply || generateRemoteLabReply;
+  const sendText = helpers.sendFeishuText || sendFeishuText;
+
   if (!isProcessableMessage(summary)) {
     return;
   }
   if (runtime.processingMessageIds.has(summary.messageId)) {
     return;
   }
-  if (await wasMessageHandled(runtime.storagePaths.handledMessagesPath, summary.messageId)) {
+  if (await wasHandled(runtime.storagePaths.handledMessagesPath, summary.messageId)) {
     return;
   }
 
@@ -739,8 +818,8 @@ async function handleMessage(runtime, summary, sourceLabel) {
     const messageType = trimString(summary.messageType).toLowerCase();
     if (messageType && messageType !== 'text') {
       const replyText = buildFailureReply({ ...summary, textPreview: summary.textPreview || summary.rawContent }, 'unsupported_message_type');
-      const reply = await sendFeishuText(runtime, summary, replyText);
-      await markMessageHandled(runtime.storagePaths.handledMessagesPath, summary.messageId, {
+      const reply = await sendText(runtime, summary, replyText);
+      await markHandled(runtime.storagePaths.handledMessagesPath, summary.messageId, {
         status: 'unsupported_message_type',
         sourceLabel,
         chatId: summary.chatId,
@@ -750,9 +829,23 @@ async function handleMessage(runtime, summary, sourceLabel) {
       return;
     }
 
-    const generated = await generateRemoteLabReply(runtime, summary);
-    const reply = await sendFeishuText(runtime, summary, generated.replyText);
-    await markMessageHandled(runtime.storagePaths.handledMessagesPath, summary.messageId, {
+    const generated = await generateReply(runtime, summary);
+    if (!generated.replyText) {
+      await markHandled(runtime.storagePaths.handledMessagesPath, summary.messageId, {
+        status: 'silent_no_reply',
+        sourceLabel,
+        chatId: summary.chatId,
+        sessionId: generated.sessionId,
+        runId: generated.runId,
+        requestId: generated.requestId,
+        duplicate: generated.duplicate,
+        reason: 'empty_assistant_reply',
+      });
+      console.log(`[feishu-connector] no reply sent for ${summary.messageId} (empty assistant reply)`);
+      return;
+    }
+    const reply = await sendText(runtime, summary, generated.replyText);
+    await markHandled(runtime.storagePaths.handledMessagesPath, summary.messageId, {
       status: 'sent',
       sourceLabel,
       chatId: summary.chatId,
@@ -768,8 +861,8 @@ async function handleMessage(runtime, summary, sourceLabel) {
     console.error(`[feishu-connector] processing failed for ${summary.messageId}:`, error?.stack || error);
     try {
       const fallback = buildFailureReply(summary, error?.message || '');
-      const reply = await sendFeishuText(runtime, summary, fallback);
-      await markMessageHandled(runtime.storagePaths.handledMessagesPath, summary.messageId, {
+      const reply = await sendText(runtime, summary, fallback);
+      await markHandled(runtime.storagePaths.handledMessagesPath, summary.messageId, {
         status: 'failed_with_notice',
         sourceLabel,
         chatId: summary.chatId,
@@ -785,9 +878,21 @@ async function handleMessage(runtime, summary, sourceLabel) {
   }
 }
 
+export {
+  ensureAllowedSendersFile,
+  generateRemoteLabReply,
+  handleMessage,
+  isAllowedByPolicy,
+  normalizeAllowedSenders,
+  normalizeReplyText,
+};
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const config = await loadConfig(options.configPath);
+  if (config.intakePolicy.mode === 'whitelist') {
+    await ensureAllowedSendersFile(config.intakePolicy.allowedSendersPath, config.intakePolicy.allowedSenders);
+  }
   const storagePaths = {
     eventsLogPath: join(config.storageDir, 'events.jsonl'),
     knownSendersPath: join(config.storageDir, 'known-senders.json'),
@@ -840,6 +945,9 @@ async function main() {
   await wsClient.start({ eventDispatcher });
   console.log(`[feishu-connector] persistent connection ready (${config.region})`);
   console.log(`[feishu-connector] intake policy: ${config.intakePolicy.mode}`);
+  if (config.intakePolicy.mode === 'whitelist') {
+    console.log(`[feishu-connector] whitelist file: ${config.intakePolicy.allowedSendersPath} (hot reloaded per inbound event)`);
+  }
   console.log(`[feishu-connector] event log: ${storagePaths.eventsLogPath}`);
   console.log(`[feishu-connector] known senders: ${storagePaths.knownSendersPath}`);
   console.log(`[feishu-connector] handled messages: ${storagePaths.handledMessagesPath}`);
@@ -871,7 +979,9 @@ async function main() {
   await new Promise(() => {});
 }
 
-main().catch((error) => {
-  console.error('[feishu-connector] failed to start:', error?.stack || error?.message || error);
-  process.exit(1);
-});
+if (isMainModule()) {
+  main().catch((error) => {
+    console.error('[feishu-connector] failed to start:', error?.stack || error?.message || error);
+    process.exit(1);
+  });
+}

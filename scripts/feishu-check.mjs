@@ -2,9 +2,10 @@
 
 import { readFile } from 'fs/promises';
 import { homedir } from 'os';
-import { dirname, join } from 'path';
+import { dirname, join, resolve } from 'path';
 
 const DEFAULT_CONFIG_PATH = join(homedir(), '.config', 'remotelab', 'feishu-connector', 'config.json');
+const DEFAULT_ALLOWED_SENDERS_FILENAME = 'allowed-senders.json';
 const DEFAULT_TAIL = 5;
 const WATCH_INTERVAL_MS = 1000;
 
@@ -94,10 +95,23 @@ async function readTextIfExists(pathname) {
   }
 }
 
+function resolveOptionalPath(value, baseDir, fallbackPath) {
+  const normalized = String(value || '').trim();
+  if (!normalized) return fallbackPath;
+  if (normalized.startsWith('~')) {
+    return join(homedir(), normalized.slice(1));
+  }
+  if (normalized.startsWith('/')) {
+    return normalized;
+  }
+  return resolve(baseDir, normalized);
+}
+
 async function loadPaths(configPath) {
   const configDir = dirname(configPath);
   const configRaw = await readTextIfExists(configPath);
   let storageDir = configDir;
+  let allowedSendersPath = join(configDir, DEFAULT_ALLOWED_SENDERS_FILENAME);
 
   if (configRaw) {
     const parsed = JSON.parse(configRaw);
@@ -105,12 +119,14 @@ async function loadPaths(configPath) {
     if (configuredStorageDir) {
       storageDir = configuredStorageDir;
     }
+    allowedSendersPath = resolveOptionalPath(parsed?.intakePolicy?.allowedSendersPath, configDir, allowedSendersPath);
   }
 
   return {
     configPath,
     configDir,
     storageDir,
+    allowedSendersPath,
     pidPath: join(configDir, 'connector.pid'),
     logPath: join(configDir, 'connector.log'),
     eventLogPath: join(storageDir, 'events.jsonl'),
@@ -260,6 +276,7 @@ function printSnapshot(snapshot, options) {
   console.log(`Feishu connector: ${connectorLabel}`);
   console.log(`Config: ${snapshot.paths.configPath}`);
   console.log(`Storage: ${snapshot.paths.storageDir}`);
+  console.log(`Whitelist: ${snapshot.paths.allowedSendersPath}`);
   console.log(`Event log: ${snapshot.paths.eventLogPath}${snapshot.eventLog.exists ? '' : ' (missing)'}`);
 
   if (snapshot.eventLog.invalidLines > 0) {

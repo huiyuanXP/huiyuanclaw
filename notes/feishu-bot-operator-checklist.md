@@ -3,6 +3,8 @@
 > Purpose: split the Feishu bot rollout into the parts the human operator must do in Feishu’s console/client and the parts the agent can implement locally.
 > Scope: V0 validation for **one bot identity**, with **p2p chat first** and **group sessions later**.
 
+See also: `notes/feishu-bot-setup-lessons.md` for the practical rollout pitfalls and the distilled lessons from a real setup.
+
 ---
 
 ## Product stance
@@ -30,6 +32,7 @@ These steps depend on your Feishu developer account, tenant/admin UI, or chat-cl
 - Open the minimum permissions for V0:
   - read user-to-bot p2p messages
   - send IM messages as the app/bot
+  - if the send call is still rejected, explicitly enable one of Feishu's outbound IM scopes shown in the API error, such as `im:message:send`, `im:message`, or `im:message:send_as_bot`
 - Add the event subscription for **`im.message.receive_v1`**.
 - Make sure your own Feishu account is inside the app’s **availability scope**.
 - Publish / apply the config if the console requires it for the version you are using.
@@ -64,6 +67,61 @@ After the setup above, send me these exact items:
 - Enable group `@bot`-message permissions
 - Add the bot into one test group
 - Create a dedicated test group for multi-session validation
+
+---
+
+## How to let other people use the bot
+
+This depends on **who those other people are**.
+
+### Case 1 — other users are in the same Feishu tenant
+
+This is the normal path for a self-built app.
+
+To make the bot searchable and addable for coworkers in the same tenant:
+
+- expand the app's **availability scope** from just yourself to:
+  - the target users, or
+  - the target departments, or
+  - the whole tenant
+- for the **official version**, change the availability scope through a new app release so the new scope can take effect after admin approval
+- for the **test version**, availability changes apply immediately without a separate release flow
+- make sure the current app changes are **published / applied** for the version they are using
+- ensure bot capability stays enabled
+- ensure those users are allowed to add apps/bots into groups in your tenant policy
+- if tenant policy allows it, admins can also enable "allow members outside the availability scope to apply for app access", which lets coworkers request access through a shared app link
+
+Expected result:
+
+- users inside the availability scope can search the bot
+- those users can add the bot into groups they belong to
+- once the bot is in the group, our connector can handle the inbound messages
+
+### Case 2 — other users are outside your Feishu tenant
+
+Your current setup is a **self-built app**, so external tenants usually cannot just search or add it.
+
+Feishu's official app-type docs are explicit here: self-built apps can only be published and used inside the same tenant.
+
+If you want people in other companies / other tenants to use it, the path is different:
+
+- convert or recreate it as a **marketplace / distributable app**
+- pass the required publishing / review flow
+- let each external tenant install the app
+
+So the key distinction is:
+
+- **same tenant** → expand availability scope and publish
+- **different tenant** → self-built app is not enough; you need app distribution
+
+### Minimal rollout advice
+
+For now, the best rollout is:
+
+1. first expand to a small same-tenant department or tester list
+2. verify they can search the bot in Feishu
+3. verify one of them can add it to a normal group
+4. only then expand to the whole tenant if you want broader usage
 
 ---
 
@@ -145,6 +203,7 @@ Use this as the literal checklist.
 - [ ] Switch to test version / test tenant if available
 - [ ] Open p2p-read permission for bot messages
 - [ ] Open IM-send permission for the bot
+- [ ] If outbound send still fails, enable one of `im:message:send`, `im:message`, or `im:message:send_as_bot`
 - [ ] In **Messenger**, add **Receive message v2.0** (`im.message.receive_v1`) under **Tenant Token-Based Subscription**
 - [ ] Subscribe `im.message.receive_v1`
 - [ ] Ensure my user account is in app availability scope

@@ -550,7 +550,7 @@ When a run becomes terminal:
   - display group
   - hidden description
   - sidebar progress card state
-- auto-compaction may run if context grows too large
+- auto-compaction may run as a conservative fallback if live context exceeds the known model window (or an explicit token override)
 
 ### 8.8 Browser convergence
 

@@ -4,6 +4,7 @@
 > Status: proposal / implementation guide.
 > Use this together with `docs/external-message-protocol.md`.
 > Operator handoff checklist: `notes/feishu-bot-operator-checklist.md`.
+> Setup lessons and rollout pitfalls: `notes/feishu-bot-setup-lessons.md`.
 
 ---
 
@@ -252,6 +253,7 @@ This is the recommended first real implementation.
    - read bot single-chat messages
    - optionally read `@bot` group messages
    - send IM messages
+   - if outbound send returns Feishu error `99991672`, explicitly enable one of the outbound IM scopes listed in the error, such as `im:message:send`, `im:message`, or `im:message:send_as_bot`
 5. Configure **event subscription** using **long connection**.
 6. Subscribe `im.message.receive_v1`.
 7. Run a local Node connector process using `@larksuiteoapi/node-sdk`.
@@ -368,6 +370,7 @@ The exact permission labels in the Feishu console may change, but the V0 connect
 - read user-to-bot single-chat messages
 - optionally receive group `@bot` messages
 - send IM messages
+- if the API still rejects outbound messages, turn on one of the explicit IM send scopes Feishu names in the error, such as `im:message:send`, `im:message`, or `im:message:send_as_bot`
 
 For the first pass, avoid broader group-read permissions unless we truly need them.
 

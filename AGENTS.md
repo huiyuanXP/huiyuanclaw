@@ -237,6 +237,7 @@ Shows all active sessions' status at a glance. Powered by `summarizer.mjs` — a
 
 ### P2 — Future
 - [ ] Deferred triggers (AI-initiated actions, scheduled follow-ups)
+- [ ] Queued follow-up composer buffer — while a session is still streaming a reply, let the user stage another message in a buffer and auto-submit it as a fresh turn immediately after the active response finishes
 - [ ] Session fork follow-ups — extend the shipped hard-clone head-fork with optional `Fork from here`, lightweight lineage navigation, and exact historical fork support when compaction-safe snapshots exist
 - [ ] Post-LLM output processing (layered output: decision / summary / details)
 - [ ] Revisit product naming/brand and possible repo rename after the product philosophy is more mature; treat this as intentionally deferred while the product itself is still taking shape

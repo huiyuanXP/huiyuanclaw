@@ -12,6 +12,21 @@ Universal learnings and patterns that apply to all RemoteLab deployments, regard
 
 ## Learnings
 
+### Feishu Bot Outbound Permission Trap (2026-03-11)
+- A Feishu self-built app can successfully receive `im.message.receive_v1` over persistent connection while still failing every outbound IM send.
+- The tell is Feishu API error `99991672` on `im.v1.message.create`, which means the app is missing an explicit outbound IM scope even if the basic bot setup looks complete.
+- When this happens, keep the connector code unchanged and ask the operator to enable one of the exact scopes Feishu names in the error, such as `im:message:send`, `im:message`, or `im:message:send_as_bot`, then replay the latest stored message.
+
+### Feishu Group Names Need Separate Tracking (2026-03-11)
+- The inbound message event `im.message.receive_v1` includes `chat_id` and `chat_type` but does not include a group name field.
+- If a bot needs human-friendly group names without calling the chat-detail API on every message, cache them from chat metadata signals such as `im.chat.member.bot.added_v1` and `im.chat.updated_v1`, which carry `name` and `i18n_names`.
+- If the bot starts after it was already added to a group and no metadata-change event has fired yet, an initial one-time chat-detail lookup is still needed to seed the cache.
+
+### Feishu Self-Built App Rollout Is Tenant-Scoped (2026-03-11)
+- A Feishu self-built app is a good fast path for local or same-tenant validation, but it is the wrong mental model for cross-tenant distribution.
+- If coworkers cannot search the bot or add it to groups, first check app availability scope, current version publish/apply status, and tenant policy before touching connector code.
+- For practical internal rollout, prefer a real team tenant over a purely personal self-test tenant; for external-tenant usage, move to a marketplace / distributable app flow.
+
 ### Memory Bootstrap Hygiene (2026-03-06)
 - Fresh or partially initialized RemoteLab setups may be missing `~/.remotelab/memory/skills.md`.
 - If session startup expects that file, create a minimal placeholder index instead of treating the absence as a hard failure.
@@ -120,6 +135,10 @@ Universal learnings and patterns that apply to all RemoteLab deployments, regard
 ### Hidden Markdown Blocks Work Best As Parser Extensions (2026-03-06)
 - For `marked`, custom block + inline extensions are a clean way to consume tags like `<private>...</private>` and `<hide>...</hide>` so the UI hides them while the raw message text stays intact for history and model context.
 - After rendering, skip empty assistant bubbles; otherwise a response that only contains hidden blocks still leaves blank UI chrome behind.
+
+### External Reply Connectors Should Treat Empty Output As Silence (2026-03-11)
+- When a connector asks the model to output the exact outbound reply body, an empty assistant message should mean "send nothing", not "send a fallback apology".
+- Mark the inbound item as handled with a silent/no-reply status and log the reason; otherwise connector-level fallbacks override deliberate quiet-mode behavior and make response suppression unreliable.
 
 ### Deferred Event Bodies Must Stay User-Triggered (2026-03-10)
 - If thinking/tool bodies are deferred behind `GET /api/sessions/:sessionId/events/:seq/body`, the frontend should only fetch them when the user explicitly expands the corresponding UI block.

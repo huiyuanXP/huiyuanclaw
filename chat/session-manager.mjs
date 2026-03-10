@@ -74,8 +74,7 @@ const INTERRUPTED_RESUME_PROMPT =
   'Please continue where you left off. The previous turn was interrupted by a RemoteLab server restart. '
   + 'Pick up from the last unfinished task without repeating completed work unless necessary.';
 
-const DEFAULT_AUTO_COMPACT_CONTEXT_TOKENS = Number.POSITIVE_INFINITY;
-const DEFAULT_CONTEXT_WINDOW_HEADROOM_TOKENS = 25_000;
+const DEFAULT_AUTO_COMPACT_CONTEXT_WINDOW_PERCENT = 100;
 
 function parsePositiveIntOrInfinity(value) {
   const trimmed = typeof value === 'string' ? value.trim() : '';
@@ -86,25 +85,49 @@ function parsePositiveIntOrInfinity(value) {
 }
 
 function getConfiguredAutoCompactContextTokens() {
-  return parsePositiveIntOrInfinity(process.env.REMOTELAB_LIVE_CONTEXT_COMPACT_TOKENS)
-    ?? DEFAULT_AUTO_COMPACT_CONTEXT_TOKENS;
+  return parsePositiveIntOrInfinity(process.env.REMOTELAB_LIVE_CONTEXT_COMPACT_TOKENS);
+}
+
+function getRunLiveContextTokens(run) {
+  return Number.isInteger(run?.contextInputTokens) && run.contextInputTokens > 0
+    ? run.contextInputTokens
+    : null;
+}
+
+function getRunContextWindowTokens(run) {
+  return Number.isInteger(run?.contextWindowTokens) && run.contextWindowTokens > 0
+    ? run.contextWindowTokens
+    : null;
 }
 
 function getAutoCompactContextTokens(run) {
   const configured = getConfiguredAutoCompactContextTokens();
-  if (!Number.isFinite(configured)) {
-    return Number.POSITIVE_INFINITY;
-  }
-  const contextWindowTokens = Number.isInteger(run?.contextWindowTokens)
-    ? run.contextWindowTokens
-    : null;
-  if (!Number.isInteger(contextWindowTokens) || contextWindowTokens <= DEFAULT_CONTEXT_WINDOW_HEADROOM_TOKENS) {
+  if (configured !== null) {
     return configured;
   }
-  return Math.min(
-    configured,
-    Math.max(1_000, contextWindowTokens - DEFAULT_CONTEXT_WINDOW_HEADROOM_TOKENS),
+  const contextWindowTokens = getRunContextWindowTokens(run);
+  if (!Number.isInteger(contextWindowTokens)) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return Math.max(
+    1,
+    Math.floor((contextWindowTokens * DEFAULT_AUTO_COMPACT_CONTEXT_WINDOW_PERCENT) / 100),
   );
+}
+
+function getAutoCompactStatusText(run) {
+  const configured = getConfiguredAutoCompactContextTokens();
+  const contextTokens = getRunLiveContextTokens(run);
+  const contextWindowTokens = getRunContextWindowTokens(run);
+  if (configured === null && Number.isInteger(contextTokens) && Number.isInteger(contextWindowTokens)) {
+    const percent = ((contextTokens / contextWindowTokens) * 100).toFixed(1);
+    return `Live context exceeded the model window (${contextTokens.toLocaleString()} / ${contextWindowTokens.toLocaleString()}, ${percent}%) — compacting conversation…`;
+  }
+  const autoCompactTokens = getAutoCompactContextTokens(run);
+  if (Number.isFinite(autoCompactTokens)) {
+    return `Live context exceeded ${autoCompactTokens.toLocaleString()} tokens — compacting conversation…`;
+  }
+  return 'Live context overflowed — compacting conversation…';
 }
 
 const COMPACT_PROMPT = [
@@ -682,9 +705,8 @@ async function queueContextCompaction(sessionId, session, run, { automatic = fal
   if (live.pendingCompact) return false;
   live.pendingCompact = true;
 
-  const autoCompactTokens = getAutoCompactContextTokens(run);
   const statusText = automatic
-    ? `Live context exceeded ${autoCompactTokens.toLocaleString()} tokens — compacting conversation…`
+    ? getAutoCompactStatusText(run)
     : 'Compacting session context…';
   const compactQueuedEvent = statusEvent(statusText);
   await appendEvent(sessionId, compactQueuedEvent);
@@ -710,10 +732,11 @@ async function queueContextCompaction(sessionId, session, run, { automatic = fal
 }
 
 async function maybeAutoCompact(sessionId, session, run, manifest) {
-  if (!Number.isFinite(getConfiguredAutoCompactContextTokens())) return false;
   if (!session || !run || manifest?.internalOperation) return false;
+  const contextTokens = getRunLiveContextTokens(run);
   const autoCompactTokens = getAutoCompactContextTokens(run);
-  if (!Number.isInteger(run.contextInputTokens) || run.contextInputTokens < autoCompactTokens) return false;
+  if (!Number.isInteger(contextTokens) || !Number.isFinite(autoCompactTokens)) return false;
+  if (contextTokens <= autoCompactTokens) return false;
   return queueContextCompaction(sessionId, session, run, { automatic: true });
 }
 

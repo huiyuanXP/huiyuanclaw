@@ -168,6 +168,7 @@ remotelab --help               Show help
 | `LISTEN_PORT` | `7681` | Auth proxy port |
 | `SESSION_EXPIRY` | `86400000` | Cookie lifetime in ms (24h) |
 | `SECURE_COOKIES` | `1` | Set `0` only for local HTTP debugging |
+| `REMOTELAB_LIVE_CONTEXT_COMPACT_TOKENS` | `window overflow` | Optional auto-compact override in live-context tokens; unset = compact only after live context exceeds 100% of a known context window, `Inf` = disable |
 
 ## Common file locations
 
