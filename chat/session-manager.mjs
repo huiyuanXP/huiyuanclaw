@@ -69,6 +69,8 @@ const INTERRUPTED_RESUME_PROMPT =
   + 'Pick up from the last unfinished task without repeating completed work unless necessary.';
 
 const DEFAULT_AUTO_COMPACT_CONTEXT_WINDOW_PERCENT = 100;
+const FOLLOW_UP_FLUSH_DELAY_MS = 1500;
+const MAX_RECENT_FOLLOW_UP_REQUEST_IDS = 100;
 
 function parsePositiveIntOrInfinity(value) {
   const trimmed = typeof value === 'string' ? value.trim() : '';
@@ -206,6 +208,252 @@ function buildForkSessionName(session) {
 function normalizeSessionAppName(value) {
   if (typeof value !== 'string') return '';
   return value.trim().replace(/\s+/g, ' ');
+}
+
+function getFollowUpQueue(meta) {
+  return Array.isArray(meta?.followUpQueue) ? meta.followUpQueue : [];
+}
+
+function getFollowUpQueueCount(meta) {
+  return getFollowUpQueue(meta).length;
+}
+
+function sanitizeQueuedFollowUpImages(images) {
+  return (images || [])
+    .map((image) => {
+      const filename = typeof image?.filename === 'string' ? image.filename.trim() : '';
+      const savedPath = typeof image?.savedPath === 'string' ? image.savedPath.trim() : '';
+      const mimeType = typeof image?.mimeType === 'string' ? image.mimeType.trim() : '';
+      if (!filename || !savedPath) return null;
+      return {
+        filename,
+        savedPath,
+        mimeType: mimeType || 'image/png',
+      };
+    })
+    .filter(Boolean);
+}
+
+function sanitizeQueuedFollowUpOptions(options = {}) {
+  const next = {};
+  if (typeof options.tool === 'string' && options.tool.trim()) next.tool = options.tool.trim();
+  if (typeof options.model === 'string' && options.model.trim()) next.model = options.model.trim();
+  if (typeof options.effort === 'string' && options.effort.trim()) next.effort = options.effort.trim();
+  if (options.thinking === true) next.thinking = true;
+  return next;
+}
+
+function serializeQueuedFollowUp(entry) {
+  return {
+    requestId: typeof entry?.requestId === 'string' ? entry.requestId : '',
+    text: typeof entry?.text === 'string' ? entry.text : '',
+    queuedAt: typeof entry?.queuedAt === 'string' ? entry.queuedAt : '',
+    images: (entry?.images || []).map((image) => ({
+      filename: image.filename,
+      mimeType: image.mimeType,
+    })),
+  };
+}
+
+function trimRecentFollowUpRequestIds(ids) {
+  if (!Array.isArray(ids)) return [];
+  const unique = [];
+  const seen = new Set();
+  for (const value of ids) {
+    const requestId = typeof value === 'string' ? value.trim() : '';
+    if (!requestId || seen.has(requestId)) continue;
+    seen.add(requestId);
+    unique.push(requestId);
+  }
+  return unique.slice(-MAX_RECENT_FOLLOW_UP_REQUEST_IDS);
+}
+
+function hasRecentFollowUpRequestId(meta, requestId) {
+  const normalized = typeof requestId === 'string' ? requestId.trim() : '';
+  if (!normalized) return false;
+  return trimRecentFollowUpRequestIds(meta?.recentFollowUpRequestIds).includes(normalized);
+}
+
+function findQueuedFollowUpByRequest(meta, requestId) {
+  const normalized = typeof requestId === 'string' ? requestId.trim() : '';
+  if (!normalized) return null;
+  return getFollowUpQueue(meta).find((entry) => entry.requestId === normalized) || null;
+}
+
+function formatQueuedFollowUpTextEntry(entry, index) {
+  const lines = [];
+  if (index !== null) {
+    lines.push(`${index + 1}.`);
+  }
+  const text = typeof entry?.text === 'string' ? entry.text.trim() : '';
+  if (text) {
+    if (index !== null) {
+      lines[0] = `${lines[0]} ${text}`;
+    } else {
+      lines.push(text);
+    }
+  }
+  const imageNames = (entry?.images || []).map((image) => image?.filename || '').filter(Boolean);
+  if (imageNames.length > 0) {
+    lines.push(`[Attached images: ${imageNames.join(', ')}]`);
+  }
+  return lines.join('\n');
+}
+
+function buildQueuedFollowUpTranscriptText(queue) {
+  if (!Array.isArray(queue) || queue.length === 0) return '';
+  if (queue.length === 1) {
+    return formatQueuedFollowUpTextEntry(queue[0], null);
+  }
+  return [
+    'Queued follow-up messages sent while RemoteLab was busy:',
+    '',
+    ...queue.map((entry, index) => formatQueuedFollowUpTextEntry(entry, index)),
+  ].join('\n\n');
+}
+
+function buildQueuedFollowUpDispatchText(queue) {
+  if (!Array.isArray(queue) || queue.length === 0) return '';
+  if (queue.length === 1) {
+    return buildQueuedFollowUpTranscriptText(queue);
+  }
+  return [
+    `The user sent ${queue.length} follow-up messages while you were busy.`,
+    'Treat the ordered items below as the next user turn.',
+    'If a later item corrects or overrides an earlier one, follow the latest correction.',
+    '',
+    ...queue.map((entry, index) => formatQueuedFollowUpTextEntry(entry, index)),
+  ].join('\n\n');
+}
+
+function resolveQueuedFollowUpDispatchOptions(queue, session) {
+  const resolved = {
+    tool: session?.tool || '',
+    model: undefined,
+    effort: undefined,
+    thinking: false,
+  };
+  for (const entry of queue || []) {
+    if (typeof entry?.tool === 'string' && entry.tool.trim()) {
+      resolved.tool = entry.tool.trim();
+    }
+    if (typeof entry?.model === 'string' && entry.model.trim()) {
+      resolved.model = entry.model.trim();
+    }
+    if (typeof entry?.effort === 'string' && entry.effort.trim()) {
+      resolved.effort = entry.effort.trim();
+    }
+    if (entry?.thinking === true) {
+      resolved.thinking = true;
+    }
+  }
+  if (!resolved.tool) {
+    resolved.tool = session?.tool || 'codex';
+  }
+  return resolved;
+}
+
+function clearFollowUpFlushTimer(sessionId) {
+  const live = liveSessions.get(sessionId);
+  if (!live?.followUpFlushTimer) return false;
+  clearTimeout(live.followUpFlushTimer);
+  delete live.followUpFlushTimer;
+  return true;
+}
+
+async function flushQueuedFollowUps(sessionId) {
+  const live = ensureLiveSession(sessionId);
+  if (live.followUpFlushPromise) {
+    return live.followUpFlushPromise;
+  }
+
+  const promise = (async () => {
+    clearFollowUpFlushTimer(sessionId);
+
+    const rawSession = await findSessionMeta(sessionId);
+    if (!rawSession || rawSession.archived) return false;
+
+    if (rawSession.activeRunId) {
+      const activeRun = await flushDetachedRunIfNeeded(sessionId, rawSession.activeRunId) || await getRun(rawSession.activeRunId);
+      if (activeRun && !isTerminalRunState(activeRun.state)) {
+        return false;
+      }
+    }
+
+    const queue = getFollowUpQueue(rawSession);
+    if (queue.length === 0) return false;
+
+    const requestIds = queue.map((entry) => entry.requestId).filter(Boolean);
+    const dispatchText = buildQueuedFollowUpDispatchText(queue);
+    const transcriptText = buildQueuedFollowUpTranscriptText(queue);
+    const dispatchOptions = resolveQueuedFollowUpDispatchOptions(queue, rawSession);
+
+    await submitHttpMessage(sessionId, dispatchText, [], {
+      requestId: createInternalRequestId('queued_batch'),
+      tool: dispatchOptions.tool,
+      model: dispatchOptions.model,
+      effort: dispatchOptions.effort,
+      thinking: dispatchOptions.thinking,
+      preSavedImages: queue.flatMap((entry) => sanitizeQueuedFollowUpImages(entry.images)),
+      recordedUserText: transcriptText,
+      queueIfBusy: false,
+    });
+
+    const cleared = await mutateSessionMeta(sessionId, (session) => {
+      const currentQueue = getFollowUpQueue(session);
+      if (currentQueue.length === 0) return false;
+      const requestIdSet = new Set(requestIds);
+      const nextQueue = currentQueue.filter((entry) => !requestIdSet.has(entry.requestId));
+      if (nextQueue.length === currentQueue.length && requestIdSet.size > 0) {
+        return false;
+      }
+      if (nextQueue.length > 0) {
+        session.followUpQueue = nextQueue;
+      } else {
+        delete session.followUpQueue;
+      }
+      session.recentFollowUpRequestIds = trimRecentFollowUpRequestIds([
+        ...(session.recentFollowUpRequestIds || []),
+        ...requestIds,
+      ]);
+      session.updatedAt = nowIso();
+      return true;
+    });
+
+    if (cleared.changed) {
+      broadcastSessionInvalidation(sessionId);
+    }
+    return true;
+  })().catch((error) => {
+    console.error(`[follow-up-queue] failed to flush ${sessionId}: ${error.message}`);
+    scheduleQueuedFollowUpDispatch(sessionId, FOLLOW_UP_FLUSH_DELAY_MS * 2);
+    return false;
+  }).finally(() => {
+    const current = liveSessions.get(sessionId);
+    if (current?.followUpFlushPromise === promise) {
+      delete current.followUpFlushPromise;
+    }
+  });
+
+  live.followUpFlushPromise = promise;
+  return promise;
+}
+
+function scheduleQueuedFollowUpDispatch(sessionId, delayMs = FOLLOW_UP_FLUSH_DELAY_MS) {
+  const live = ensureLiveSession(sessionId);
+  if (live.followUpFlushPromise) return true;
+  clearFollowUpFlushTimer(sessionId);
+  live.followUpFlushTimer = setTimeout(() => {
+    const current = liveSessions.get(sessionId);
+    if (current?.followUpFlushTimer) {
+      delete current.followUpFlushTimer;
+    }
+    void flushQueuedFollowUps(sessionId);
+  }, delayMs);
+  if (typeof live.followUpFlushTimer.unref === 'function') {
+    live.followUpFlushTimer.unref();
+  }
+  return true;
 }
 
 function sanitizeForkedEvent(event) {
@@ -472,8 +720,9 @@ async function getPersistedStatus(meta) {
 async function enrichSessionMeta(meta) {
   const live = liveSessions.get(meta.id);
   const snapshot = await getHistorySnapshot(meta.id);
+  const { followUpQueue, recentFollowUpRequestIds, ...rest } = meta;
   return {
-    ...meta,
+    ...rest,
     appId: resolveEffectiveAppId(meta.appId),
     latestSeq: snapshot.latestSeq,
     lastEventAt: snapshot.lastEventAt,
@@ -485,9 +734,19 @@ async function enrichSessionMeta(meta) {
     contextTokenEstimate: snapshot.contextTokenEstimate,
     status: await getPersistedStatus(meta),
     recoverable: !!meta.activeRun && !!(meta.claudeSessionId || meta.codexThreadId),
+    queuedMessageCount: getFollowUpQueueCount(meta),
     renameState: live?.renameState || undefined,
     renameError: live?.renameError || undefined,
   };
+}
+
+async function enrichSessionMetaForClient(meta, options = {}) {
+  if (!meta) return null;
+  const session = await enrichSessionMeta(meta);
+  if (options.includeQueuedMessages) {
+    session.queuedMessages = getFollowUpQueue(meta).map(serializeQueuedFollowUp);
+  }
+  return session;
 }
 
 async function flushDetachedRunIfNeeded(sessionId, runId) {
@@ -735,6 +994,7 @@ async function queueContextCompaction(sessionId, session, run, { automatic = fal
 
 async function maybeAutoCompact(sessionId, session, run, manifest) {
   if (!session || !run || manifest?.internalOperation) return false;
+  if ((session.queuedMessageCount || 0) > 0) return false;
   const contextTokens = getRunLiveContextTokens(run);
   const autoCompactTokens = getAutoCompactContextTokens(run);
   if (!Number.isInteger(contextTokens) || !Number.isFinite(autoCompactTokens)) return false;
@@ -846,6 +1106,9 @@ async function finalizeDetachedRun(sessionId, run, manifest) {
   })) || run;
 
   if (compacting) {
+    if (getFollowUpQueueCount(finalizedMeta.meta) > 0) {
+      scheduleQueuedFollowUpDispatch(sessionId);
+    }
     broadcastSessionInvalidation(sessionId);
     return { historyChanged, sessionChanged };
   }
@@ -853,6 +1116,10 @@ async function finalizeDetachedRun(sessionId, run, manifest) {
   const latestSession = finalizedMeta.meta ? await enrichSessionMeta(finalizedMeta.meta) : await getSession(sessionId);
   if (!latestSession) {
     return { historyChanged, sessionChanged };
+  }
+
+  if ((latestSession.queuedMessageCount || 0) > 0) {
+    scheduleQueuedFollowUpDispatch(sessionId);
   }
 
   queueSessionCompletionTargets(latestSession, finalizedRun, manifest);
@@ -1028,16 +1295,21 @@ async function syncDetachedRun(sessionId, runId) {
 
 export async function startDetachedRunObservers() {
   for (const meta of await loadSessionsMeta()) {
-    if (!meta?.activeRunId) continue;
-    const run = await syncDetachedRun(meta.id, meta.activeRunId) || await getRun(meta.activeRunId);
-    if (run && !isTerminalRunState(run.state)) {
-      observeDetachedRun(meta.id, meta.activeRunId);
+    if (meta?.activeRunId) {
+      const run = await syncDetachedRun(meta.id, meta.activeRunId) || await getRun(meta.activeRunId);
+      if (run && !isTerminalRunState(run.state)) {
+        observeDetachedRun(meta.id, meta.activeRunId);
+        continue;
+      }
+    }
+    if (getFollowUpQueueCount(meta) > 0) {
+      scheduleQueuedFollowUpDispatch(meta.id);
     }
   }
   await resumePendingCompletionTargets();
 }
 
-export async function listSessions({ includeVisitor = false, includeArchived = true, appId = '' } = {}) {
+export async function listSessions({ includeVisitor = false, includeArchived = true, appId = '', includeQueuedMessages = false } = {}) {
   const metas = await reconcileSessionsMetaList(await loadSessionsMeta());
   const normalizedAppId = normalizeAppId(appId);
   const filtered = metas
@@ -1045,13 +1317,13 @@ export async function listSessions({ includeVisitor = false, includeArchived = t
     .filter((meta) => includeArchived || !meta.archived)
     .filter((meta) => !normalizedAppId || resolveEffectiveAppId(meta.appId) === normalizedAppId)
     .sort((a, b) => getSessionSortTime(b) - getSessionSortTime(a));
-  return Promise.all(filtered.map((meta) => enrichSessionMeta(meta)));
+  return Promise.all(filtered.map((meta) => enrichSessionMetaForClient(meta, { includeQueuedMessages })));
 }
 
-export async function getSession(id) {
+export async function getSession(id, options = {}) {
   const meta = await reconcileSessionMeta(await findSessionMeta(id));
   if (!meta) return null;
-  return enrichSessionMeta(meta);
+  return enrichSessionMetaForClient(meta, options);
 }
 
 export async function getSessionEventsAfter(sessionId, afterSeq = 0, options = {}) {
@@ -1290,12 +1562,14 @@ export async function submitHttpMessage(sessionId, text, images, options = {}) {
   if (existingRun) {
     return {
       duplicate: true,
+      queued: false,
       run: await getRun(existingRun.id) || existingRun,
       session: await getSession(sessionId),
     };
   }
 
   let session = await getSession(sessionId);
+  let sessionMeta = await findSessionMeta(sessionId);
   if (!session) throw new Error('Session not found');
   if (session.archived) {
     const error = new Error('Session is archived');
@@ -1303,21 +1577,75 @@ export async function submitHttpMessage(sessionId, text, images, options = {}) {
     throw error;
   }
 
+  if (findQueuedFollowUpByRequest(sessionMeta, requestId) || hasRecentFollowUpRequestId(sessionMeta, requestId)) {
+    return {
+      duplicate: true,
+      queued: !!findQueuedFollowUpByRequest(sessionMeta, requestId),
+      run: null,
+      session: await getSession(sessionId),
+    };
+  }
+
+  let activeRun = null;
+  let hasActiveRun = false;
+
   if (session.activeRunId) {
-    const activeRun = await flushDetachedRunIfNeeded(sessionId, session.activeRunId) || await getRun(session.activeRunId);
+    activeRun = await flushDetachedRunIfNeeded(sessionId, session.activeRunId) || await getRun(session.activeRunId);
     if (activeRun && !isTerminalRunState(activeRun.state)) {
-      throw new Error('Session already has an active run');
+      hasActiveRun = true;
     }
     const refreshedSession = await getSession(sessionId);
     if (refreshedSession) {
       session = refreshedSession;
+      sessionMeta = await findSessionMeta(sessionId) || sessionMeta;
     }
+  }
+
+  if ((hasActiveRun || getFollowUpQueueCount(sessionMeta) > 0) && options.queueIfBusy !== false) {
+    const normalizedText = text.trim();
+    const queuedImages = options.preSavedImages?.length > 0
+      ? sanitizeQueuedFollowUpImages(options.preSavedImages)
+      : sanitizeQueuedFollowUpImages(await saveImages(images));
+    const queuedOptions = sanitizeQueuedFollowUpOptions(options);
+    const queuedEntry = {
+      requestId,
+      text: normalizedText,
+      queuedAt: nowIso(),
+      images: queuedImages,
+      ...queuedOptions,
+    };
+    const queuedMeta = await mutateSessionMeta(sessionId, (draft) => {
+      const queue = getFollowUpQueue(draft);
+      if (queue.some((entry) => entry.requestId === requestId)) {
+        return false;
+      }
+      draft.followUpQueue = [...queue, queuedEntry];
+      draft.updatedAt = nowIso();
+      return true;
+    });
+    const wasDuplicateQueueInsert = queuedMeta.changed === false;
+    if (!hasActiveRun) {
+      scheduleQueuedFollowUpDispatch(sessionId);
+    }
+    broadcastSessionInvalidation(sessionId);
+    return {
+      duplicate: wasDuplicateQueueInsert,
+      queued: true,
+      run: null,
+      session: await getSession(sessionId) || (queuedMeta.meta ? await enrichSessionMetaForClient(queuedMeta.meta) : session),
+    };
   }
 
   const snapshot = await getHistorySnapshot(sessionId);
   const previousTool = session.tool;
   const effectiveTool = options.tool || session.tool;
-  const savedImages = await saveImages(images);
+  const normalizedText = text.trim();
+  const recordedUserText = typeof options.recordedUserText === 'string' && options.recordedUserText.trim()
+    ? options.recordedUserText.trim()
+    : normalizedText;
+  const savedImages = options.preSavedImages?.length > 0
+    ? sanitizeQueuedFollowUpImages(options.preSavedImages)
+    : await saveImages(images);
   const imageRefs = savedImages.map((img) => ({ filename: img.filename, mimeType: img.mimeType }));
   const isFirstRecordedUserMessage =
     options.recordUserMessage !== false
@@ -1358,7 +1686,7 @@ export async function submitHttpMessage(sessionId, text, images, options = {}) {
       requestId,
       folder: session.folder,
       tool: effectiveTool,
-      prompt: await buildPrompt(sessionId, session, text.trim(), previousTool, effectiveTool),
+      prompt: await buildPrompt(sessionId, session, normalizedText, previousTool, effectiveTool),
       internalOperation: options.internalOperation || null,
       options: {
         images: savedImages,
@@ -1382,7 +1710,7 @@ export async function submitHttpMessage(sessionId, text, images, options = {}) {
   }
 
   if (options.recordUserMessage !== false) {
-    const userEvent = messageEvent('user', text.trim(), imageRefs.length > 0 ? imageRefs : undefined, {
+    const userEvent = messageEvent('user', recordedUserText, imageRefs.length > 0 ? imageRefs : undefined, {
       requestId,
       runId: run.id,
     });
@@ -1390,7 +1718,7 @@ export async function submitHttpMessage(sessionId, text, images, options = {}) {
   }
 
   if (!options.internalOperation && isFirstRecordedUserMessage && isSessionAutoRenamePending(session)) {
-    const draftName = buildTemporarySessionName(text.trim());
+    const draftName = buildTemporarySessionName(recordedUserText);
     if (draftName && draftName !== session.name) {
       const renamed = await renameSession(sessionId, draftName, { preserveAutoRename: true });
       if (renamed) {
@@ -1428,6 +1756,7 @@ export async function submitHttpMessage(sessionId, text, images, options = {}) {
   broadcastSessionInvalidation(sessionId);
   return {
     duplicate: false,
+    queued: false,
     run: await getRun(run.id) || run,
     session: await getSession(sessionId) || session,
   };
@@ -1564,6 +1893,7 @@ export async function dropToolUse(sessionId) {
 export async function compactSession(sessionId) {
   const session = await getSession(sessionId);
   if (!session) return false;
+  if ((session.queuedMessageCount || 0) > 0) return false;
   if (session.activeRunId) {
     const run = await getRun(session.activeRunId);
     if (run && !isTerminalRunState(run.state)) return false;
@@ -1572,6 +1902,9 @@ export async function compactSession(sessionId) {
 }
 
 export function killAll() {
+  for (const sessionId of liveSessions.keys()) {
+    clearFollowUpFlushTimer(sessionId);
+  }
   liveSessions.clear();
   for (const runId of observedRuns.keys()) {
     stopObservedRun(runId);

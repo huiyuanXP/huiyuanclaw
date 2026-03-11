@@ -251,6 +251,81 @@ function getSessionDisplayName(session) {
   return session?.name || getFolderLabel(session?.folder) || "Session";
 }
 
+function formatQueuedMessageTimestamp(stamp) {
+  if (!stamp) return "Queued";
+  const parsed = new Date(stamp).getTime();
+  if (!Number.isFinite(parsed)) return "Queued";
+  return `Queued ${messageTimeFormatter.format(parsed)}`;
+}
+
+function renderQueuedMessagePanel(session) {
+  if (!queuedPanel) return;
+  const items = Array.isArray(session?.queuedMessages) ? session.queuedMessages : [];
+  if (!session?.id || session.id !== currentSessionId || items.length === 0) {
+    queuedPanel.innerHTML = "";
+    queuedPanel.classList.remove("visible");
+    return;
+  }
+
+  queuedPanel.innerHTML = "";
+  queuedPanel.classList.add("visible");
+
+  const header = document.createElement("div");
+  header.className = "queued-panel-header";
+
+  const title = document.createElement("div");
+  title.className = "queued-panel-title";
+  title.textContent = items.length === 1 ? "1 follow-up queued" : `${items.length} follow-ups queued`;
+
+  const note = document.createElement("div");
+  note.className = "queued-panel-note";
+  note.textContent = session.status === "running"
+    ? "Will send automatically after the current run"
+    : "Preparing the next turn";
+
+  header.appendChild(title);
+  header.appendChild(note);
+  queuedPanel.appendChild(header);
+
+  const list = document.createElement("div");
+  list.className = "queued-list";
+  const visibleItems = items.slice(-5);
+  for (const item of visibleItems) {
+    const row = document.createElement("div");
+    row.className = "queued-item";
+
+    const meta = document.createElement("div");
+    meta.className = "queued-item-meta";
+    meta.textContent = formatQueuedMessageTimestamp(item.queuedAt);
+
+    const text = document.createElement("div");
+    text.className = "queued-item-text";
+    text.textContent = item.text || "(image)";
+
+    row.appendChild(meta);
+    row.appendChild(text);
+
+    const imageNames = (item.images || []).map((image) => image?.filename || "").filter(Boolean);
+    if (imageNames.length > 0) {
+      const imageLine = document.createElement("div");
+      imageLine.className = "queued-item-images";
+      imageLine.textContent = `Attachments: ${imageNames.join(", ")}`;
+      row.appendChild(imageLine);
+    }
+
+    list.appendChild(row);
+  }
+
+  queuedPanel.appendChild(list);
+
+  if (items.length > visibleItems.length) {
+    const more = document.createElement("div");
+    more.className = "queued-panel-more";
+    more.textContent = `${items.length - visibleItems.length} older queued follow-up${items.length - visibleItems.length === 1 ? "" : "s"} hidden`;
+    queuedPanel.appendChild(more);
+  }
+}
+
 function renderSessionMessageCount(session) {
   const total = Number.isInteger(session?.messageCount) ? session.messageCount : 0;
   const active = Number.isInteger(session?.activeMessageCount)
@@ -327,6 +402,9 @@ function renderSessionList() {
       const metaParts = [];
       const countHtml = renderSessionMessageCount(s);
       if (countHtml) metaParts.push(countHtml);
+      if ((s.queuedMessageCount || 0) > 0) {
+        metaParts.push(`<span title="Queued follow-up messages waiting for the next turn">${s.queuedMessageCount} queued</span>`);
+      }
       const renameReason = s.renameError ? ` title="${esc(s.renameError)}"` : "";
       const statusHtml = s.status === "done" || finishedUnread.has(s.id)
         ? `<span class="status-done">● done</span>`

@@ -124,8 +124,7 @@ function getPendingMessage(sessionId) {
 function renderOptimisticMessage(text, images, timestamp = Date.now()) {
   if (emptyState.parentNode === messagesInner) emptyState.remove();
   // Remove any previous optimistic message
-  const prev = document.getElementById("optimistic-msg");
-  if (prev) prev.remove();
+  clearOptimisticMessage();
 
   const wrap = document.createElement("div");
   wrap.className = "msg-user";
@@ -156,6 +155,11 @@ function renderOptimisticMessage(text, images, timestamp = Date.now()) {
   wrap.appendChild(bubble);
   messagesInner.appendChild(wrap);
   scrollToBottom();
+}
+
+function clearOptimisticMessage() {
+  const prev = document.getElementById("optimistic-msg");
+  if (prev) prev.remove();
 }
 
 function renderPendingRecovery(pending) {

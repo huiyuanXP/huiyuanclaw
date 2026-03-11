@@ -122,7 +122,7 @@ async function dispatchAction(msg) {
         const pending = getPendingMessage();
         const requestId = msg.requestId || pending?.requestId || createRequestId();
         savePendingMessage(msg.text, requestId);
-        await fetchJsonOrRedirect(`/api/sessions/${encodeURIComponent(currentSessionId)}/messages`, {
+        const data = await fetchJsonOrRedirect(`/api/sessions/${encodeURIComponent(currentSessionId)}/messages`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -135,6 +135,10 @@ async function dispatchAction(msg) {
             ...(msg.thinking ? { thinking: true } : {}),
           }),
         });
+        if (data?.queued) {
+          clearPendingMessage();
+          clearOptimisticMessage();
+        }
         await refreshCurrentSession();
         return;
       }
@@ -215,6 +219,7 @@ function handleWsMessage(msg) {
 
 // ---- Status ----
 function updateStatus(connState, sessState, renameState, archived = false) {
+  const queuedCount = getCurrentSession()?.queuedMessageCount || 0;
   if (connState === "disconnected") {
     statusDot.className = "status-dot";
     statusText.textContent = "Reconnecting…";
@@ -222,6 +227,7 @@ function updateStatus(connState, sessState, renameState, archived = false) {
     msgInput.placeholder = archived ? "Archived session — restore to continue" : "Message...";
     sendBtn.style.display = "";
     sendBtn.disabled = !currentSessionId || archived;
+    sendBtn.title = "Send";
     return;
   }
   sessionStatus = sessState;
@@ -230,15 +236,16 @@ function updateStatus(connState, sessState, renameState, archived = false) {
   const isInterrupted = sessState === "interrupted";
   const isRenaming = renameState === "pending";
   const renameFailed = renameState === "failed";
+  const queuedLabel = queuedCount > 0 ? ` · ${queuedCount} queued` : "";
   if (isRunning) {
     statusDot.className = "status-dot running";
-    statusText.textContent = archived ? "running · archived" : "running";
+    statusText.textContent = archived ? `running${queuedLabel} · archived` : `running${queuedLabel}`;
   } else if (isDone) {
     statusDot.className = archived ? "status-dot" : "status-dot done";
-    statusText.textContent = archived ? "archived" : "done";
+    statusText.textContent = archived ? "archived" : `done${queuedLabel}`;
   } else if (isInterrupted) {
     statusDot.className = archived ? "status-dot" : "status-dot interrupted";
-    statusText.textContent = archived ? "archived" : "interrupted";
+    statusText.textContent = archived ? "archived" : `interrupted${queuedLabel}`;
   } else if (isRenaming) {
     statusDot.className = "status-dot renaming";
     statusText.textContent = "renaming…";
@@ -250,13 +257,18 @@ function updateStatus(connState, sessState, renameState, archived = false) {
     statusText.textContent = "archived";
   } else {
     statusDot.className = "status-dot";
-    statusText.textContent = currentSessionId ? "idle" : "connected";
+    statusText.textContent = currentSessionId ? `idle${queuedLabel}` : "connected";
   }
   const hasSession = !!currentSessionId;
   msgInput.disabled = !hasSession || archived;
-  msgInput.placeholder = archived ? "Archived session — restore to continue" : "Message...";
-  sendBtn.style.display = isRunning ? "none" : "";
+  msgInput.placeholder = archived
+    ? "Archived session — restore to continue"
+    : isRunning
+      ? "Queue follow-up..."
+      : "Message...";
+  sendBtn.style.display = "";
   sendBtn.disabled = !hasSession || archived;
+  sendBtn.title = isRunning ? "Queue follow-up" : "Send";
   cancelBtn.style.display = isRunning && hasSession ? "flex" : "none";
   imgBtn.disabled = !hasSession || archived;
   inlineToolSelect.disabled = visitorMode || archived;
@@ -280,6 +292,9 @@ function clearMessages() {
 function showEmpty() {
   messagesInner.innerHTML = "";
   messagesInner.appendChild(emptyState);
+  if (typeof renderQueuedMessagePanel === "function") {
+    renderQueuedMessagePanel(null);
+  }
   inThinkingBlock = false;
   currentThinkingBlock = null;
   syncForkButton();

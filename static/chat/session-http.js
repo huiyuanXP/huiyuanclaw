@@ -212,14 +212,27 @@ function reconcilePendingMessageState(event) {
   }
 }
 
-function upsertSession(session) {
-  if (!session?.id) return null;
-  const previous = sessions.find((entry) => entry.id === session.id);
+function normalizeSessionRecord(session, previous = null) {
   const normalized = {
+    ...(previous || {}),
     ...session,
     appId: getEffectiveSessionAppId(session),
     status: normalizeSessionStatus(session.status, previous?.status),
   };
+  if (!Object.prototype.hasOwnProperty.call(session || {}, "queuedMessages")) {
+    if ((session?.queuedMessageCount || 0) > 0 && Array.isArray(previous?.queuedMessages)) {
+      normalized.queuedMessages = previous.queuedMessages;
+    } else {
+      delete normalized.queuedMessages;
+    }
+  }
+  return normalized;
+}
+
+function upsertSession(session) {
+  if (!session?.id) return null;
+  const previous = sessions.find((entry) => entry.id === session.id);
+  const normalized = normalizeSessionRecord(session, previous);
   const index = sessions.findIndex((entry) => entry.id === session.id);
   if (index === -1) {
     sessions.push(normalized);
@@ -241,11 +254,7 @@ async function fetchSessionsList() {
   if (visitorMode) return [];
   const data = await fetchJsonOrRedirect("/api/sessions");
   const previousMap = new Map(sessions.map((session) => [session.id, session]));
-  sessions = (data.sessions || []).map((session) => ({
-    ...session,
-    appId: getEffectiveSessionAppId(session),
-    status: normalizeSessionStatus(session.status, previousMap.get(session.id)?.status),
-  }));
+  sessions = (data.sessions || []).map((session) => normalizeSessionRecord(session, previousMap.get(session.id) || null));
   sortSessionsInPlace();
   refreshAppCatalog();
   renderSessionList();
@@ -270,6 +279,9 @@ function applyAttachedSessionState(id, session) {
   const displayName = getSessionDisplayName(session);
   headerTitle.textContent = displayName;
   updateStatus("connected", session?.status || "idle", session?.renameState, session?.archived === true);
+  if (typeof renderQueuedMessagePanel === "function") {
+    renderQueuedMessagePanel(session);
+  }
 
   if (session?.tool && toolsList.some((tool) => tool.id === session.tool)) {
     inlineToolSelect.value = session.tool;

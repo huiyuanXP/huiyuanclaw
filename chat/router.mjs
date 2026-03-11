@@ -467,7 +467,7 @@ export async function handleRequest(req, res) {
   if (sessionGetRoute?.kind === 'detail') {
     const { sessionId } = sessionGetRoute;
     if (!requireSessionAccess(res, authSession, sessionId)) return;
-    const session = await getSession(sessionId);
+    const session = await getSession(sessionId, { includeQueuedMessages: true });
     if (!session) {
       writeJson(res, 404, { error: 'Session not found' });
       return;

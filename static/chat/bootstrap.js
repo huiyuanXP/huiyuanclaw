@@ -19,6 +19,7 @@ const newSessionBtn = document.getElementById("newSessionBtn");
 const messagesEl = document.getElementById("messages");
 const messagesInner = document.getElementById("messagesInner");
 const emptyState = document.getElementById("emptyState");
+const queuedPanel = document.getElementById("queuedPanel");
 const msgInput = document.getElementById("msgInput");
 const sendBtn = document.getElementById("sendBtn");
 const headerTitle = document.getElementById("headerTitle");
