@@ -20,6 +20,10 @@ const DEFAULT_SESSION_SYSTEM_PROMPT = [
   'For each assistant turn, output exactly the plain-text message to send back to Feishu.',
   'Keep replies concise, helpful, and natural.',
   'Match the user\'s language when practical.',
+  'In group chats, prefer silence by default: if the message is mainly human-to-human chatter, laughter, status updates, side remarks, or is not clearly asking for you, output an empty string.',
+  'Reply when you are directly addressed, clearly asked for help or information, asked to take an action, or when a short reply is genuinely useful.',
+  'If the chat asks you to speak less or not reply to every message, treat that as an active local rule until someone clearly changes it.',
+  'If you are unsure whether to reply, choose silence and output an empty string. An empty string means no Feishu message should be sent.',
   'Do not mention hidden connector, session, or run internals unless the user explicitly asks.',
 ].join('\n');
 const RUN_POLL_INTERVAL_MS = 1500;
@@ -828,7 +832,7 @@ function buildRemoteLabMessage(summary) {
     (hasMentions ? renderedMessage : rawMessage) || '[non-text or empty message]',
     ...buildMentionPrompt(summary, rawMessage),
     '',
-    'Write the exact plain-text Feishu reply to send back.',
+    'Write the exact plain-text Feishu reply to send back. If you should stay silent, output an empty string.',
   ].filter(Boolean).join('\n');
 }
 
@@ -1423,6 +1427,7 @@ async function handleMessage(runtime, summary, sourceLabel, helpers = {}) {
 }
 
 export {
+  DEFAULT_SESSION_SYSTEM_PROMPT,
   buildApprovedChatReply,
   buildChatAccessStatusReply,
   buildRemoteLabMessage,
@@ -1436,6 +1441,7 @@ export {
   handleMessage,
   isAllowedByPolicy,
   loadPersistedAccessState,
+  loadConfig,
   normalizeAllowedSenders,
   normalizeReplyText,
   queueAccessStateFlush,

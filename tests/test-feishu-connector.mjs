@@ -10,6 +10,7 @@ const repoRoot = process.cwd();
 const { selectAssistantReplyEvent } = await import(pathToFileURL(join(repoRoot, 'lib', 'reply-selection.mjs')).href);
 
 const {
+  DEFAULT_SESSION_SYSTEM_PROMPT,
   createRuntimeContext,
   buildRemoteLabMessage,
   compileFeishuReplyText,
@@ -19,6 +20,7 @@ const {
   handleChatMemberUserAdded,
   handleMessage,
   isAllowedByPolicy,
+  loadConfig,
   loadPersistedAccessState,
   normalizeReplyText,
   summarizeChatMemberUserAddedEvent,
@@ -170,6 +172,23 @@ assert.match(mentionPrompt, /User message \(rendered mentions\):\n厉害不，@�
 assert.match(mentionPrompt, /Original mention-token message:\n厉害不，@_user_1 你发一条消息/);
 assert.match(mentionPrompt, /Mention map:\n- @_user_1 => @江虹 \| open_id=ou_mention_1 \| union_id=on_mention_1/);
 assert.match(mentionPrompt, /include their exact mention token/);
+assert.match(mentionPrompt, /If you should stay silent, output an empty string\./);
+
+assert.match(DEFAULT_SESSION_SYSTEM_PROMPT, /prefer silence by default/i);
+assert.match(DEFAULT_SESSION_SYSTEM_PROMPT, /output an empty string/i);
+
+const tempConfigDir = await mkdtemp(join(tmpdir(), 'remotelab-feishu-config-'));
+const tempConfigPath = join(tempConfigDir, 'config.json');
+await writeFile(tempConfigPath, `${JSON.stringify({
+  appId: 'cli_test',
+  appSecret: 'secret_test',
+  region: 'feishu-cn',
+  chatBaseUrl: 'http://127.0.0.1:7690',
+}, null, 2)}\n`, 'utf8');
+
+const loadedConfig = await loadConfig(tempConfigPath);
+assert.match(loadedConfig.systemPrompt, /prefer silence by default/i, 'default config prompt should include silence-first guidance');
+assert.match(loadedConfig.systemPrompt, /empty string means no Feishu message should be sent/i, 'default config prompt should explain silent no-reply behavior');
 
 assert.equal(
   compileFeishuReplyText('@_user_1 这是一条消息。', mentionSummary.mentions),
