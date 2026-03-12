@@ -657,6 +657,9 @@ async function phase12QueuedMessageRouteContract() {
     assert.equal(queued.json.run, null, 'queued follow-up should not create a new run immediately');
     assert.equal(queued.json.session?.id, session.id, 'route should still return the refreshed session');
     assert.equal(queued.json.session?.queuedMessageCount, 1, 'session payload should expose the queued follow-up count');
+    assert.equal(queued.json.session?.activity?.run?.state, 'running', 'session activity should expose the active run state');
+    assert.equal(queued.json.session?.activity?.queue?.state, 'queued', 'session activity should expose the queued follow-up state');
+    assert.equal(queued.json.session?.activity?.queue?.count, 1, 'session activity should expose the queued follow-up count');
 
     const duplicateQueued = await submitMessage(port, session.id, 'req-queued-second', 'Duplicate queued follow-up');
     assert.equal(duplicateQueued.status, 200, 'duplicate queued follow-up should return idempotent 200');
@@ -669,7 +672,9 @@ async function phase12QueuedMessageRouteContract() {
       const detail = await request(port, 'GET', `/api/sessions/${session.id}`);
       if (detail.status !== 200) return false;
       return detail.json.session?.status === 'idle'
-        && detail.json.session?.queuedMessageCount === 0;
+        && detail.json.session?.queuedMessageCount === 0
+        && detail.json.session?.activity?.run?.state === 'idle'
+        && detail.json.session?.activity?.queue?.state === 'idle';
     }, 'queued follow-up should finish draining before cleanup', 12000);
 
     console.log('phase12-queued-message-route-contract: ok');

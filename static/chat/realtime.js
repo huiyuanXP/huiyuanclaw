@@ -147,6 +147,13 @@ async function dispatchAction(msg) {
             ...(msg.thinking ? { thinking: true } : {}),
           }),
         });
+        if (data.session) {
+          const session = upsertSession(data.session) || data.session;
+          renderSessionList();
+          if (currentSessionId === session.id) {
+            applyAttachedSessionState(session.id, session);
+          }
+        }
         try {
           await refreshCurrentSession();
         } catch {
@@ -218,8 +225,8 @@ function getCurrentSession() {
   return sessions.find((s) => s.id === currentSessionId) || null;
 }
 
-function normalizeSessionStatus(incomingStatus, previousStatus) {
-  return incomingStatus || previousStatus || "idle";
+function normalizeSessionStatus(incomingStatus) {
+  return incomingStatus || "idle";
 }
 
 function updateResumeButton() {

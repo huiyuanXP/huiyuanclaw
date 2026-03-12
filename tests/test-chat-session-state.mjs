@@ -8,8 +8,6 @@ import vm from 'vm';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = dirname(__dirname);
 
-const bootstrapSource = readFileSync(join(repoRoot, 'static/chat/bootstrap.js'), 'utf8');
-const composeSource = readFileSync(join(repoRoot, 'static/chat/compose.js'), 'utf8');
 const realtimeSource = readFileSync(join(repoRoot, 'static/chat/realtime.js'), 'utf8');
 const sessionHttpSource = readFileSync(join(repoRoot, 'static/chat/session-http.js'), 'utf8');
 
@@ -25,33 +23,36 @@ function sliceBetween(source, startToken, endToken) {
   return source.slice(start, end);
 }
 
-class StorageMock {
-  constructor() {
-    this.store = new Map();
-  }
-
-  getItem(key) {
-    return this.store.has(key) ? this.store.get(key) : null;
-  }
-
-  setItem(key, value) {
-    this.store.set(key, String(value));
-  }
-
-  removeItem(key) {
-    this.store.delete(key);
-  }
-}
-
-function createDomElement() {
+function createSessionActivity({
+  runState = 'idle',
+  phase = null,
+  runId = null,
+  recoverable = false,
+  queueState = 'idle',
+  queueCount = 0,
+  renameState = 'idle',
+  renameError = null,
+  compactState = 'idle',
+} = {}) {
   return {
-    className: '',
-    id: '',
-    innerHTML: '',
-    textContent: '',
-    style: {},
-    appendChild() {},
-    remove() {},
+    run: {
+      state: runState,
+      phase,
+      runId,
+      cancelRequested: false,
+      recoverable,
+    },
+    queue: {
+      state: queueState,
+      count: queueCount,
+    },
+    rename: {
+      state: renameState,
+      error: renameError,
+    },
+    compact: {
+      state: compactState,
+    },
   };
 }
 
@@ -69,63 +70,14 @@ function createBaseContext() {
     Array,
     Math,
     Promise,
-    sessionUnreadVersions: {},
-    failedSendSessionIds: new Set(),
-    sendingSessionIds: new Set(),
+    encodeURIComponent,
     currentSessionId: null,
-    currentSessionRefreshPromise: null,
-    pendingCurrentSessionRefresh: false,
-    visitorMode: false,
+    hasAttachedSession: false,
     sessions: [],
-    localStorage: new StorageMock(),
-    document: {
-      visibilityState: 'visible',
-      getElementById() {
-        return null;
-      },
-      createElement() {
-        return createDomElement();
-      },
-    },
-    PENDING_MESSAGE_STALE_MS: 15000,
-    SESSION_UNREAD_VERSIONS_STORAGE_KEY: 'sessionUnreadVersions',
-    SESSION_SEND_FAILURES_STORAGE_KEY: 'sessionSendFailures',
+    visitorMode: false,
     getEffectiveSessionAppId(session) {
       return session?.appId || 'chat';
     },
-    renderSessionList() {},
-    updateStatus() {},
-    getCurrentSession() {
-      return this.sessions.find((session) => session.id === this.currentSessionId) || null;
-    },
-    getPendingMessage() {
-      return null;
-    },
-    fetchSessionsList: async () => [],
-    refreshCurrentSession: async () => ({}),
-    fetchJsonOrRedirect: async () => ({}),
-    upsertSession(value) {
-      return value;
-    },
-    renderSessionList() {},
-    attachSession() {},
-    applyAttachedSessionState() {},
-    refreshSidebarSession: async () => null,
-    createRequestId() {
-      return 'req-test';
-    },
-    clearOptimisticMessage() {},
-    refreshSessionAttentionUi() {},
-    msgInput: { value: '' },
-    emptyState: { parentNode: null, remove() {} },
-    messagesInner: { appendChild() {}, children: [] },
-    appendMessageTimestamp() {},
-    scrollToBottom() {},
-    autoResizeInput() {},
-    sendMessage() {},
-  };
-  context.writeStoredJsonValue = (key, value) => {
-    context.localStorage.setItem(key, JSON.stringify(value));
   };
   context.globalThis = context;
   return context;
@@ -135,12 +87,6 @@ const normalizeSessionStatusSnippet = sliceBetween(
   realtimeSource,
   'function normalizeSessionStatus',
   'function updateResumeButton',
-);
-
-const sessionAttentionSnippet = sliceBetween(
-  bootstrapSource,
-  'function persistSessionUnreadVersions',
-  '// Thinking block state',
 );
 
 const normalizeSessionRecordSnippet = sliceBetween(
@@ -155,166 +101,148 @@ const dispatchActionSnippet = sliceBetween(
   'function getCurrentSession',
 );
 
-const pendingMessageSnippet = sliceBetween(
-  composeSource,
-  'function savePendingMessage',
-  '// ---- Sidebar tabs ----',
-);
-
-const stateContext = createBaseContext();
+const recordContext = createBaseContext();
 vm.runInNewContext(
-  `${normalizeSessionStatusSnippet}\n${sessionAttentionSnippet}\n${normalizeSessionRecordSnippet}`,
-  stateContext,
-  { filename: 'chat-session-state-runtime.js' },
+  `${normalizeSessionStatusSnippet}\n${normalizeSessionRecordSnippet}`,
+  recordContext,
+  { filename: 'chat-session-record-runtime.js' },
 );
 
-const restored = stateContext.normalizeSessionRecord(
+const restored = recordContext.normalizeSessionRecord(
   {
     id: 'session-restore',
     status: 'idle',
+    activity: createSessionActivity(),
     lastEventAt: '2026-03-12T12:00:00.000Z',
   },
   {
     id: 'session-restore',
     status: 'idle',
+    activity: createSessionActivity(),
     archived: true,
     archivedAt: '2026-03-12T11:59:00.000Z',
   },
 );
-assert.equal(restored.archived, undefined, 'restoring should clear stale archived flags from the client cache');
-assert.equal(restored.archivedAt, undefined, 'restoring should clear stale archived timestamps from the client cache');
-assert.equal(restored.status, 'idle', 'finished sessions should normalize back to idle');
+assert.equal(restored.archived, undefined, 'stale archived flags should not survive a fresh session payload');
+assert.equal(restored.archivedAt, undefined, 'stale archived timestamps should not survive a fresh session payload');
+assert.equal(restored.status, 'idle', 'session status should stay aligned with backend activity');
 
-stateContext.document.visibilityState = 'hidden';
-const unreadSession = stateContext.normalizeSessionRecord(
+const carriedQueue = recordContext.normalizeSessionRecord(
   {
-    id: 'session-unread',
-    status: 'idle',
-    lastEventAt: '2026-03-12T12:05:00.000Z',
-    appId: 'chat',
-  },
-  {
-    id: 'session-unread',
+    id: 'session-queue',
     status: 'running',
-    lastEventAt: '2026-03-12T12:04:00.000Z',
-    appId: 'chat',
+    activity: createSessionActivity({ runState: 'running', queueState: 'queued', queueCount: 1 }),
   },
-);
-assert.equal(stateContext.isSessionUnread(unreadSession), true, 'a session that finishes off-screen should become unread');
-assert.equal(
-  stateContext.getSessionVisualStatus(unreadSession).key,
-  'unread',
-  'finished unread sessions should show the unread hint instead of a done/read state',
-);
-
-stateContext.currentSessionId = 'session-unread';
-stateContext.document.visibilityState = 'visible';
-const seenSession = stateContext.normalizeSessionRecord(
   {
-    id: 'session-unread',
-    status: 'idle',
-    lastEventAt: '2026-03-12T12:05:00.000Z',
-    appId: 'chat',
+    id: 'session-queue',
+    queuedMessages: [{ text: 'queued follow-up' }],
   },
-  unreadSession,
 );
-assert.equal(stateContext.isSessionUnread(seenSession), false, 'opening the current session should clear its unread hint');
-assert.equal(
-  stateContext.getSessionVisualStatus(seenSession).key,
-  'idle',
-  'once seen, finished sessions should fall back to idle',
+assert.deepEqual(
+  carriedQueue.queuedMessages,
+  [{ text: 'queued follow-up' }],
+  'queued message details should stay attached while the backend queue is still non-empty',
 );
 
-stateContext.failedSendSessionIds.add('session-running');
-assert.equal(
-  stateContext.getSessionVisualStatus({ id: 'session-running', status: 'running' }).key,
-  'running',
-  'active runs should keep the running state even if there is stale send-failure metadata',
+const clearedQueue = recordContext.normalizeSessionRecord(
+  {
+    id: 'session-queue',
+    status: 'idle',
+    activity: createSessionActivity(),
+  },
+  {
+    id: 'session-queue',
+    queuedMessages: [{ text: 'queued follow-up' }],
+  },
 );
 assert.equal(
-  stateContext.getSessionVisualStatus({ id: 'session-running', status: 'idle' }).key,
-  'send-failed',
-  'idle sessions can still surface send failures for retry',
+  Object.prototype.hasOwnProperty.call(clearedQueue, 'queuedMessages'),
+  false,
+  'queued message details should clear once the backend queue drains',
 );
 
 const dispatchContext = createBaseContext();
-let savedPending = null;
-let clearedPending = false;
-let clearedOptimistic = false;
-let attentionRefreshes = 0;
 let refreshCalls = 0;
+let renderCalls = 0;
+let savedPendingCalls = 0;
+let clearedPendingCalls = 0;
+let attentionRefreshes = 0;
+let scheduledRefreshes = 0;
+let appliedSession = null;
+let requestPayload = null;
+
 dispatchContext.currentSessionId = 'session-send';
-dispatchContext.getPendingMessage = () => null;
-dispatchContext.savePendingMessage = (text, requestId) => {
-  savedPending = { text, requestId };
-  return Date.now();
-};
-dispatchContext.fetchJsonOrRedirect = async () => ({ queued: false });
-dispatchContext.clearPendingMessage = () => {
-  clearedPending = true;
-  return true;
-};
-dispatchContext.clearOptimisticMessage = () => {
-  clearedOptimistic = true;
-};
-dispatchContext.refreshSessionAttentionUi = () => {
-  attentionRefreshes += 1;
-};
+dispatchContext.createRequestId = () => 'req-test';
+dispatchContext.fetchSessionsList = async () => [];
 dispatchContext.refreshCurrentSession = async () => {
   refreshCalls += 1;
   if (refreshCalls === 1) {
     throw new Error('temporary refresh failure');
   }
-  return {};
+  return { ok: true };
 };
+dispatchContext.fetchJsonOrRedirect = async (url, options = {}) => {
+  requestPayload = { url, options };
+  return {
+    queued: true,
+    session: {
+      id: 'session-send',
+      status: 'running',
+      activity: createSessionActivity({ runState: 'running', queueState: 'queued', queueCount: 1 }),
+    },
+  };
+};
+dispatchContext.upsertSession = (value) => {
+  dispatchContext.sessions = [value];
+  return value;
+};
+dispatchContext.renderSessionList = () => {
+  renderCalls += 1;
+};
+dispatchContext.applyAttachedSessionState = (id, session) => {
+  appliedSession = { id, session };
+};
+dispatchContext.refreshSidebarSession = async () => null;
+dispatchContext.savePendingMessage = () => {
+  savedPendingCalls += 1;
+};
+dispatchContext.clearPendingMessage = () => {
+  clearedPendingCalls += 1;
+};
+dispatchContext.refreshSessionAttentionUi = () => {
+  attentionRefreshes += 1;
+};
+dispatchContext.setTimeout = (fn) => {
+  scheduledRefreshes += 1;
+  fn();
+  return 1;
+};
+
 vm.runInNewContext(dispatchActionSnippet, dispatchContext, {
   filename: 'chat-dispatch-action-runtime.js',
 });
 
 const sendAccepted = await dispatchContext.dispatchAction({ action: 'send', text: 'hello world' });
-assert.equal(sendAccepted, true, 'send should still resolve successfully after the server accepted the message');
-assert.deepEqual(savedPending, { text: 'hello world', requestId: 'req-test' });
-assert.equal(clearedPending, true, 'accepted sends should clear pending-send recovery state immediately');
-assert.equal(clearedOptimistic, true, 'accepted sends should clear the optimistic bubble before the refresh finishes');
-assert.equal(attentionRefreshes, 1, 'accepted sends should refresh sidebar attention state when pending recovery is cleared');
-assert.equal(refreshCalls, 2, 'accepted sends should retry the session refresh asynchronously after a transient failure');
-
-const pendingContext = createBaseContext();
-let markedFailures = 0;
-let pendingRefreshes = 0;
-let recoveryRenders = 0;
-pendingContext.currentSessionId = 'session-pending';
-pendingContext.clearSessionSendFailed = () => false;
-pendingContext.markSessionSendFailed = () => {
-  markedFailures += 1;
-  return true;
-};
-pendingContext.refreshSessionAttentionUi = () => {
-  pendingRefreshes += 1;
-};
-vm.runInNewContext(pendingMessageSnippet, pendingContext, {
-  filename: 'chat-pending-message-runtime.js',
-});
-pendingContext.renderPendingRecovery = () => {
-  recoveryRenders += 1;
-};
-
-pendingContext.savePendingMessage('still sending', 'req-fresh');
-pendingContext.checkPendingMessage([]);
-assert.equal(markedFailures, 0, 'fresh pending messages should not be marked as failed immediately after a reload');
-assert.equal(recoveryRenders, 0, 'fresh pending messages should not render recovery UI yet');
-
-pendingContext.localStorage.setItem(
-  'pending_msg_session-pending',
-  JSON.stringify({
-    text: 'stale pending',
-    requestId: 'req-stale',
-    timestamp: Date.now() - pendingContext.PENDING_MESSAGE_STALE_MS - 1,
-  }),
+assert.equal(sendAccepted, true, 'send should resolve successfully after server acceptance');
+assert.equal(requestPayload?.url, '/api/sessions/session-send/messages');
+assert.match(String(requestPayload?.options?.body || ''), /"requestId":"req-test"/);
+assert.equal(renderCalls, 1, 'accepted sends should immediately reflect the backend session payload');
+assert.deepEqual(
+  appliedSession,
+  {
+    id: 'session-send',
+    session: {
+      id: 'session-send',
+      status: 'running',
+      activity: createSessionActivity({ runState: 'running', queueState: 'queued', queueCount: 1 }),
+    },
+  },
+  'accepted sends should apply the returned backend session state before the refresh finishes',
 );
-pendingContext.checkPendingMessage([]);
-assert.equal(markedFailures, 1, 'stale pending messages should still fall back to recovery');
-assert.equal(recoveryRenders, 1, 'stale pending messages should render recovery UI');
-assert.equal(pendingRefreshes, 1, 'stale pending messages should refresh sidebar attention state once');
+assert.equal(refreshCalls, 2, 'accepted sends should retry the session refresh after a transient failure');
+assert.equal(scheduledRefreshes, 1, 'accepted sends should schedule exactly one async refresh retry');
+assert.equal(savedPendingCalls, 0, 'frontend should not persist pending-send state');
+assert.equal(clearedPendingCalls, 0, 'frontend should not clear any pending-send cache because none exists');
+assert.equal(attentionRefreshes, 0, 'frontend should not synthesize unread or send-failure attention state');
 
 console.log('test-chat-session-state: ok');

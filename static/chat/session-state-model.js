@@ -25,30 +25,21 @@
 
   function normalizeSessionActivity(session) {
     const raw = session?.activity || {};
-    const fallbackRunState = session?.status === "interrupted"
-      ? "interrupted"
-      : session?.status === "running"
-        ? "running"
-        : "idle";
     const rawRunState = raw?.run?.state;
     const runState =
       rawRunState === "running" || rawRunState === "interrupted"
         ? rawRunState
-        : fallbackRunState;
+        : "idle";
     const queueCount = Number.isInteger(raw?.queue?.count)
       ? raw.queue.count
-      : Number.isInteger(session?.queuedMessageCount)
-        ? session.queuedMessageCount
-        : 0;
-    const queueState = raw?.queue?.state === "queued" || queueCount > 0
+      : 0;
+    const queueState = raw?.queue?.state === "queued" && queueCount > 0
       ? "queued"
       : "idle";
     const renameState = raw?.rename?.state === "pending" || raw?.rename?.state === "failed"
       ? raw.rename.state
-      : session?.renameState === "pending" || session?.renameState === "failed"
-        ? session.renameState
-        : "idle";
-    const compactState = raw?.compact?.state === "pending" || session?.pendingCompact === true
+      : "idle";
+    const compactState = raw?.compact?.state === "pending"
       ? "pending"
       : "idle";
 
@@ -58,7 +49,7 @@
         phase: typeof raw?.run?.phase === "string" ? raw.run.phase : null,
         runId: typeof raw?.run?.runId === "string" ? raw.run.runId : null,
         cancelRequested: raw?.run?.cancelRequested === true,
-        recoverable: raw?.run?.recoverable === true || session?.recoverable === true,
+        recoverable: raw?.run?.recoverable === true,
       },
       queue: {
         state: queueState,
@@ -81,16 +72,16 @@
       || activity.compact.state === "pending";
   }
 
-  function getSessionPrimaryStatus(session) {
+  function getSessionPrimaryStatus(session, options = {}) {
     if (!session) {
       return createEmptyStatus();
     }
 
-    const indicators = getSessionStatusSummary(session).indicators;
+    const indicators = getSessionStatusSummary(session, options).indicators;
     return indicators[0] || createStatus("idle", "idle");
   }
 
-  function getSessionStatusSummary(session) {
+  function getSessionStatusSummary(session, { includeToolFallback = false } = {}) {
     const activity = normalizeSessionActivity(session);
     const indicators = [];
 
@@ -141,16 +132,20 @@
       ));
     }
 
-    const primary = indicators[0] || createStatus("idle", "idle");
+    const primary = indicators[0] || (
+      session?.tool && includeToolFallback
+        ? createStatus("tool", session.tool)
+        : createStatus("idle", "idle")
+    );
 
     return {
       primary,
-      indicators,
+      indicators: indicators.length > 0 || !primary.label ? indicators : [primary],
     };
   }
 
-  function getSessionVisualStatus(session) {
-    return getSessionStatusSummary(session).primary;
+  function getSessionVisualStatus(session, options = {}) {
+    return getSessionStatusSummary(session, options).primary;
   }
 
   root.RemoteLabSessionStateModel = {

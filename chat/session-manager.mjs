@@ -713,19 +713,6 @@ function getSessionPinSortRank(meta) {
   return meta?.pinned === true ? 1 : 0;
 }
 
-async function getPersistedStatus(meta) {
-  if (meta?.activeRunId) {
-    const run = await getRun(meta.activeRunId);
-    if (run && !isTerminalRunState(run.state)) {
-      return 'running';
-    }
-  }
-  if (meta?.activeRun) {
-    return 'interrupted';
-  }
-  return 'idle';
-}
-
 async function resolveSessionRunActivity(meta) {
   if (meta?.activeRunId) {
     const run = await getRun(meta.activeRunId);

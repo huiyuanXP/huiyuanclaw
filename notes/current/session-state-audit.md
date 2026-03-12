@@ -1,5 +1,28 @@
 # Session State Audit
 
+## Update — Simplified contract landed
+
+This audit has now been partially implemented in the shipped code.
+
+What changed:
+
+- the backend now exposes a first-class `session.activity` object for orthogonal server activity
+- the frontend sidebar/header status rendering now reads backend `activity` instead of inventing `done`, `unread`, or local pending-delivery states
+- local pending-send recovery is now in-memory only for the active compose flow instead of being persisted as durable UI state
+
+Current backend activity contract:
+
+- `activity.run.state` — `running | interrupted | idle`
+- `activity.run.phase` — underlying durable run phase when available
+- `activity.queue.state` + `activity.queue.count`
+- `activity.rename.state` + `activity.rename.error`
+- `activity.compact.state`
+
+What still remains as cleanup surface:
+
+- top-level mirrors such as `session.status`, `queuedMessageCount`, `pendingCompact`, and `renameState` still exist for compatibility
+- `activeRun` / `resume_interrupted` remains a legacy compatibility path and is still a candidate for later deletion
+
 Goal: separate durable server truth from frontend-only display state before another round of UI fixes.
 
 ## 1. Current server-side truth

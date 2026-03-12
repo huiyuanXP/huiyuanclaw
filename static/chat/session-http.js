@@ -209,13 +209,16 @@ function reconcilePendingMessageState(event) {
 }
 
 function normalizeSessionRecord(session, previous = null) {
+  const queueCount = Number.isInteger(session?.activity?.queue?.count)
+    ? session.activity.queue.count
+    : 0;
   const normalized = {
     ...session,
     appId: getEffectiveSessionAppId(session),
-    status: normalizeSessionStatus(session.status),
+    status: normalizeSessionStatus(session?.activity?.run?.state || session.status),
   };
   if (!Object.prototype.hasOwnProperty.call(session || {}, "queuedMessages")) {
-    if ((session?.queuedMessageCount || 0) > 0 && Array.isArray(previous?.queuedMessages)) {
+    if (queueCount > 0 && Array.isArray(previous?.queuedMessages)) {
       normalized.queuedMessages = previous.queuedMessages;
     } else {
       delete normalized.queuedMessages;

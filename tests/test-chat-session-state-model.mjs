@@ -12,9 +12,7 @@ const source = readFileSync(
   'utf8',
 );
 
-const context = {
-  console,
-};
+const context = { console };
 context.globalThis = context;
 context.window = context;
 
@@ -26,73 +24,103 @@ const model = context.RemoteLabSessionStateModel;
 
 assert.ok(model, 'session state model should attach to the global scope');
 
-const optimisticRunning = model.getSessionStatusSummary(
-  {
-    id: 'session-pending',
-    name: 'Pending session',
-    status: 'idle',
-  },
-  {
-    hasPendingDelivery: true,
-  },
-);
-assert.equal(optimisticRunning.primary.key, 'running');
-assert.equal(
-  Array.from(optimisticRunning.indicators, (indicator) => indicator.key).join(','),
-  'running',
-  'pending local delivery should surface as running immediately',
-);
+function makeActivity(overrides = {}) {
+  return {
+    run: {
+      state: 'idle',
+      phase: null,
+      runId: null,
+      cancelRequested: false,
+      recoverable: false,
+      ...overrides.run,
+    },
+    queue: {
+      state: 'idle',
+      count: 0,
+      ...overrides.queue,
+    },
+    rename: {
+      state: 'idle',
+      error: null,
+      ...overrides.rename,
+    },
+    compact: {
+      state: 'idle',
+      ...overrides.compact,
+    },
+  };
+}
 
-const unreadStatus = model.getSessionStatusSummary(
-  {
-    id: 'session-done',
-    name: 'Done session',
-    status: 'done',
-  },
-  {
-    isRead: () => false,
-  },
-);
-assert.equal(unreadStatus.primary.key, 'unread');
-assert.equal(unreadStatus.primary.label, 'unread');
+function makeSession(overrides = {}) {
+  return {
+    id: 'session-test',
+    activity: makeActivity(),
+    ...overrides,
+  };
+}
 
-const pendingAccepted = model.normalizePendingMessage({
-  text: 'hello',
-  requestId: 'req-1',
-  timestamp: Date.now(),
-  deliveryState: 'accepted',
+const runningSession = makeSession({
+  activity: makeActivity({
+    run: { state: 'running', phase: 'accepted', runId: 'run-1' },
+  }),
 });
-assert.equal(
-  model.shouldKeepPendingMessagePending(pendingAccepted, { status: 'idle' }),
-  true,
-  'accepted pending messages should stay non-failing during the delivery grace window',
-);
+const runningStatus = model.getSessionStatusSummary(runningSession);
+assert.equal(runningStatus.primary.key, 'running');
+assert.equal(model.isSessionBusy(runningSession), true);
 
-const pendingSending = model.normalizePendingMessage({
-  text: 'hello',
-  requestId: 'req-2',
-  timestamp: Date.now() - 20000,
+const queuedSession = makeSession({
+  activity: makeActivity({
+    queue: { state: 'queued', count: 2 },
+  }),
 });
-assert.equal(
-  model.shouldKeepPendingMessagePending(pendingSending, { status: 'idle' }),
-  false,
-  'stale pending messages should surface for recovery after the grace window',
-);
+const queuedStatus = model.getSessionStatusSummary(queuedSession);
+assert.equal(queuedStatus.primary.key, 'queued');
+assert.equal(queuedStatus.primary.title, '2 follow-ups queued');
+assert.equal(model.isSessionBusy(queuedSession), true);
 
-const renamingStatus = model.getSessionStatusSummary(
-  {
-    id: 'session-renaming',
-    status: 'idle',
-    renameState: 'pending',
-  },
-);
-assert.equal(renamingStatus.primary.key, 'renaming');
+const compactingSession = makeSession({
+  activity: makeActivity({
+    compact: { state: 'pending' },
+  }),
+});
+assert.equal(model.getSessionStatusSummary(compactingSession).primary.key, 'compacting');
+assert.equal(model.isSessionBusy(compactingSession), true);
 
-const idleStatus = model.getSessionStatusSummary(
-  {
-    id: 'session-idle',
-    status: 'idle',
-  },
+const renamingSession = makeSession({
+  activity: makeActivity({
+    rename: { state: 'pending', error: null },
+  }),
+});
+assert.equal(model.getSessionStatusSummary(renamingSession).primary.key, 'renaming');
+assert.equal(model.isSessionBusy(renamingSession), false);
+
+const interruptedSession = makeSession({
+  activity: makeActivity({
+    run: { state: 'interrupted', runId: 'run-2', recoverable: true },
+  }),
+});
+const interruptedStatus = model.getSessionStatusSummary(interruptedSession);
+assert.equal(interruptedStatus.primary.key, 'interrupted');
+assert.equal(interruptedStatus.primary.title, 'Recoverable interrupted session');
+
+const renameFailedSession = makeSession({
+  activity: makeActivity({
+    rename: { state: 'failed', error: 'rename crashed' },
+  }),
+});
+const renameFailedStatus = model.getSessionStatusSummary(renameFailedSession);
+assert.equal(renameFailedStatus.primary.key, 'rename-failed');
+assert.equal(renameFailedStatus.primary.title, 'rename crashed');
+
+const toolFallbackStatus = model.getSessionStatusSummary(
+  makeSession({ tool: 'codex' }),
+  { includeToolFallback: true },
 );
+assert.equal(toolFallbackStatus.primary.key, 'tool');
+assert.equal(toolFallbackStatus.primary.label, 'codex');
+
+const idleStatus = model.getSessionStatusSummary(makeSession());
 assert.equal(idleStatus.primary.key, 'idle');
 assert.equal(idleStatus.primary.label, 'idle');
+
+console.log('test-chat-session-state-model: ok');
