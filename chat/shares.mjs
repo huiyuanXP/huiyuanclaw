@@ -139,23 +139,43 @@ function sanitizeSession(session) {
   };
 }
 
+export async function buildSanitizedSnapshot(session, history, extra = {}) {
+  const createdAt = typeof extra.createdAt === 'string' && extra.createdAt
+    ? extra.createdAt
+    : new Date().toISOString();
+  const events = Array.isArray(history)
+    ? (await Promise.all(history.map(sanitizeEvent))).filter(Boolean)
+    : [];
+
+  const snapshot = {
+    version: 1,
+    createdAt,
+    session: sanitizeSession(session),
+    events,
+  };
+
+  if (typeof extra.id === 'string' && extra.id) {
+    snapshot.id = extra.id;
+  }
+  if (extra.view && typeof extra.view === 'object') {
+    snapshot.view = extra.view;
+  }
+
+  return snapshot;
+}
+
 export async function createShareSnapshot(session, history) {
   return runShareMutation(async () => {
     await ensureSharesDir();
 
     const id = generateShareId();
-    const createdAt = new Date().toISOString();
-    const events = Array.isArray(history)
-      ? (await Promise.all(history.map(sanitizeEvent))).filter(Boolean)
-      : [];
-
-    const snapshot = {
-      version: 1,
+    const snapshot = await buildSanitizedSnapshot(session, history, {
       id,
-      createdAt,
-      session: sanitizeSession(session),
-      events,
-    };
+      createdAt: new Date().toISOString(),
+      view: {
+        mode: 'share',
+      },
+    });
 
     await writeJsonAtomic(shareSnapshotPath(id), snapshot);
     return snapshot;

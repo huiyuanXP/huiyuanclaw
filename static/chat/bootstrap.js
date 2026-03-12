@@ -11,6 +11,7 @@ const sidebarOverlay = document.getElementById("sidebarOverlay");
 const closeSidebar = document.getElementById("closeSidebar");
 const collapseBtn = document.getElementById("collapseBtn");
 const forkSessionBtn = document.getElementById("forkSessionBtn");
+const captureViewBtn = document.getElementById("captureViewBtn");
 const shareSnapshotBtn = document.getElementById("shareSnapshotBtn");
 const sidebarFilters = document.getElementById("sidebarFilters");
 const sessionList = document.getElementById("sessionList");

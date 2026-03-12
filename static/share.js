@@ -5,6 +5,13 @@
   const messagesInner = document.getElementById("messagesInner");
   const snapshotTitle = document.getElementById("snapshotTitle");
   const snapshotMeta = document.getElementById("snapshotMeta");
+  const heroBadge = document.getElementById("heroBadge");
+  const heroNote = document.getElementById("heroNote");
+
+  const view = snapshot.view && typeof snapshot.view === "object"
+    ? snapshot.view
+    : {};
+  const viewMode = view.mode === "capture" ? "capture" : "share";
 
   let currentThinkingBlock = null;
   let inThinkingBlock = false;
@@ -436,14 +443,28 @@
   function renderMeta() {
     const name = snapshot.session?.name || snapshot.session?.tool || "Shared session snapshot";
     const tool = snapshot.session?.tool || "Unknown tool";
+    const timestampLabel = typeof view.timestampLabel === "string" && view.timestampLabel
+      ? view.timestampLabel
+      : (viewMode === "capture" ? "Captured" : "Shared");
+    const titleSuffix = typeof view.titleSuffix === "string" && view.titleSuffix
+      ? view.titleSuffix
+      : (viewMode === "capture" ? "Capture View" : "Shared Snapshot");
+    const badge = typeof view.badge === "string" && view.badge
+      ? view.badge
+      : (viewMode === "capture" ? "Capture view" : "Read-only snapshot");
+    const note = typeof view.note === "string" && view.note
+      ? view.note
+      : "This link exposes only this captured conversation snapshot. It cannot send messages, join a live session, or browse any other RemoteLab content.";
     const items = [
       { label: "Tool", value: tool },
-      { label: "Shared", value: formatDate(snapshot.createdAt) },
+      { label: timestampLabel, value: formatDate(snapshot.createdAt) },
       { label: "Events", value: String(Array.isArray(snapshot.events) ? snapshot.events.length : 0) },
     ];
 
-    document.title = `${name} · Shared Snapshot`;
+    document.title = `${name} · ${titleSuffix}`;
     snapshotTitle.textContent = name;
+    if (heroBadge) heroBadge.textContent = badge;
+    if (heroNote) heroNote.textContent = note;
     snapshotMeta.innerHTML = items
       .map((item) => `<div class="hero-meta-item"><strong>${esc(item.label)}:</strong> ${esc(item.value)}</div>`)
       .join("");

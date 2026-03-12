@@ -18,6 +18,7 @@ function applyVisitorMode() {
   if (dropToolsBtn) dropToolsBtn.style.display = "none";
   if (contextTokens) contextTokens.style.display = "none";
   if (typeof syncInputHeightForLayout === "function") syncInputHeightForLayout();
+  syncCaptureButton();
   syncForkButton();
   syncShareButton();
 }
@@ -41,6 +42,7 @@ async function initApp() {
   }
 
   syncAddToolModal();
+  syncCaptureButton();
   syncForkButton();
   syncShareButton();
   if (!visitorMode) {

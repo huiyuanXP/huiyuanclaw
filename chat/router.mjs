@@ -47,7 +47,7 @@ import {
   deleteApp,
   isBuiltinAppId,
 } from './apps.mjs';
-import { createShareSnapshot, getShareSnapshot } from './shares.mjs';
+import { buildSanitizedSnapshot, createShareSnapshot, getShareSnapshot } from './shares.mjs';
 import { parseSessionGetRoute } from './session-route-utils.mjs';
 import { readBody } from '../lib/utils.mjs';
 import {
@@ -246,6 +246,28 @@ function setShareSnapshotHeaders(res, nonce) {
   ].join('; '));
 }
 
+async function writeSnapshotPage(res, nonce, snapshot, {
+  cacheControl,
+  headers = {},
+  failureText = 'Failed to load snapshot page',
+} = {}) {
+  setShareSnapshotHeaders(res, nonce);
+  try {
+    const sharePage = await readFile(shareTemplatePath, 'utf8');
+    res.writeHead(200, buildHeaders({
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': cacheControl,
+      ...headers,
+    }));
+    res.end(renderPageTemplate(sharePage, nonce, {
+      SNAPSHOT_JSON: serializeJsonForScript(snapshot),
+    }));
+  } catch {
+    res.writeHead(500, buildHeaders({ 'Content-Type': 'text/plain' }));
+    res.end(failureText);
+  }
+}
+
 function serializeJsonForScript(value) {
   return JSON.stringify(value)
     .replace(/</g, '\\u003c')
@@ -432,20 +454,10 @@ export async function handleRequest(req, res) {
       res.end('Shared snapshot not found');
       return;
     }
-    setShareSnapshotHeaders(res, nonce);
-    try {
-      const sharePage = await readFile(shareTemplatePath, 'utf8');
-      res.writeHead(200, buildHeaders({
-        'Content-Type': 'text/html; charset=utf-8',
-        'Cache-Control': 'public, max-age=31536000, immutable',
-      }));
-      res.end(renderPageTemplate(sharePage, nonce, {
-        SNAPSHOT_JSON: serializeJsonForScript(snapshot),
-      }));
-    } catch {
-      res.writeHead(500, buildHeaders({ 'Content-Type': 'text/plain' }));
-      res.end('Failed to load share page');
-    }
+    await writeSnapshotPage(res, nonce, snapshot, {
+      cacheControl: 'public, max-age=31536000, immutable',
+      failureText: 'Failed to load share page',
+    });
     return;
   }
 
@@ -782,6 +794,41 @@ export async function handleRequest(req, res) {
         createdAt: snapshot.createdAt,
         url: `/share/${snapshot.id}`,
       },
+    });
+    return;
+  }
+
+  if (pathname.startsWith('/capture/') && req.method === 'GET') {
+    const sessionId = pathname.slice('/capture/'.length);
+    if (!requireSessionAccess(res, authSession, sessionId)) return;
+
+    const session = await getSession(sessionId, { includeQueuedMessages: true });
+    if (!session) {
+      res.writeHead(404, buildHeaders({ 'Content-Type': 'text/plain' }));
+      res.end('Session not found');
+      return;
+    }
+
+    const history = await getHistory(sessionId);
+    const snapshot = await buildSanitizedSnapshot(session, history, {
+      createdAt: new Date().toISOString(),
+      view: {
+        mode: 'capture',
+        badge: 'Capture view',
+        note: 'Optimized for long screenshots: this page uses normal document scrolling instead of the in-app scroll panel. If Android still does not offer Capture more, open this URL in Chrome instead of the installed PWA shell.',
+        timestampLabel: 'Captured',
+        titleSuffix: 'Capture View',
+      },
+    });
+    const refreshedCookie = await refreshAuthSession(req);
+    await writeSnapshotPage(res, nonce, snapshot, {
+      cacheControl: 'private, no-store, max-age=0, must-revalidate',
+      headers: {
+        'Pragma': 'no-cache',
+        'Expires': '0',
+        ...(refreshedCookie ? { 'Set-Cookie': refreshedCookie } : {}),
+      },
+      failureText: 'Failed to load capture view',
     });
     return;
   }

@@ -383,6 +383,12 @@ Universal learnings and patterns that apply to all RemoteLab deployments, regard
 - On mobile, wrapping or clipping these controls is worse than horizontal scrolling because the right-side actions become unreachable precisely when they matter most.
 - A robust pattern is: keep the row single-line, split it into left/right flex groups with `min-width: max-content`, and make the parent row `overflow-x: auto` with touch scrolling enabled.
 
+### Android Long Screenshots Need A Full-Document Capture Surface (2026-03-12)
+- Android's native long-screenshot flow is unreliable when a web app behaves like an app shell with `body`/viewport locked and the real conversation scroll trapped inside an inner `overflow-y: auto` panel.
+- For owner-facing chat products, do not assume the system screenshot UI can stitch nested scroll containers or installed PWA shells the same way it handles a normal browser page.
+- A low-risk fix is to add a dedicated read-only capture route that reuses sanitized session rendering but lets the whole document scroll naturally; this preserves the main app-shell UX while giving mobile users a screenshot-friendly surface.
+- In the capture view copy, explicitly tell users that if Android still does not show `Capture more`, they should open that route in Chrome instead of the installed PWA shell.
+
 ### IM Connectors Should Ack Fast And Finish In Background (2026-03-10)
 - Chat-platform event subscriptions often require handlers to finish within a few seconds and may retry on timeout, so do not hold the provider callback open while waiting for a full agent run.
 - For local-first agent products, a provider's long-connection / SDK event mode can be the fastest connector path because it avoids public webhook setup, signature verification, and payload decryption.
