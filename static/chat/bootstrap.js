@@ -344,10 +344,18 @@ function sortAppCatalogEntries(a, b) {
 
 function refreshAppCatalog(apps = availableApps) {
   const next = new Map();
+  const sessionAppIds = new Set(
+    sessions
+      .map((session) => normalizeAppId(session?.appId))
+      .filter(Boolean),
+  );
 
   next.set(DEFAULT_APP_ID, createAppCatalogEntry({ id: DEFAULT_APP_ID, name: DEFAULT_APP_NAME }));
 
   for (const app of apps) {
+    if (app?.showInSidebarWhenEmpty === false && !sessionAppIds.has(normalizeAppId(app?.id))) {
+      continue;
+    }
     const entry = createAppCatalogEntry(app);
     if (!entry) continue;
     next.set(entry.id, entry);
@@ -382,7 +390,10 @@ function getAppCatalogEntry(appId) {
 }
 
 function getTemplateApps() {
-  return availableApps.filter((app) => normalizeAppId(app?.id, { fallbackDefault: true }) !== DEFAULT_APP_ID);
+  return availableApps.filter((app) => (
+    normalizeAppId(app?.id, { fallbackDefault: true }) !== DEFAULT_APP_ID
+    && app?.templateSelectable !== false
+  ));
 }
 
 function getEffectiveSessionAppId(session) {

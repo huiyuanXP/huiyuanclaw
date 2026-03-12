@@ -13,6 +13,7 @@ const appsModule = await import(pathToFileURL(join(repoRoot, 'chat', 'apps.mjs')
 
 const {
   DEFAULT_APP_ID,
+  EMAIL_APP_ID,
   createApp,
   deleteApp,
   getApp,
@@ -25,11 +26,13 @@ try {
   const initial = await listApps();
   assert.deepEqual(
     initial.map((app) => app.id),
-    ['chat'],
-    'built-in apps should default to the owner chat app only',
+    ['chat', 'email'],
+    'built-in apps should include chat plus shipped connector app scopes',
   );
   assert.equal(DEFAULT_APP_ID, 'chat');
+  assert.equal(EMAIL_APP_ID, 'email');
   assert.equal(isBuiltinAppId('Chat'), true);
+  assert.equal(isBuiltinAppId('Email'), true);
   assert.equal(isBuiltinAppId('github'), false);
   assert.equal(isBuiltinAppId('custom-app'), false);
 
@@ -37,6 +40,14 @@ try {
   assert.equal(chatApp?.id, 'chat');
   assert.equal(chatApp?.name, 'Chat');
   assert.equal(chatApp?.builtin, true);
+  assert.equal(chatApp?.templateSelectable, false);
+
+  const emailApp = await getApp('email');
+  assert.equal(emailApp?.id, 'email');
+  assert.equal(emailApp?.name, 'Email');
+  assert.equal(emailApp?.builtin, true);
+  assert.equal(emailApp?.templateSelectable, false);
+  assert.equal(emailApp?.showInSidebarWhenEmpty, false);
 
   assert.equal(await getApp('feishu'), null);
 
@@ -62,7 +73,9 @@ try {
   assert.equal(afterCreate.some((app) => app.id === defaultToolApp.id), true);
 
   assert.equal(await updateApp('chat', { name: 'Owner Console' }), null);
+  assert.equal(await updateApp('email', { name: 'Mailbox' }), null);
   assert.equal(await deleteApp('chat'), false);
+  assert.equal(await deleteApp('email'), false);
 } finally {
   rmSync(tempHome, { recursive: true, force: true });
 }

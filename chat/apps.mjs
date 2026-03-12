@@ -7,8 +7,23 @@ const runAppsMutation = createSerialTaskQueue();
 const BUILTIN_CREATED_AT = '1970-01-01T00:00:00.000Z';
 
 export const DEFAULT_APP_ID = 'chat';
+export const EMAIL_APP_ID = 'email';
 export const BUILTIN_APPS = Object.freeze([
-  Object.freeze({ id: DEFAULT_APP_ID, name: 'Chat', builtin: true, createdAt: BUILTIN_CREATED_AT }),
+  Object.freeze({
+    id: DEFAULT_APP_ID,
+    name: 'Chat',
+    builtin: true,
+    templateSelectable: false,
+    createdAt: BUILTIN_CREATED_AT,
+  }),
+  Object.freeze({
+    id: EMAIL_APP_ID,
+    name: 'Email',
+    builtin: true,
+    templateSelectable: false,
+    showInSidebarWhenEmpty: false,
+    createdAt: BUILTIN_CREATED_AT,
+  }),
 ]);
 
 const BUILTIN_APP_MAP = new Map(BUILTIN_APPS.map((app) => [app.id, app]));

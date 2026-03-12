@@ -163,6 +163,10 @@ Universal learnings and patterns that apply to all RemoteLab deployments, regard
 - If an external connector should reuse the operator's current tool/model/reasoning choice, the browser must sync that selection to server-readable state; backend workers cannot see `localStorage`.
 - Treat the synced selection as the live runtime preference for connector-triggered sessions, and let connector-specific pinned overrides win only when they are explicitly configured.
 
+### Connector App Scopes Should Be Real Apps, Not Chat Aliases (2026-03-12)
+- If an integration like Email creates sessions with its own `appId`, ship a real built-in app entry for that scope so the UI can present it consistently instead of feeling like an unnamed Chat fallback.
+- Mark connector built-ins as non-template apps, and hide them from the sidebar when they have zero sessions; otherwise they clutter owner-facing app/template controls while still failing to model the connector cleanly.
+
 ### Post-Run Integrations Should Live Outside `chat/` (2026-03-11)
 - Business-specific side effects triggered by finished runs, such as outbound email delivery, should not live under the core `chat/` domain modules even when the chat server invokes them.
 - A cleaner split is: `chat/` owns sessions, runs, and event history; integration modules under `lib/` or connector-specific areas consume those primitives and perform provider-specific delivery work.
