@@ -139,6 +139,8 @@ async function main() {
     assert.match(page.text, /id="appFilterSelect"/);
     assert.match(page.text, /id="tabSettings"/);
     assert.doesNotMatch(page.text, /id="tabProgress"/);
+    assert.doesNotMatch(page.text, /id="saveTemplateBtn"/);
+    assert.doesNotMatch(page.text, /id="sessionTemplateSelect"/);
     assert.match(page.text, /--app-height:\s*100dvh/);
     assert.match(page.text, /\.app-container\s*\{[\s\S]*?min-height:\s*0;/);
     assert.match(page.text, /\.chat-area\s*\{[\s\S]*?min-height:\s*0;/);
