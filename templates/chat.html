@@ -27,9 +27,13 @@
   --tool-bg: #fafafa;
   --success: #16a34a;
   --success-bg: #f0fdf4;
+  --notice: #4f46e5;
+  --queue: #0f766e;
+  --naming: #7c3aed;
   --error: #dc2626;
   --error-bg: #fef2f2;
   --warning: #d97706;
+  --issue: #b45309;
   --app-height: 100dvh;
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-top: env(safe-area-inset-top, 0px);
@@ -87,10 +91,13 @@ body {
   display: inline-block; flex-shrink: 0;
 }
 .status-dot.running { background: var(--success); animation: pulse 1.5s infinite; }
-.status-dot.done { background: #3b82f6; }
+.status-dot.queued { background: var(--queue); animation: pulse 1.5s infinite; }
+.status-dot.done-read { background: var(--text-muted); }
+.status-dot.done-unread { background: var(--notice); }
 .status-dot.interrupted { background: var(--warning); }
-.status-dot.renaming { background: #3b82f6; animation: pulse 1.5s infinite; }
-.status-dot.rename-failed { background: var(--error); }
+.status-dot.renaming { background: var(--naming); animation: pulse 1.5s infinite; }
+.status-dot.rename-failed,
+.status-dot.send-failed { background: var(--issue); }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
 #statusText { font-size: 12px; color: var(--text-muted); }
 .session-list-footer {
@@ -230,6 +237,9 @@ body {
   font-size: 13px; font-weight: 500; color: var(--text);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.session-item.is-complete-read:not(.active) .session-item-name {
+  color: var(--text-secondary);
+}
 .session-pin-badge {
   display: inline-block;
   margin-right: 6px;
@@ -241,12 +251,19 @@ body {
   font-size: 11px; color: var(--text-muted); margin-top: 1px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.session-item.is-complete-read:not(.active) .session-item-meta {
+  color: var(--text-muted);
+}
 .session-item-count { font-variant-numeric: tabular-nums; }
 .session-item-meta .status-running { color: var(--success); }
+.session-item-meta .status-queued { color: var(--queue); }
 .session-item-meta .status-interrupted { color: var(--warning); }
-.session-item-meta .status-done { color: #3b82f6; }
-.session-item-meta .status-renaming { color: #3b82f6; }
-.session-item-meta .status-rename-failed { color: var(--error); }
+.session-item-meta .status-done-read { color: var(--text-muted); }
+.session-item-meta .status-done-unread { color: var(--notice); }
+.session-item-meta .status-renaming { color: var(--naming); }
+.session-item-meta .status-rename-failed,
+.session-item-meta .status-send-failed { color: var(--issue); }
+.session-item-meta .status-archived { color: var(--text-muted); }
 .session-item-actions { display: flex; gap: 2px; align-items: center; flex-shrink: 0; }
 .session-action-btn {
   background: none; border: none; color: var(--text-muted); cursor: pointer;

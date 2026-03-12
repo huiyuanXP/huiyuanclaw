@@ -265,7 +265,7 @@ function handleWsMessage(msg) {
 
 // ---- Status ----
 function updateStatus(connState, sessState, renameState, archived = false) {
-  const queuedCount = getCurrentSession()?.queuedMessageCount || 0;
+  const session = getCurrentSession();
   if (connState === "disconnected") {
     statusDot.className = "status-dot";
     statusText.textContent = "Reconnecting…";
@@ -278,32 +278,33 @@ function updateStatus(connState, sessState, renameState, archived = false) {
   }
   sessionStatus = sessState;
   const isRunning = sessState === "running";
-  const isDone = sessState === "done";
-  const isInterrupted = sessState === "interrupted";
-  const isRenaming = renameState === "pending";
-  const renameFailed = renameState === "failed";
-  const queuedLabel = queuedCount > 0 ? ` · ${queuedCount} queued` : "";
-  if (isRunning) {
-    statusDot.className = "status-dot running";
-    statusText.textContent = archived ? `running${queuedLabel} · archived` : `running${queuedLabel}`;
-  } else if (isDone) {
-    statusDot.className = archived ? "status-dot" : "status-dot done";
-    statusText.textContent = archived ? "archived" : `done${queuedLabel}`;
-  } else if (isInterrupted) {
-    statusDot.className = archived ? "status-dot" : "status-dot interrupted";
-    statusText.textContent = archived ? "archived" : `interrupted${queuedLabel}`;
-  } else if (isRenaming) {
-    statusDot.className = "status-dot renaming";
-    statusText.textContent = "renaming…";
-  } else if (renameFailed) {
-    statusDot.className = "status-dot rename-failed";
-    statusText.textContent = "rename failed";
-  } else if (archived) {
+  const visualStatus = getSessionVisualStatus({
+    ...(session || {}),
+    id: session?.id || currentSessionId,
+    status: sessState,
+    renameState,
+    archived,
+  });
+  const showArchivedOnly = archived && [
+    "idle",
+    "done-read",
+    "done-unread",
+    "interrupted",
+    "archived",
+  ].includes(visualStatus.key);
+  if (showArchivedOnly) {
     statusDot.className = "status-dot";
     statusText.textContent = "archived";
+  } else if (visualStatus.label) {
+    statusDot.className = visualStatus.dotClass
+      ? `status-dot ${visualStatus.dotClass}`
+      : "status-dot";
+    statusText.textContent = archived
+      ? `${visualStatus.label} · archived`
+      : visualStatus.label;
   } else {
     statusDot.className = "status-dot";
-    statusText.textContent = currentSessionId ? `idle${queuedLabel}` : "connected";
+    statusText.textContent = currentSessionId ? "idle" : "connected";
   }
   const hasSession = !!currentSessionId;
   msgInput.disabled = !hasSession || archived;

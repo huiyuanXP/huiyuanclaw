@@ -355,34 +355,32 @@ function getSessionGroupInfo(session) {
   };
 }
 
+function renderSessionStatusHtml(statusInfo) {
+  if (!statusInfo?.label) return "";
+  const title = statusInfo.title ? ` title="${esc(statusInfo.title)}"` : "";
+  if (!statusInfo.className) {
+    return `<span${title}>${esc(statusInfo.label)}</span>`;
+  }
+  return `<span class="${statusInfo.className}"${title}>● ${esc(statusInfo.label)}</span>`;
+}
+
 function createActiveSessionItem(session) {
+  const statusInfo = getSessionVisualStatus(session, { includeToolFallback: true });
   const div = document.createElement("div");
   div.className =
     "session-item"
     + (session.pinned ? " pinned" : "")
-    + (session.id === currentSessionId ? " active" : "");
+    + (session.id === currentSessionId ? " active" : "")
+    + (statusInfo.itemClass ? ` ${statusInfo.itemClass}` : "");
 
   const displayName = getSessionDisplayName(session);
   const metaParts = [];
   const countHtml = renderSessionMessageCount(session);
   if (countHtml) metaParts.push(countHtml);
-  if ((session.queuedMessageCount || 0) > 0) {
+  if ((session.queuedMessageCount || 0) > 0 && statusInfo.key !== "queued") {
     metaParts.push(`<span title="Queued follow-up messages waiting for the next turn">${session.queuedMessageCount} queued</span>`);
   }
-  const renameReason = session.renameError ? ` title="${esc(session.renameError)}"` : "";
-  const statusHtml = session.status === "done" || finishedUnread.has(session.id)
-    ? `<span class="status-done">● done</span>`
-    : session.renameState === "pending"
-    ? `<span class="status-renaming">● renaming</span>`
-    : session.renameState === "failed"
-      ? `<span class="status-rename-failed"${renameReason}>● rename failed</span>`
-    : session.status === "running"
-      ? `<span class="status-running">● running</span>`
-      : session.status === "interrupted"
-      ? `<span class="status-interrupted">● interrupted</span>`
-      : session.tool && session.name
-        ? `<span>${esc(session.tool)}</span>`
-        : "";
+  const statusHtml = renderSessionStatusHtml(statusInfo);
   if (statusHtml) metaParts.push(statusHtml);
   const metaHtml = metaParts.join(" · ");
   const pinTitle = session.pinned ? "Unpin" : "Pin";
@@ -627,10 +625,12 @@ sidebarOverlay.addEventListener("click", (e) => {
   if (e.target === sidebarOverlay && !isDesktop) closeSidebarFn();
 });
 
-// Clear "done" badge when user returns to tab (read-receipt semantics)
+// Keep the current session marked as seen when the tab becomes visible again
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && currentSessionId && finishedUnread.delete(currentSessionId)) {
-    renderSessionList();
+  if (document.visibilityState !== "visible" || !currentSessionId) return;
+  const session = getCurrentSession();
+  if (markSessionSeen(session)) {
+    refreshSessionAttentionUi(currentSessionId);
   }
 });
 

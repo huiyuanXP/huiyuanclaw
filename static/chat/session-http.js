@@ -209,7 +209,10 @@ function reconcilePendingMessageState(event) {
   if (optimistic) optimistic.remove();
   const pending = getPendingMessage();
   if (pending && (!pending.requestId || pending.requestId === event.requestId)) {
-    clearPendingMessage();
+    const changed = clearPendingMessage();
+    if (changed) {
+      refreshSessionAttentionUi();
+    }
   }
 }
 
@@ -259,6 +262,7 @@ async function fetchSessionsList() {
   const previousMap = new Map(sessions.map((session) => [session.id, session]));
   sessions = (data.sessions || []).map((session) => normalizeSessionRecord(session, previousMap.get(session.id) || null));
   sortSessionsInPlace();
+  pruneStoredSessionAttentionState(sessions.map((session) => session.id));
   refreshAppCatalog();
   renderSessionList();
   if (currentSessionId && !sessions.some((session) => session.id === currentSessionId)) {
@@ -278,7 +282,7 @@ function applyAttachedSessionState(id, session) {
   contextTokens.style.display = "none";
   compactBtn.style.display = "none";
   dropToolsBtn.style.display = "none";
-  finishedUnread.delete(id);
+  markSessionSeen(session);
 
   const displayName = getSessionDisplayName(session);
   headerTitle.textContent = displayName;

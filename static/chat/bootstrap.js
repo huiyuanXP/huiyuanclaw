@@ -74,6 +74,8 @@ let pendingImages = [];
 const ACTIVE_SESSION_STORAGE_KEY = "activeSessionId";
 const ACTIVE_SIDEBAR_TAB_STORAGE_KEY = "activeSidebarTab";
 const ACTIVE_APP_FILTER_STORAGE_KEY = "activeAppFilter";
+const SESSION_SEEN_VERSIONS_STORAGE_KEY = "sessionSeenVersions";
+const SESSION_SEND_FAILURES_STORAGE_KEY = "sessionSendFailures";
 const APP_FILTER_ALL_VALUE = "__all__";
 const DEFAULT_APP_ID = "chat";
 const DEFAULT_APP_NAME = "Chat";
@@ -90,7 +92,14 @@ let appCatalog = [];
 let availableApps = [];
 let visitorMode = false;
 let visitorSessionId = null;
-let finishedUnread = new Set(); // sessionIds finished but not yet opened
+let sessionSeenVersions = readStoredJsonValue(
+  SESSION_SEEN_VERSIONS_STORAGE_KEY,
+  {},
+);
+let failedSendSessionIds = new Set(
+  readStoredJsonValue(SESSION_SEND_FAILURES_STORAGE_KEY, []),
+);
+const sendingSessionIds = new Set();
 let currentSessionRefreshPromise = null;
 let pendingCurrentSessionRefresh = false;
 let hasSeenWsOpen = false;
@@ -139,6 +148,278 @@ let collapsedFolders = JSON.parse(
     localStorage.getItem("collapsedFolders") ||
     "{}",
 );
+
+function readStoredJsonValue(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    return parsed ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeStoredJsonValue(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {}
+}
+
+function persistSessionSeenVersions() {
+  writeStoredJsonValue(SESSION_SEEN_VERSIONS_STORAGE_KEY, sessionSeenVersions);
+}
+
+function persistFailedSendSessionIds() {
+  writeStoredJsonValue(
+    SESSION_SEND_FAILURES_STORAGE_KEY,
+    [...failedSendSessionIds],
+  );
+}
+
+function getSessionSeenVersion(session) {
+  const stamp = session?.updatedAt || session?.created || "";
+  return typeof stamp === "string" ? stamp : String(stamp || "");
+}
+
+function isSessionRead(session) {
+  if (session?.status !== "done" || !session?.id) return false;
+  const version = getSessionSeenVersion(session);
+  if (!version) return true;
+  return sessionSeenVersions[session.id] === version;
+}
+
+function markSessionSeen(session) {
+  if (!session?.id || document.visibilityState !== "visible") return false;
+  const version = getSessionSeenVersion(session);
+  if (!version || sessionSeenVersions[session.id] === version) return false;
+  sessionSeenVersions = { ...sessionSeenVersions, [session.id]: version };
+  persistSessionSeenVersions();
+  return true;
+}
+
+function pruneStoredSessionAttentionState(sessionIds) {
+  const knownIds = new Set(
+    Array.isArray(sessionIds) ? sessionIds.filter(Boolean) : [],
+  );
+  let seenChanged = false;
+  for (const sessionId of Object.keys(sessionSeenVersions)) {
+    if (!knownIds.has(sessionId)) {
+      delete sessionSeenVersions[sessionId];
+      seenChanged = true;
+    }
+  }
+  if (seenChanged) {
+    persistSessionSeenVersions();
+  }
+
+  let failedChanged = false;
+  for (const sessionId of [...failedSendSessionIds]) {
+    const hasPending =
+      typeof getPendingMessage === "function" && !!getPendingMessage(sessionId);
+    if (!knownIds.has(sessionId) && !hasPending) {
+      failedSendSessionIds.delete(sessionId);
+      failedChanged = true;
+    }
+  }
+  if (failedChanged) {
+    persistFailedSendSessionIds();
+  }
+}
+
+function markSessionSendInFlight(sessionId) {
+  if (!sessionId) return;
+  sendingSessionIds.add(sessionId);
+}
+
+function clearSessionSendInFlight(sessionId) {
+  if (!sessionId) return;
+  sendingSessionIds.delete(sessionId);
+}
+
+function markSessionSendFailed(sessionId) {
+  if (!sessionId) return false;
+  clearSessionSendInFlight(sessionId);
+  if (failedSendSessionIds.has(sessionId)) return false;
+  failedSendSessionIds.add(sessionId);
+  persistFailedSendSessionIds();
+  return true;
+}
+
+function clearSessionSendFailed(sessionId) {
+  if (!sessionId) return false;
+  clearSessionSendInFlight(sessionId);
+  if (!failedSendSessionIds.delete(sessionId)) return false;
+  persistFailedSendSessionIds();
+  return true;
+}
+
+function finishSessionSendAttempt(sessionId, ok) {
+  if (!sessionId) return false;
+  clearSessionSendInFlight(sessionId);
+  return ok ? clearSessionSendFailed(sessionId) : markSessionSendFailed(sessionId);
+}
+
+function hasSessionSendFailure(sessionId) {
+  if (!sessionId) return false;
+  const hasPending =
+    typeof getPendingMessage === "function" && !!getPendingMessage(sessionId);
+  return failedSendSessionIds.has(sessionId)
+    || (hasPending && !sendingSessionIds.has(sessionId));
+}
+
+function getQueuedStatusLabel(count) {
+  const total = Number.isInteger(count) ? count : Number(count) || 0;
+  return total === 1 ? "1 queued" : `${total} queued`;
+}
+
+function getSessionVisualStatus(session, { includeToolFallback = false } = {}) {
+  if (!session) {
+    return {
+      key: "idle",
+      label: "",
+      className: "",
+      dotClass: "",
+      itemClass: "",
+      title: "",
+    };
+  }
+
+  const queuedCount = Number.isInteger(session.queuedMessageCount)
+    ? session.queuedMessageCount
+    : 0;
+  const renameError =
+    typeof session.renameError === "string" ? session.renameError.trim() : "";
+
+  if (hasSessionSendFailure(session.id)) {
+    return {
+      key: "send-failed",
+      label: "send failed",
+      className: "status-send-failed",
+      dotClass: "send-failed",
+      itemClass: "",
+      title: "The last outgoing message still needs retry or recovery",
+    };
+  }
+
+  if (queuedCount > 0) {
+    return {
+      key: "queued",
+      label: getQueuedStatusLabel(queuedCount),
+      className: "status-queued",
+      dotClass: "queued",
+      itemClass: "",
+      title: "Queued follow-up messages waiting for the next turn",
+    };
+  }
+
+  if (session.status === "running") {
+    return {
+      key: "running",
+      label: "running",
+      className: "status-running",
+      dotClass: "running",
+      itemClass: "",
+      title: "",
+    };
+  }
+
+  if (session.renameState === "pending") {
+    return {
+      key: "renaming",
+      label: "renaming",
+      className: "status-renaming",
+      dotClass: "renaming",
+      itemClass: "",
+      title: "",
+    };
+  }
+
+  if (session.renameState === "failed") {
+    return {
+      key: "rename-failed",
+      label: "rename issue",
+      className: "status-rename-failed",
+      dotClass: "rename-failed",
+      itemClass: "",
+      title: renameError || "Rename suggestion could not be applied",
+    };
+  }
+
+  if (session.status === "done") {
+    const read = isSessionRead(session);
+    return {
+      key: read ? "done-read" : "done-unread",
+      label: read ? "read" : "unread",
+      className: read ? "status-done-read" : "status-done-unread",
+      dotClass: read ? "done-read" : "done-unread",
+      itemClass: read ? "is-complete-read" : "is-complete-unread",
+      title: "",
+    };
+  }
+
+  if (session.status === "interrupted") {
+    return {
+      key: "interrupted",
+      label: "interrupted",
+      className: "status-interrupted",
+      dotClass: "interrupted",
+      itemClass: "",
+      title: "",
+    };
+  }
+
+  if (session.archived === true) {
+    return {
+      key: "archived",
+      label: "archived",
+      className: "status-archived",
+      dotClass: "",
+      itemClass: "",
+      title: "",
+    };
+  }
+
+  if (includeToolFallback && session.tool && session.name) {
+    return {
+      key: "tool",
+      label: session.tool,
+      className: "",
+      dotClass: "",
+      itemClass: "",
+      title: "",
+    };
+  }
+
+  return {
+    key: "idle",
+    label: "",
+    className: "",
+    dotClass: "",
+    itemClass: "",
+    title: "",
+  };
+}
+
+function refreshSessionAttentionUi(sessionId = currentSessionId) {
+  if (typeof renderSessionList === "function") {
+    renderSessionList();
+  }
+  if (
+    sessionId
+    && sessionId === currentSessionId
+    && typeof updateStatus === "function"
+    && typeof getCurrentSession === "function"
+  ) {
+    const session = getCurrentSession();
+    updateStatus(
+      "connected",
+      session?.status || "idle",
+      session?.renameState,
+      session?.archived === true,
+    );
+  }
+}
 
 // Thinking block state
 let currentThinkingBlock = null; // { el, body, tools: Set }
