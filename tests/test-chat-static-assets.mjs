@@ -145,7 +145,7 @@ async function main() {
     assert.match(page.text, /\.messages\s*\{[\s\S]*?min-height:\s*0;/);
     assert.ok(!page.text.includes('/chat.js?v='), 'chat page should not pin the chat frontend to a versioned URL');
     assert.ok(!page.text.includes('/marked.min.js?v='), 'chat page should let marked.min.js use normal revalidation');
-    assert.ok(!page.text.includes('/manifest.json?v='), 'chat page should let manifest use normal revalidation');
+    assert.match(page.text, /\/manifest\.json\?v=/, 'chat page should fingerprint the manifest URL so installed PWAs refresh policy changes');
 
     const manifest = await request(port, 'GET', '/manifest.json');
     assert.equal(manifest.status, 200, 'manifest should load');
