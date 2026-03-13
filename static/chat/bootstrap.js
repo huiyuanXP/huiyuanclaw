@@ -147,7 +147,6 @@ document.addEventListener("visibilitychange", () => {
 const menuBtn = document.getElementById("menuBtn");
 const sidebarOverlay = document.getElementById("sidebarOverlay");
 const closeSidebar = document.getElementById("closeSidebar");
-const collapseBtn = document.getElementById("collapseBtn");
 const forkSessionBtn = document.getElementById("forkSessionBtn");
 const shareSnapshotBtn = document.getElementById("shareSnapshotBtn");
 const sidebarFilters = document.getElementById("sidebarFilters");
@@ -294,7 +293,6 @@ let currentToolEffortLevels = null; // null = binary toggle, string[] = effort d
 let currentToolReasoningKind = "toggle";
 let currentToolReasoningLabel = "Thinking";
 let currentToolReasoningDefault = null;
-let sidebarCollapsed = localStorage.getItem("sidebarCollapsed") === "true";
 let toolsList = [];
 let isDesktop = window.matchMedia("(min-width: 768px)").matches;
 const ADD_MORE_TOOL_VALUE = "__add_more__";

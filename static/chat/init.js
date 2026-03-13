@@ -8,7 +8,6 @@ function applyVisitorMode() {
   // Hide sidebar toggle, new session button, and management UI
   if (menuBtn) menuBtn.style.display = "none";
   if (newSessionBtn) newSessionBtn.style.display = "none";
-  if (collapseBtn) collapseBtn.style.display = "none";
   // Hide tool/model selectors and context management (visitors use defaults)
   if (inlineToolSelect) inlineToolSelect.style.display = "none";
   if (inlineModelSelect) inlineModelSelect.style.display = "none";

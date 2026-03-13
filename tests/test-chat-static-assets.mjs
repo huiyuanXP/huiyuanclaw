@@ -142,10 +142,12 @@ async function main() {
     assert.match(page.text, /<script src="\/chat\/init\.js(?:\?v=[^"]*)?"/);
     assert.match(page.text, /id="appFilterSelect"/);
     assert.match(page.text, /id="tabSettings"/);
+    assert.doesNotMatch(page.text, /id="collapseBtn"/, 'desktop sidebar should no longer expose a collapse control');
     assert.doesNotMatch(page.text, /id="tabProgress"/);
     assert.doesNotMatch(page.text, /id="saveTemplateBtn"/);
     assert.doesNotMatch(page.text, /id="sessionTemplateSelect"/);
     assert.match(page.text, /<div class="app-shell">/, 'chat page should render inside a dedicated app shell');
+    assert.match(page.text, /\.header-btn,\s*\.sidebar-tab,\s*\.sidebar-filter-select,\s*\.new-session-btn,\s*\.session-action-btn,\s*\.session-item,\s*\.folder-group-header,\s*\.archived-section-header\s*\{[\s\S]*?-webkit-tap-highlight-color:\s*transparent;/, 'sidebar interactions should suppress the mobile tap highlight flash');
     assert.match(page.text, /--app-height:\s*100dvh/);
     assert.match(page.text, /--keyboard-inset-height:\s*0px/);
     assert.match(page.text, /\.app-shell\s*\{[\s\S]*?position:\s*fixed;[\s\S]*?grid-template-rows:\s*auto minmax\(0, 1fr\);/, 'app shell should reserve a fixed header row and a flexible body row');
@@ -155,6 +157,8 @@ async function main() {
     assert.match(page.text, /\.messages\s*\{[\s\S]*?min-height:\s*0;/);
     assert.match(page.text, /\.messages-inner\s*\{[\s\S]*?width:\s*100%;[\s\S]*?min-width:\s*0;[\s\S]*?max-width:\s*100%;/, 'message column should stay bound to the available chat width');
     assert.match(page.text, /\.input-resize-handle\s*\{[\s\S]*?margin:\s*0 calc\(var\(--chat-gutter\) \* -1\) 8px;/, 'resize handle should mirror the current chat gutter so it does not create horizontal overflow on mobile');
+    assert.doesNotMatch(page.text, /\.sidebar-overlay\.collapsed/, 'desktop sidebar should no longer render a collapsed state');
+    assert.match(page.text, /\.modal-backdrop\s*\{[\s\S]*?padding-left:\s*calc\(var\(--sidebar-width\) \+ 24px\);/, 'desktop modals should offset against the fixed-width sidebar');
     assert.match(page.text, /body\.keyboard-open \.messages/);
     assert.match(page.text, /body\.keyboard-open \.input-area/);
     assert.doesNotMatch(page.text, /--app-top-offset/);

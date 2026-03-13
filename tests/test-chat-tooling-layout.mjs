@@ -104,7 +104,6 @@ function createContext({
   const context = {
     console,
     isDesktop,
-    sidebarCollapsed: false,
     sidebarOverlay: {
       classList: makeClassList(),
     },
@@ -190,10 +189,14 @@ const desktopHarness = createContext({
   visualHeight: 900,
 });
 vm.runInNewContext(responsiveSource, desktopHarness.context, { filename: 'static/chat/tooling.js' });
+desktopHarness.context.sidebarOverlay.classList.add('open');
+desktopHarness.context.sidebarOverlay.classList.add('collapsed');
 desktopHarness.context.initResponsiveLayout();
 
 assert.equal(desktopHarness.resizeListeners.length, 1, 'layout init should watch window resize in one place');
 assert.equal(desktopHarness.viewportResizeListeners.length, 1, 'layout init should watch visual viewport resize in one place');
+assert.equal(desktopHarness.context.sidebarOverlay.classList.contains('open'), false, 'desktop breakpoint init should clear any transient mobile overlay state');
+assert.equal(desktopHarness.context.sidebarOverlay.classList.contains('collapsed'), false, 'desktop breakpoint init should keep the sidebar fully expanded');
 assert.equal(desktopHarness.context.focusComposer({ preventScroll: true }), true, 'desktop session attachment should still auto-focus the composer');
 assert.equal(desktopHarness.focusCalls.length, 1, 'desktop focus should invoke the composer exactly once');
 assert.equal(desktopHarness.focusCalls[0]?.preventScroll, true, 'desktop focus should pass through preventScroll when requested');

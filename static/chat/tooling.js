@@ -139,15 +139,11 @@ function initResponsiveLayout() {
   const mq = window.matchMedia("(min-width: 768px)");
   function onBreakpointChange(e) {
     isDesktop = e.matches;
+    sidebarOverlay.classList.remove("collapsed");
     if (isDesktop) {
       document.documentElement.classList.remove("keyboard-open");
       document.body?.classList.remove("keyboard-open");
-    }
-    if (isDesktop) {
       sidebarOverlay.classList.remove("open");
-      if (sidebarCollapsed) sidebarOverlay.classList.add("collapsed");
-    } else {
-      sidebarOverlay.classList.remove("collapsed");
     }
     runLayoutPass("breakpoint");
   }
@@ -212,13 +208,6 @@ effortSelect.addEventListener("change", () => {
   selectedEffort = effortSelect.value;
   if (selectedTool) localStorage.setItem(`selectedEffort_${selectedTool}`, selectedEffort);
   queueRuntimeSelectionSync();
-});
-
-// ---- Sidebar collapse (desktop) ----
-collapseBtn.addEventListener("click", () => {
-  sidebarCollapsed = !sidebarCollapsed;
-  localStorage.setItem("sidebarCollapsed", sidebarCollapsed);
-  sidebarOverlay.classList.toggle("collapsed", sidebarCollapsed);
 });
 
 // ---- Inline tool select ----

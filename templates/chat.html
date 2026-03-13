@@ -54,7 +54,6 @@
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-top: env(safe-area-inset-top, 0px);
   --sidebar-width: 300px;
-  --sidebar-collapsed-width: 48px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -233,6 +232,34 @@ body {
 }
 .sidebar-header h2 { font-size: 14px; font-weight: 600; flex: 1; }
 .sidebar-list { flex: 1; overflow-y: auto; padding: 8px 8px; }
+.header-btn,
+.sidebar-tab,
+.sidebar-filter-select,
+.new-session-btn,
+.session-action-btn,
+.session-item,
+.folder-group-header,
+.archived-section-header {
+  -webkit-tap-highlight-color: transparent;
+}
+.header-btn:focus:not(:focus-visible),
+.sidebar-tab:focus:not(:focus-visible),
+.sidebar-filter-select:focus:not(:focus-visible),
+.new-session-btn:focus:not(:focus-visible),
+.session-action-btn:focus:not(:focus-visible) {
+  outline: none;
+}
+.header-btn:focus-visible,
+.sidebar-tab:focus-visible,
+.new-session-btn:focus-visible,
+.session-action-btn:focus-visible {
+  outline: 2px solid var(--border-strong);
+  outline-offset: 2px;
+}
+.sidebar-filter-select:focus-visible {
+  outline: 2px solid var(--border-strong);
+  outline-offset: 1px;
+}
 
 /* Sidebar tabs */
 .sidebar-tabs {
@@ -414,14 +441,6 @@ body {
 }
 .new-session-btn:active { opacity: 0.85; }
 .new-session-btn.hidden { display: none; }
-
-/* Desktop sidebar collapse */
-.sidebar-collapse-btn {
-  display: none; background: none; border: none; color: var(--text-muted);
-  font-size: 14px; cursor: pointer; padding: 4px 6px; border-radius: 6px;
-  align-items: center; justify-content: center;
-}
-.sidebar-collapse-btn:hover { background: var(--bg-tertiary); color: var(--text); }
 
 /* ---- Autocomplete suggestions ---- */
 .ac-suggestions button {
@@ -1220,7 +1239,6 @@ body {
     border-right: 1px solid var(--border); z-index: auto;
     transition: width 0.2s ease;
   }
-  .sidebar-overlay.collapsed { width: var(--sidebar-collapsed-width); }
 
   .sidebar {
     position: static; left: auto; width: 100%; height: 100%;
@@ -1228,16 +1246,6 @@ body {
   }
   .sidebar-overlay.open .sidebar { left: auto; }
   .sidebar-header #closeSidebar { display: none; }
-  .sidebar-collapse-btn { display: inline-flex; }
-
-  .sidebar-overlay.collapsed .sidebar-header h2,
-  .sidebar-overlay.collapsed .sidebar-filters,
-  .sidebar-overlay.collapsed .sidebar-list,
-  .sidebar-overlay.collapsed .session-list-footer,
-  .sidebar-overlay.collapsed .new-session-btn { display: none; }
-  .sidebar-overlay.collapsed .sidebar-header {
-    justify-content: center; padding: 12px 4px;
-  }
 
   /* Desktop: strip side padding from containers; 70% width on inner elements */
   .messages { padding: 28px 0; }
@@ -1251,7 +1259,7 @@ body {
   .queued-panel { margin-bottom: 10px; }
   .input-area { padding: 0 0 14px; padding-bottom: calc(14px + var(--safe-bottom)); }
   .input-resize-handle { margin: 0 0 10px; }
-  .modal-backdrop { padding-left: calc(var(--sidebar-collapsed-width) + 24px); }
+  .modal-backdrop { padding-left: calc(var(--sidebar-width) + 24px); }
 }
 
 @media (max-width: 767px) {
@@ -1322,7 +1330,6 @@ body.visitor-mode .gesture-pill { display: none !important; }
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-header">
         <h2>RemoteLab</h2>
-        <button class="sidebar-collapse-btn" id="collapseBtn" title="Collapse sidebar" aria-label="Collapse sidebar" data-icon="menu">&#9776;</button>
         <button class="header-btn" id="closeSidebar" title="Close sidebar" aria-label="Close sidebar" data-icon="close">&#x2715;</button>
       </div>
       <div class="sidebar-tabs">
