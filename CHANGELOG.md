@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3.1
+
+- Fixes mobile keyboard layout so the shell behaves as stable header + content + composer rows.
+- Removes a mobile horizontal overflow regression caused by a stale fixed negative margin on the composer resize handle.
+- Keeps viewport-driven layout ownership centralized to reduce resize conflicts and future mobile compatibility risk.
+
 ## v0.3.0
 
 - Adds a clearer user-facing `Ver x.y.z` build label while keeping commit and frontend fingerprint data available for debugging.
