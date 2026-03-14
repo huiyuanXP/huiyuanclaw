@@ -20,6 +20,18 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function appendOutput(buffer, chunk, limit = 8000) {
+  const next = `${buffer}${chunk}`;
+  return next.length <= limit ? next : next.slice(-limit);
+}
+
+function formatStartupOutput(stdout, stderr) {
+  const sections = [];
+  if (stderr.trim()) sections.push(`stderr:\n${stderr.trim()}`);
+  if (stdout.trim()) sections.push(`stdout:\n${stdout.trim()}`);
+  return sections.join('\n\n');
+}
+
 async function waitFor(predicate, description, timeoutMs = 10000, intervalMs = 100) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -99,14 +111,42 @@ async function startServer({ home, port }) {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  await waitFor(async () => {
-    try {
-      const res = await request(port, 'GET', '/login', null, { Cookie: '' });
-      return res.status === 200;
-    } catch {
-      return false;
+  let stdout = '';
+  let stderr = '';
+  child.stdout?.setEncoding('utf8');
+  child.stderr?.setEncoding('utf8');
+  child.stdout?.on('data', (chunk) => {
+    stdout = appendOutput(stdout, chunk);
+  });
+  child.stderr?.on('data', (chunk) => {
+    stderr = appendOutput(stderr, chunk);
+  });
+
+  try {
+    await waitFor(async () => {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        const exitLabel = child.signalCode ? `signal ${child.signalCode}` : `code ${child.exitCode}`;
+        const output = formatStartupOutput(stdout, stderr);
+        throw new Error(
+          output
+            ? `Server exited during startup with ${exitLabel}\n\n${output}`
+            : `Server exited during startup with ${exitLabel}`,
+        );
+      }
+      try {
+        const res = await request(port, 'GET', '/login', null, { Cookie: '' });
+        return res.status === 200;
+      } catch {
+        return false;
+      }
+    }, 'server startup');
+  } catch (error) {
+    const output = formatStartupOutput(stdout, stderr);
+    if (!output || String(error.message).includes(output)) {
+      throw error;
     }
-  }, 'server startup');
+    throw new Error(`${error.message}\n\n${output}`);
+  }
 
   return { child };
 }
