@@ -131,6 +131,7 @@ try {
 
     const patched = await request(port, 'PATCH', `/api/sessions/${older.id}`, {
       pinned: true,
+      workflowState: 'waiting-user',
       tool: 'codex',
       model: 'gpt-5-codex',
       effort: 'high',
@@ -139,6 +140,7 @@ try {
     assert.equal(patched.status, 200, 'PATCH should accept pinned and runtime preference fields together');
     assert.equal(patched.json.session?.id, older.id, 'PATCH should return the updated session');
     assert.equal(patched.json.session?.pinned, true, 'PATCH should persist the pinned flag');
+    assert.equal(patched.json.session?.workflowState, 'waiting_user', 'PATCH should persist the normalized workflow state');
     assert.equal(patched.json.session?.tool, 'codex', 'PATCH should persist the tool');
     assert.equal(patched.json.session?.model, 'gpt-5-codex', 'PATCH should persist the model');
     assert.equal(patched.json.session?.effort, 'high', 'PATCH should persist the effort');
@@ -157,6 +159,7 @@ try {
     assert.equal(detail.status, 200, 'session detail should remain readable after the patch');
     assert.equal(detail.json.session?.thinking, true, 'detail should expose persisted thinking');
     assert.equal(detail.json.session?.model, 'gpt-5-codex', 'detail should expose persisted model');
+    assert.equal(detail.json.session?.workflowState, 'waiting_user', 'detail should expose persisted workflow state');
 
     const invalidPinned = await request(port, 'PATCH', `/api/sessions/${older.id}`, {
       pinned: 'yes',
@@ -168,11 +171,18 @@ try {
     });
     assert.equal(invalidThinking.status, 400, 'invalid thinking values should be rejected');
 
+    const invalidWorkflowState = await request(port, 'PATCH', `/api/sessions/${older.id}`, {
+      workflowState: 'running',
+    });
+    assert.equal(invalidWorkflowState.status, 400, 'invalid workflow states should be rejected');
+
     const unpinned = await request(port, 'PATCH', `/api/sessions/${older.id}`, {
       pinned: false,
+      workflowState: null,
     });
     assert.equal(unpinned.status, 200, 'unpinned PATCH should still succeed');
     assert.equal(unpinned.json.session?.pinned, undefined, 'unpinned PATCH should clear the pinned flag');
+    assert.equal(unpinned.json.session?.workflowState, undefined, 'workflowState should clear when PATCH passes null');
 
     const listAfterUnpin = await request(port, 'GET', '/api/sessions');
     assert.equal(listAfterUnpin.status, 200, 'listing sessions should still work after unpinning');

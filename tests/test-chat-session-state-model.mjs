@@ -102,9 +102,9 @@ const renameFailedStatus = model.getSessionStatusSummary(renameFailedSession);
 assert.equal(renameFailedStatus.primary.key, 'rename-failed');
 assert.equal(renameFailedStatus.primary.title, 'rename crashed');
 
-assert.deepEqual(
-  model.getBoardColumns().map((column) => column.key),
-  ['parked', 'running', 'waiting_user', 'done'],
+assert.equal(
+  JSON.stringify(Array.from(model.getBoardColumns(), (column) => column.key)),
+  JSON.stringify(['parked', 'running', 'waiting_user', 'done']),
   'board columns should stay in the left-to-right workflow order',
 );
 

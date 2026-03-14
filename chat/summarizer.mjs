@@ -10,7 +10,10 @@ import {
   normalizeSessionGroup,
 } from './session-naming.mjs';
 import { loadSessionLabelPromptContext } from './session-label-context.mjs';
-import { normalizeSessionWorkflowState } from './session-workflow-state.mjs';
+import {
+  inferSessionWorkflowStateFromText,
+  normalizeSessionWorkflowState,
+} from './session-workflow-state.mjs';
 
 function formatTurnForPrompt(events) {
   const lines = [];
@@ -348,7 +351,11 @@ async function runSessionWorkflowStateSuggestion(sessionMeta, _options = {}) {
 
   const modelText = await runToolJsonPrompt(sessionMeta, prompt);
   const stateResult = parseJsonObject(modelText);
-  const nextWorkflowState = normalizeSessionWorkflowState(stateResult?.workflowState || '');
+  const nextWorkflowState = inferSessionWorkflowStateFromText(
+    stateResult?.workflowState
+    || stateResult?.reason
+    || modelText,
+  );
   if (!nextWorkflowState) {
     console.error(`[workflow-state] Unexpected workflow output for ${sessionId.slice(0, 8)}: ${modelText.slice(0, 200)}`);
     return {

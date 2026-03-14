@@ -74,8 +74,8 @@ async function initApp() {
     console.warn("[apps] Failed to load apps:", error.message);
     return [];
   });
-  const visitorsPromise = fetchVisitorsList().catch((error) => {
-    console.warn("[visitors] Failed to load visitors:", error.message);
+  const usersPromise = fetchUsersList().catch((error) => {
+    console.warn("[users] Failed to load users:", error.message);
     return [];
   });
 
@@ -84,7 +84,7 @@ async function initApp() {
   connect();
   void loadModelsForCurrentTool();
   void appsPromise;
-  void visitorsPromise;
+  void usersPromise;
 }
 
 initApp();

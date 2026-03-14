@@ -40,3 +40,25 @@ export function normalizeSessionWorkflowState(value) {
       return '';
   }
 }
+
+export function inferSessionWorkflowStateFromText(value) {
+  const normalized = normalizeSessionWorkflowState(value);
+  if (normalized) return normalized;
+
+  const text = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (!text) return '';
+
+  if (/(waiting|need(?:s)? (?:the )?user|need(?:s)? input|need(?:s)? approval|need(?:s)? confirmation|please provide|please upload|please answer|manual validation|user action)/.test(text)) {
+    return SESSION_WORKFLOW_STATE_WAITING_USER;
+  }
+
+  if (/(done|complete(?:d)?|finish(?:ed)?|resolved|closed|successfully completed)/.test(text)) {
+    return SESSION_WORKFLOW_STATE_DONE;
+  }
+
+  if (/(parked|paused|backlog|deferred|resume later|pick up later)/.test(text)) {
+    return SESSION_WORKFLOW_STATE_PARKED;
+  }
+
+  return '';
+}

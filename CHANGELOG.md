@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Adds a first owner-facing `Board` sidebar tab that reuses sessions as the only durable object while presenting kanban-style workflow columns.
+- Persists lightweight session `workflowState` metadata (`parked`, `waiting_user`, `done`) and derives `Running` from live runtime activity instead of duplicating run truth.
+- Triggers a post-turn AI classifier to refresh each session's board position after normal assistant turns complete.
+
 ## v0.3.1
 
 - Fixes mobile keyboard layout so the shell behaves as stable header + content + composer rows.
