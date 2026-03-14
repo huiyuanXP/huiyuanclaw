@@ -56,6 +56,10 @@ function request(port, method, path, body = null, extraHeaders = {}) {
   });
 }
 
+function findCookie(headers, name) {
+  return (headers['set-cookie'] || []).find((cookie) => cookie.startsWith(`${name}=`)) || '';
+}
+
 async function resolveEventContent(port, sessionId, event, extraHeaders = {}) {
   if (typeof event?.content === 'string' && event.content) return event.content;
   if (!event?.bodyAvailable || !Number.isInteger(event?.seq)) return '';
@@ -216,22 +220,52 @@ try {
     assert.equal(publicVisit.headers.location, '/?visitor=1');
     assert.ok(publicVisit.headers['set-cookie']?.length, 'built-in Video Cut app visit should set a visitor cookie');
 
-    const visitorCookie = publicVisit.headers['set-cookie'][0].split(';', 1)[0];
+    const visitorCookie = findCookie(publicVisit.headers, 'session_token').split(';', 1)[0];
+    const visitorBrowserCookie = findCookie(publicVisit.headers, 'visitor_browser_id').split(';', 1)[0];
+    assert.ok(visitorCookie, 'built-in Video Cut app visit should set a visitor auth session cookie');
+    assert.ok(visitorBrowserCookie, 'built-in Video Cut app visit should set a stable browser identity cookie');
+
     const visitorAuth = await request(port, 'GET', '/api/auth/me', null, {
       Cookie: visitorCookie,
     });
     assert.equal(visitorAuth.status, 200, 'visitor auth session should be usable after built-in app bootstrap');
     assert.equal(visitorAuth.json?.role, 'visitor');
     assert.equal(visitorAuth.json?.appId, 'app_video_cut');
+    const firstVisitorId = visitorAuth.json?.visitorId;
+    const firstVisitorSessionId = visitorAuth.json?.sessionId;
+
+    const repeatVisit = await request(port, 'GET', `/app/${videoCutApp.shareToken}`, null, {
+      Cookie: visitorBrowserCookie,
+    });
+    assert.equal(repeatVisit.status, 302, 'reopening the same app link in the same browser should still redirect into visitor mode');
+    const repeatVisitorCookie = findCookie(repeatVisit.headers, 'session_token').split(';', 1)[0];
+    const repeatVisitorAuth = await request(port, 'GET', '/api/auth/me', null, {
+      Cookie: repeatVisitorCookie,
+    });
+    assert.equal(repeatVisitorAuth.status, 200, 'repeat app visits in the same browser should still authenticate');
+    assert.equal(repeatVisitorAuth.json?.visitorId, firstVisitorId, 'the same browser should keep the same visitor identity for one app link');
+    assert.equal(repeatVisitorAuth.json?.sessionId, firstVisitorSessionId, 'the same browser should reuse the existing visitor session for one app link');
+
+    const secondBrowserVisit = await request(port, 'GET', `/app/${videoCutApp.shareToken}`);
+    assert.equal(secondBrowserVisit.status, 302, 'opening the same app link from another browser should still bootstrap visitor mode');
+    const secondBrowserVisitorCookie = findCookie(secondBrowserVisit.headers, 'session_token').split(';', 1)[0];
+    const secondBrowserAuth = await request(port, 'GET', '/api/auth/me', null, {
+      Cookie: secondBrowserVisitorCookie,
+    });
+    assert.equal(secondBrowserAuth.status, 200, 'another browser should also authenticate successfully');
+    assert.notEqual(secondBrowserAuth.json?.visitorId, firstVisitorId, 'different browsers should map to different visitor identities for one app link');
+    assert.notEqual(secondBrowserAuth.json?.sessionId, firstVisitorSessionId, 'different browsers should get different visitor sessions for one app link');
 
     const ownerAllUsers = await request(port, 'GET', '/api/sessions?includeVisitor=1&appId=app_video_cut', null, {
       Cookie: ownerCookie,
     });
     assert.equal(ownerAllUsers.status, 200, 'owner should be able to list built-in Video Cut visitor sessions');
+    const visitorSessions = (ownerAllUsers.json?.sessions || []).filter((session) => session.visitorId && session.appId === 'app_video_cut');
+    assert.equal(visitorSessions.length, 2, 'reopening the same app link in one browser should not create extra visitor sessions');
     assert.equal(
-      (ownerAllUsers.json?.sessions || []).some((session) => session.visitorId && session.appId === 'app_video_cut'),
-      true,
-      'built-in Video Cut visitor session should appear in owner all-users view',
+      visitorSessions.filter((session) => session.visitorId === firstVisitorId).length,
+      1,
+      'one browser should map to exactly one visitor session inside an app share flow',
     );
 
     console.log('test-http-builtin-template-apps: ok');

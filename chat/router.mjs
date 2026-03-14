@@ -5,7 +5,7 @@ import { join, resolve, dirname, basename, extname, relative, isAbsolute, sep } 
 import { parse as parseUrl, fileURLToPath } from 'url';
 import { createHash } from 'crypto';
 import { execFileSync } from 'child_process';
-import { SESSION_EXPIRY, CHAT_IMAGES_DIR } from '../lib/config.mjs';
+import { SESSION_EXPIRY, CHAT_IMAGES_DIR, SECURE_COOKIES } from '../lib/config.mjs';
 import {
   sessions, saveAuthSessionsAsync,
   verifyTokenAsync, verifyPasswordAsync, generateToken,
@@ -102,6 +102,10 @@ const pageBuildRoots = [
   join(__dirname, '..', 'templates'),
   staticDir,
 ];
+const VISITOR_BROWSER_COOKIE_NAME = 'visitor_browser_id';
+const VISITOR_BROWSER_COOKIE_MAX_AGE_MS = 5 * 365 * 24 * 60 * 60 * 1000;
+const VISITOR_BROWSER_COOKIE_MAX_AGE_SECONDS = Math.max(1, Math.floor(VISITOR_BROWSER_COOKIE_MAX_AGE_MS / 1000));
+const VISITOR_BROWSER_COOKIE_SAME_SITE = 'Lax';
 let cachedPageBuildInfo = null;
 const frontendBuildWatchers = [];
 let frontendBuildInvalidationTimer = null;
@@ -408,7 +412,44 @@ async function ensureUserSeedSession(user, { folder = '~', tool = '' } = {}) {
   });
 }
 
+function getVisitorBrowserId(req) {
+  const cookies = parseCookies(req.headers.cookie || '');
+  return typeof cookies[VISITOR_BROWSER_COOKIE_NAME] === 'string'
+    ? cookies[VISITOR_BROWSER_COOKIE_NAME].trim()
+    : '';
+}
+
+function createVisitorBrowserId() {
+  return `browser_${generateToken().slice(0, 24)}`;
+}
+
+function setVisitorBrowserCookie(browserId) {
+  const secure = SECURE_COOKIES ? '; Secure' : '';
+  const expiry = new Date(Date.now() + VISITOR_BROWSER_COOKIE_MAX_AGE_MS);
+  return `${VISITOR_BROWSER_COOKIE_NAME}=${browserId}; HttpOnly${secure}; SameSite=${VISITOR_BROWSER_COOKIE_SAME_SITE}; Path=/; Max-Age=${VISITOR_BROWSER_COOKIE_MAX_AGE_SECONDS}; Expires=${expiry.toUTCString()}`;
+}
+
+function buildAppShareVisitorId(appId, browserId) {
+  const digest = createHash('sha256')
+    .update(`${appId || ''}:${browserId || ''}`)
+    .digest('hex');
+  return `visitor_${digest.slice(0, 24)}`;
+}
+
+function buildVisitorSessionExternalTriggerId(appId, visitorId) {
+  return `visitor_session:${appId || 'app'}:${visitorId || 'visitor'}`;
+}
+
+async function findReusableVisitorSession(appId, visitorId) {
+  if (!appId || !visitorId) return null;
+  const sessionsForApp = await listSessions({ includeVisitor: true, appId });
+  return sessionsForApp.find((session) => session.visitorId === visitorId && !session.archived)
+    || sessionsForApp.find((session) => session.visitorId === visitorId)
+    || null;
+}
+
 async function bootstrapPublicVisitorSession(app, { visitorId, visitorName = '', sessionName = '' } = {}) {
+  const existingSession = await findReusableVisitorSession(app?.id, visitorId);
   const chatSession = await createSession(
     '~',
     app.tool || 'codex',
@@ -421,9 +462,10 @@ async function bootstrapPublicVisitorSession(app, { visitorId, visitorName = '',
       visitorId,
       visitorName,
       systemPrompt: app.systemPrompt,
+      externalTriggerId: buildVisitorSessionExternalTriggerId(app.id, visitorId),
     }
   );
-  if (app.welcomeMessage) {
+  if (!existingSession && app.welcomeMessage) {
     await appendEvent(chatSession.id, messageEvent('assistant', app.welcomeMessage));
   }
   const sessionToken = generateToken();
@@ -911,11 +953,15 @@ export async function handleRequest(req, res) {
       res.end('App not found');
       return;
     }
-    const visitorId = 'visitor_' + generateToken().slice(0, 16);
+    const visitorBrowserId = getVisitorBrowserId(req) || createVisitorBrowserId();
+    const visitorId = buildAppShareVisitorId(app.id, visitorBrowserId);
     const { sessionToken } = await bootstrapPublicVisitorSession(app, { visitorId, sessionName: app.name });
     res.writeHead(302, {
       'Location': '/?visitor=1',
-      'Set-Cookie': setCookie(sessionToken),
+      'Set-Cookie': [
+        setCookie(sessionToken),
+        setVisitorBrowserCookie(visitorBrowserId),
+      ],
     });
     res.end();
     return;
