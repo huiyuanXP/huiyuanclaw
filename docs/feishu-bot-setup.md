@@ -33,6 +33,7 @@ This rollout stays intentionally narrow at first:
 - same-tenant rollout first, not cross-tenant distribution
 - private chat first, group support later
 - persistent connection / long connection, not public webhook mode
+- V0 reply handling is text-first; non-text Feishu payloads such as images, files, and rich posts are logged and marked handled, but ignored without reply
 
 ## One-round input handoff
 

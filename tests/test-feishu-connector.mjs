@@ -25,6 +25,7 @@ const {
   loadPersistedAccessState,
   normalizeReplyText,
   summarizeChatMemberUserAddedEvent,
+  summarizeEvent,
 } = await import(pathToFileURL(join(repoRoot, 'scripts', 'feishu-connector.mjs')).href);
 
 const runtime = {
@@ -71,6 +72,84 @@ assert.equal(handled[0].metadata.status, 'silent_no_reply');
 assert.equal(handled[0].metadata.reason, 'empty_assistant_reply');
 assert.equal(handled[0].metadata.sessionId, 'session_test_1');
 assert.equal(runtime.processingMessageIds.size, 0, 'message processing state should always be cleaned up');
+
+const imageSummary = summarizeEvent({
+  event_id: 'evt_image_1',
+  event_type: 'im.message.receive_v1',
+  tenant_key: 'tenant_image_1',
+  sender: {
+    sender_id: { open_id: 'ou_image_1' },
+    sender_type: 'user',
+    tenant_key: 'tenant_image_1',
+  },
+  message: {
+    chat_id: 'chat_image_1',
+    chat_type: 'group',
+    message_id: 'msg_image_1',
+    message_type: 'image',
+    content: JSON.stringify({ image_key: 'img_v2_1' }),
+  },
+});
+
+assert.equal(imageSummary.textPreview, '', 'image payloads should not fake a text preview');
+assert.equal(imageSummary.contentSummary, 'Image attachment');
+assert.deepEqual(imageSummary.contentKeys, ['image_key']);
+
+const richPostSummary = summarizeEvent({
+  event_id: 'evt_post_1',
+  event_type: 'im.message.receive_v1',
+  tenant_key: 'tenant_post_1',
+  sender: {
+    sender_id: { open_id: 'ou_post_1' },
+    sender_type: 'user',
+    tenant_key: 'tenant_post_1',
+  },
+  message: {
+    chat_id: 'chat_post_1',
+    chat_type: 'group',
+    message_id: 'msg_post_1',
+    message_type: 'post',
+    content: JSON.stringify({
+      title: 'Weekly update',
+      content: [[
+        { tag: 'text', text: 'Alpha milestone' },
+        { tag: 'text', text: 'Beta follow-up' },
+      ]],
+    }),
+  },
+});
+
+assert.match(richPostSummary.contentSummary, /Rich text post/i);
+assert.match(richPostSummary.contentSummary, /Weekly update/i);
+
+sendCalls = 0;
+handled.length = 0;
+let unsupportedInvokedRemoteLab = false;
+
+await handleMessage(runtime, imageSummary, 'test', {
+  wasMessageHandled: async () => false,
+  generateRemoteLabReply: async () => {
+    unsupportedInvokedRemoteLab = true;
+    throw new Error('unsupported messages should not invoke RemoteLab');
+  },
+  sendFeishuText: async () => {
+    sendCalls += 1;
+    return { message_id: 'out_test_image' };
+  },
+  markMessageHandled: async (_pathname, messageId, metadata) => {
+    handled.push({ messageId, metadata });
+  },
+});
+
+assert.equal(unsupportedInvokedRemoteLab, false, 'unsupported non-text payloads should stop before RemoteLab submission');
+assert.equal(sendCalls, 0, 'unsupported non-text payloads should not send fallback replies');
+assert.equal(handled.length, 1, 'unsupported non-text payloads should still be marked handled');
+assert.equal(handled[0].messageId, 'msg_image_1');
+assert.equal(handled[0].metadata.status, 'silent_no_reply');
+assert.equal(handled[0].metadata.reason, 'unsupported_message_type');
+assert.equal(handled[0].metadata.messageType, 'image');
+assert.equal(handled[0].metadata.contentSummary, 'Image attachment');
+assert.equal(runtime.processingMessageIds.size, 0, 'unsupported payload processing state should always be cleaned up');
 
 const authRefreshRuntime = {
   authCookie: 'session_token=stale-cookie',
@@ -473,6 +552,7 @@ try {
 }
 
 console.log('ok - empty assistant replies stay silent');
+console.log('ok - non-text Feishu payloads are summarized and ignored silently');
 console.log('ok - mention tokens are rendered inbound and compiled outbound');
 console.log('ok - whitelist file reloads without restart');
 console.log('ok - local group approval commands persist approved chats');

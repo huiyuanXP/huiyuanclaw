@@ -29,6 +29,7 @@ const DEFAULT_SESSION_SYSTEM_PROMPT = [
 const RUN_POLL_INTERVAL_MS = 1500;
 const RUN_POLL_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_FEISHU_TEXT_LENGTH = 5000;
+const MAX_INBOUND_LOG_PREVIEW_LENGTH = 240;
 const REMOTELAB_SESSION_APP_ID = 'feishu';
 const APPROVE_CURRENT_CHAT_COMMANDS = new Set([
   '授权本群',
@@ -367,12 +368,150 @@ function parseTextPreview(rawContent) {
   return '';
 }
 
+function parseMessageContent(rawContent) {
+  const content = trimString(rawContent);
+  if (!content) return null;
+  try {
+    const parsed = JSON.parse(content);
+    if (parsed && typeof parsed === 'object') {
+      return parsed;
+    }
+  } catch {}
+  return null;
+}
+
+function truncateLogPreview(value, maxLength = MAX_INBOUND_LOG_PREVIEW_LENGTH) {
+  const normalized = trimString(value).replace(/\s+/g, ' ');
+  if (!normalized) return '';
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+function collectStructuredText(value, fragments, seen, depth = 0) {
+  if (depth > 5 || fragments.length >= 8 || value === null || value === undefined) {
+    return;
+  }
+  if (typeof value === 'string') {
+    const normalized = trimString(value);
+    if (normalized && !seen.has(normalized)) {
+      seen.add(normalized);
+      fragments.push(normalized);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectStructuredText(item, fragments, seen, depth + 1);
+      if (fragments.length >= 8) return;
+    }
+    return;
+  }
+  if (typeof value !== 'object') return;
+  for (const key of ['title', 'text', 'name', 'label', 'content']) {
+    if (!(key in value)) continue;
+    collectStructuredText(value[key], fragments, seen, depth + 1);
+    if (fragments.length >= 8) return;
+  }
+}
+
+function extractStructuredTextPreview(value) {
+  const fragments = [];
+  collectStructuredText(value, fragments, new Set());
+  return truncateLogPreview(fragments.join(' '));
+}
+
+function contentKeyPreview(parsedContent) {
+  if (!parsedContent || Array.isArray(parsedContent) || typeof parsedContent !== 'object') {
+    return [];
+  }
+  return Object.keys(parsedContent).filter(Boolean).slice(0, 6);
+}
+
+function summarizeMessageContent(messageType, rawContent) {
+  const normalizedType = trimString(messageType).toLowerCase();
+  const parsedContent = parseMessageContent(rawContent);
+  let textPreview = '';
+
+  if (normalizedType === 'text') {
+    textPreview = parseTextPreview(rawContent) || trimString(rawContent);
+  } else if (normalizedType === 'post') {
+    textPreview = extractStructuredTextPreview(parsedContent);
+  } else if (normalizedType === 'file') {
+    textPreview = trimString(parsedContent?.file_name || parsedContent?.name);
+  } else if (normalizedType === 'share_chat') {
+    textPreview = trimString(parsedContent?.chat_name || parsedContent?.name || parsedContent?.chat_id);
+  } else if (normalizedType === 'share_user') {
+    textPreview = trimString(parsedContent?.user_name || parsedContent?.name || parsedContent?.user_id);
+  } else if (normalizedType === 'location') {
+    textPreview = trimString(parsedContent?.name || parsedContent?.title || parsedContent?.address);
+  } else if (normalizedType === 'interactive') {
+    textPreview = extractStructuredTextPreview(parsedContent);
+  }
+
+  const contentSummary = (() => {
+    switch (normalizedType) {
+      case 'text':
+        return textPreview ? `Text message: ${truncateLogPreview(textPreview)}` : 'Text message';
+      case 'image':
+        return 'Image attachment';
+      case 'file':
+        return textPreview ? `File attachment: ${truncateLogPreview(textPreview)}` : 'File attachment';
+      case 'audio':
+        return 'Audio attachment';
+      case 'media':
+        return 'Media attachment';
+      case 'sticker':
+        return 'Sticker message';
+      case 'post':
+        return textPreview ? `Rich text post: ${truncateLogPreview(textPreview)}` : 'Rich text post';
+      case 'share_chat':
+        return textPreview ? `Shared chat: ${truncateLogPreview(textPreview)}` : 'Shared chat';
+      case 'share_user':
+        return textPreview ? `Shared contact: ${truncateLogPreview(textPreview)}` : 'Shared contact';
+      case 'location':
+        return textPreview ? `Location message: ${truncateLogPreview(textPreview)}` : 'Location message';
+      case 'interactive':
+        return textPreview ? `Interactive card: ${truncateLogPreview(textPreview)}` : 'Interactive card';
+      default: {
+        const typeLabel = normalizedType || 'unknown';
+        const keys = contentKeyPreview(parsedContent);
+        return keys.length
+          ? `Unsupported message (${typeLabel}; keys=${keys.join(',')})`
+          : `Unsupported message (${typeLabel})`;
+      }
+    }
+  })();
+
+  return {
+    textPreview,
+    contentSummary,
+    contentKeys: contentKeyPreview(parsedContent),
+  };
+}
+
+function summarizeEventForLog(summary) {
+  return {
+    eventId: summary?.eventId || '',
+    eventType: summary?.eventType || '',
+    chatId: summary?.chatId || '',
+    chatType: summary?.chatType || '',
+    messageId: summary?.messageId || '',
+    messageType: summary?.messageType || '',
+    threadId: summary?.threadId || '',
+    senderOpenId: summary?.sender?.openId || '',
+    mentionCount: Array.isArray(summary?.mentions) ? summary.mentions.length : 0,
+    textPreview: truncateLogPreview(summary?.textPreview),
+    contentSummary: truncateLogPreview(summary?.contentSummary),
+  };
+}
+
 function summarizeEvent(data) {
   const sender = data?.sender || {};
   const senderId = sender?.sender_id || {};
   const message = data?.message || {};
   const mentions = Array.isArray(message.mentions) ? message.mentions : [];
   const rawContent = typeof message.content === 'string' ? message.content : '';
+  const normalizedContent = summarizeMessageContent(message.message_type || '', rawContent);
   return {
     eventId: data?.event_id || '',
     eventType: data?.event_type || '',
@@ -401,12 +540,17 @@ function summarizeEvent(data) {
       unionId: mention?.id?.union_id || '',
       tenantKey: mention?.tenant_key || '',
     })),
-    textPreview: parseTextPreview(rawContent),
+    textPreview: normalizedContent.textPreview,
+    contentSummary: normalizedContent.contentSummary,
+    contentKeys: normalizedContent.contentKeys,
     rawContent,
   };
 }
 
 function summarizeLegacyMessageEvent(data) {
+  const messageType = data?.msg_type || data?.message_type || '';
+  const rawContent = typeof data?.text === 'string' ? data.text : '';
+  const normalizedContent = summarizeMessageContent(messageType, rawContent);
   return {
     eventId: data?.uuid || data?.event_id || '',
     eventType: 'message',
@@ -426,10 +570,12 @@ function summarizeLegacyMessageEvent(data) {
     rootId: '',
     parentId: '',
     threadId: '',
-    messageType: data?.msg_type || data?.message_type || '',
+    messageType,
     mentions: [],
-    textPreview: typeof data?.text_without_at_bot === 'string' ? data.text_without_at_bot : '',
-    rawContent: typeof data?.text === 'string' ? data.text : '',
+    textPreview: typeof data?.text_without_at_bot === 'string' ? data.text_without_at_bot : normalizedContent.textPreview,
+    contentSummary: normalizedContent.contentSummary,
+    contentKeys: normalizedContent.contentKeys,
+    rawContent,
   };
 }
 
@@ -663,7 +809,7 @@ function senderIdentity(summary) {
     lastSeenMessageId: summary?.messageId || '',
     lastSeenChatId: summary?.chatId || '',
     lastSeenChatType: summary?.chatType || '',
-    lastTextPreview: summary?.textPreview || '',
+    lastTextPreview: summary?.textPreview || summary?.contentSummary || '',
     mentionKeys: Array.isArray(summary?.mentions) ? summary.mentions.map((mention) => mention.key).filter(Boolean) : [],
   };
 }
@@ -720,7 +866,7 @@ async function recordConnectorEvent(runtime, sourceLabel, summary, raw, allowed)
     raw: runtime.config.storeRawEvents ? raw : undefined,
   };
   await appendJsonl(runtime.storagePaths.eventsLogPath, record);
-  console.log(`[feishu-connector] inbound event ${sourceLabel} (${allowed ? 'allowed' : 'blocked'})`, JSON.stringify(summary));
+  console.log(`[feishu-connector] inbound event ${sourceLabel} (${allowed ? 'allowed' : 'blocked'})`, JSON.stringify(summarizeEventForLog(summary)));
   return allowed;
 }
 
@@ -817,9 +963,11 @@ function buildRemoteLabMessage(summary) {
   const rawMessage = trimString(summary.textPreview);
   const renderedMessage = renderMentionPreview(rawMessage, summary.mentions);
   const hasMentions = Array.isArray(summary?.mentions) && summary.mentions.length > 0;
+  const displayMessage = (hasMentions ? renderedMessage : rawMessage) || trimString(summary.contentSummary);
   return [
     'Inbound Feishu message.',
     `Chat type: ${summary.chatType || 'unknown'}`,
+    summary.messageType ? `Message type: ${summary.messageType}` : '',
     summary.chatId ? `Chat ID: ${summary.chatId}` : '',
     summary.messageId ? `Message ID: ${summary.messageId}` : '',
     summary.threadId ? `Thread ID: ${summary.threadId}` : '',
@@ -829,7 +977,7 @@ function buildRemoteLabMessage(summary) {
     summary.tenantKey ? `Tenant key: ${summary.tenantKey}` : '',
     '',
     hasMentions ? 'User message (rendered mentions):' : 'User message:',
-    (hasMentions ? renderedMessage : rawMessage) || '[non-text or empty message]',
+    displayMessage || '[non-text or empty message]',
     ...buildMentionPrompt(summary, rawMessage),
     '',
     'Write the exact plain-text Feishu reply to send back. If you should stay silent, output an empty string.',
@@ -920,7 +1068,7 @@ function isMainModule() {
 }
 
 function buildFailureReply(summary, reason = '') {
-  const message = trimString(summary?.textPreview || summary?.rawContent);
+  const message = trimString(summary?.textPreview || summary?.contentSummary || summary?.rawContent);
   const prefersChinese = containsCjk(message) || containsCjk(reason);
   if (prefersChinese) {
     return '我收到了你的消息，但这次生成回复失败了。你可以稍后再发一次。';
@@ -1355,15 +1503,16 @@ async function handleMessage(runtime, summary, sourceLabel, helpers = {}) {
   try {
     const messageType = trimString(summary.messageType).toLowerCase();
     if (messageType && messageType !== 'text') {
-      const replyText = buildFailureReply({ ...summary, textPreview: summary.textPreview || summary.rawContent }, 'unsupported_message_type');
-      const reply = await sendText(runtime, summary, replyText);
       await markHandled(runtime.storagePaths.handledMessagesPath, summary.messageId, {
-        status: 'unsupported_message_type',
+        status: 'silent_no_reply',
         sourceLabel,
         chatId: summary.chatId,
         requestId: buildRequestId(summary),
-        responseMessageId: reply.message_id || '',
+        reason: 'unsupported_message_type',
+        messageType,
+        contentSummary: summary.contentSummary || '',
       });
+      console.log(`[feishu-connector] no reply sent for ${summary.messageId} (unsupported message type: ${messageType})`);
       return;
     }
 
@@ -1455,6 +1604,7 @@ export {
   queueAccessStateFlush,
   snapshotAccessState,
   summarizeChatMemberUserAddedEvent,
+  summarizeEvent,
   upsertApprovedChat,
 };
 
