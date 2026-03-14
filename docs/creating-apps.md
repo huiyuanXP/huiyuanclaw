@@ -15,16 +15,17 @@ The visitor doesn't need to know anything about prompts, tools, or configuration
 
 ## How to Create an App
 
-RemoteLab now ships three built-in App starting points out of the box:
+RemoteLab now ships two built-in App starting points out of the box:
 
 - **Basic Chat** — the default owner-side app for normal RemoteLab conversations; this is the baseline app layer for everyday sessions
 - **Create App** — a built-in app-building assistant; the sidebar `+ New App` shortcut simply creates a normal owner session under this app so the AI can turn a workflow/SOP into a finished App and share link
-- **Video Cut** — a built-in review-first video editing app that can be shared directly for upload + cut-planning flows
+
+Domain workflows like video cutting should just be regular Apps, not product built-ins.
 
 If you open the sidebar **Settings** tab, RemoteLab also shows an **Apps** panel where you can:
 
 - open a fresh owner session for an app
-- copy the public share link for shareable apps like `Video Cut`
+- copy the public share link for any shareable app you create, such as a video-cut workflow
 - open that share link directly for testing
 
 RemoteLab also has a lightweight **Users** panel where you can:

@@ -10,7 +10,6 @@ export const DEFAULT_APP_ID = 'chat';
 export const EMAIL_APP_ID = 'email';
 export const BASIC_CHAT_APP_ID = 'app_basic_chat';
 export const CREATE_APP_APP_ID = 'app_create_app';
-export const VIDEO_CUT_APP_ID = 'app_video_cut';
 export const BUILTIN_APPS = Object.freeze([
   Object.freeze({
     id: DEFAULT_APP_ID,
@@ -69,36 +68,6 @@ export const BUILTIN_APPS = Object.freeze([
       '最好一次性讲清楚：它给谁用、用户会提供什么输入、AI 应该按什么步骤执行、需要什么审核或确认、最终交付什么结果，以及语气、限制、示例或边界条件。',
       '你不需要自己设计提示词、配置项或分享方式；我会把这些整理成一个可落地的 RemoteLab App，尽量直接帮你创建出来，并把分享给别人的链接一起准备好。',
       '如果还有关键缺失信息，我会一次性补问；如果信息已经够了，我会直接继续完成创建和分享准备。',
-    ].join('\n\n'),
-    createdAt: BUILTIN_CREATED_AT,
-  }),
-  Object.freeze({
-    id: VIDEO_CUT_APP_ID,
-    name: 'Video Cut',
-    builtin: true,
-    templateSelectable: true,
-    shareEnabled: true,
-    tool: 'codex',
-    shareToken: 'share_builtin_video_cut_84f1b7fa9de446c59994a1d4a57f1316',
-    systemPrompt: [
-      'You are the Video Cut app inside RemoteLab.',
-      'This app is specifically for the local Video Cut Review skill and workflow on this machine.',
-      'When the user asks to cut a video or uploads a source video, you should use the local video-cut workflow under ~/code/video-cut and follow the guidance in ~/.remotelab/skills/video-cut-review.md when needed.',
-      'Treat the workflow as: video -> ASR -> transcript -> LLM cuts -> kept-content review -> FFmpeg render.',
-      'Never skip the kept-content review gate before the real render.',
-      'For remote or mobile review, paste a compressed kept-content draft directly into chat instead of only returning file paths.',
-      'First gather or infer: what to keep, what to cut, target length, tone/style, and the desired final outcome.',
-      'Before any render step, produce a concise review package with: kept moments, removed moments, ordered cut timeline, subtitle draft, open questions, and a simple confirmation prompt.',
-      'If the request is underspecified, ask only the smallest number of follow-up questions needed to move forward.',
-      'If the local workflow is blocked, say exactly which step is blocked and what artifact or input is missing.',
-      'Keep the experience mobile-friendly and concrete.',
-      'Always answer in the user\'s language.',
-      'Do not claim the final video has been rendered unless that actually happened.',
-    ].join(' '),
-    welcomeMessage: [
-      '请上传一段原始视频，并简单说明你想保留什么、想剪掉什么，以及目标成片大概多长。',
-      '我会使用本机的 Video Cut Review / video-cut 工作流来处理这件事，而不是只做泛泛的聊天建议。',
-      '我会先给你一版 review：保留内容、剪辑时间线、字幕草稿；等你确认后，再进入正式剪辑。',
     ].join('\n\n'),
     createdAt: BUILTIN_CREATED_AT,
   }),

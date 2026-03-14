@@ -1395,8 +1395,7 @@ function getOrderedSettingsApps() {
     const rank = (app) => {
       if (app?.id === BASIC_CHAT_TEMPLATE_APP_ID) return 0;
       if (app?.id === CREATE_APP_TEMPLATE_APP_ID) return 1;
-      if (app?.id === "app_video_cut") return 2;
-      return 3;
+      return 2;
     };
     return rank(a) - rank(b) || String(a?.name || "").localeCompare(String(b?.name || ""), undefined, { sensitivity: "base" });
   });

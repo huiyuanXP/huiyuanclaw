@@ -263,7 +263,7 @@ async function main() {
     assert.match(apps.text, /"id":"email"/);
     assert.match(apps.text, /"id":"app_basic_chat"/);
     assert.match(apps.text, /"id":"app_create_app"/);
-    assert.match(apps.text, /"id":"app_video_cut"/);
+    assert.doesNotMatch(apps.text, /"id":"app_video_cut"/);
     assert.doesNotMatch(apps.text, /"id":"feishu"/);
     assert.doesNotMatch(apps.text, /"id":"github"/);
     assert.doesNotMatch(apps.text, /"id":"automation"/);

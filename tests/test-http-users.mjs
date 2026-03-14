@@ -160,10 +160,23 @@ try {
     assert.equal(initialUsers.status, 200, 'owner should be able to list users');
     assert.deepEqual(initialUsers.json?.users || [], [], 'new temp home should start with no extra users');
 
+    const createAppResponse = await request(port, 'POST', '/api/apps', {
+      name: 'Video Cut Demo',
+      systemPrompt: 'Use the local video-cut workflow when asked.',
+      welcomeMessage: '请上传一段原始视频，并说明要保留什么。',
+      tool: 'fake-codex',
+      skills: [],
+    }, {
+      Cookie: ownerCookie,
+    });
+    assert.equal(createAppResponse.status, 201, 'owner should be able to create a regular shareable app');
+    const videoCutAppId = createAppResponse.json?.app?.id;
+    assert.ok(videoCutAppId, 'created app should return an id');
+
     const createUser = await request(port, 'POST', '/api/users', {
       name: 'Judge iPhone',
-      appIds: ['app_video_cut', 'app_basic_chat'],
-      defaultAppId: 'app_video_cut',
+      appIds: [videoCutAppId, 'app_basic_chat'],
+      defaultAppId: videoCutAppId,
       folder: repoRoot,
       tool: 'fake-codex',
     }, {
@@ -172,12 +185,12 @@ try {
     assert.equal(createUser.status, 201, 'owner should be able to create a managed user');
     assert.match(createUser.json?.user?.id || '', /^user_[a-f0-9]{24}$/);
     assert.equal(createUser.json?.user?.name, 'Judge iPhone');
-    assert.deepEqual(createUser.json?.user?.appIds, ['app_video_cut', 'app_basic_chat']);
-    assert.equal(createUser.json?.user?.defaultAppId, 'app_video_cut');
+    assert.deepEqual(createUser.json?.user?.appIds, [videoCutAppId, 'app_basic_chat']);
+    assert.equal(createUser.json?.user?.defaultAppId, videoCutAppId);
     assert.ok(createUser.json?.session?.id, 'creating a user should auto-seed a starter session');
     assert.equal(createUser.json?.session?.userId, createUser.json?.user?.id, 'starter session should bind to the new user');
     assert.equal(createUser.json?.session?.userName, 'Judge iPhone', 'starter session should inherit the user name');
-    assert.equal(createUser.json?.session?.appId, 'app_video_cut', 'starter session should use the default app');
+    assert.equal(createUser.json?.session?.appId, videoCutAppId, 'starter session should use the default app');
     assert.equal(createUser.json?.session?.sourceId, 'chat', 'starter session should be categorized as chat UI');
 
     const seededEvents = await request(port, 'GET', `/api/sessions/${createUser.json.session.id}/events`, null, {
@@ -209,7 +222,7 @@ try {
     assert.ok(seededSession, 'seeded user session should appear in the owner session list');
     assert.equal(seededSession.userId, createUser.json?.user?.id);
     assert.equal(seededSession.userName, 'Judge iPhone');
-    assert.equal(seededSession.appId, 'app_video_cut');
+    assert.equal(seededSession.appId, videoCutAppId);
 
     const updatedUser = await request(port, 'PATCH', `/api/users/${createUser.json.user.id}`, {
       name: 'Judge iPhone 2',
@@ -225,7 +238,7 @@ try {
 
     const visitorCreate = await request(port, 'POST', '/api/visitors', {
       name: 'Judge iPhone 2',
-      appId: 'app_video_cut',
+      appId: videoCutAppId,
     }, {
       Cookie: ownerCookie,
     });
@@ -245,7 +258,7 @@ try {
       tool: 'fake-codex',
       name: 'Blocked Video Cut Session',
       userId: createUser.json.user.id,
-      appId: 'app_video_cut',
+      appId: videoCutAppId,
       sourceId: 'chat',
       sourceName: 'Chat',
     }, {

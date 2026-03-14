@@ -146,9 +146,22 @@ try {
   const port = randomPort();
   const server = await startServer({ home, port });
   try {
+    const createAppResponse = await request(port, 'POST', '/api/apps', {
+      name: 'Video Cut Demo',
+      systemPrompt: 'Use the local video-cut workflow when asked.',
+      welcomeMessage: '请上传一段原始视频，并说明要保留什么。',
+      tool: 'fake-codex',
+      skills: [],
+    }, {
+      Cookie: ownerCookie,
+    });
+    assert.equal(createAppResponse.status, 201, 'owner should be able to create a regular shareable app');
+    const videoCutAppId = createAppResponse.json?.app?.id;
+    assert.ok(videoCutAppId, 'created app should return an id');
+
     const createVisitorResponse = await request(port, 'POST', '/api/visitors', {
       name: 'Judge iPhone',
-      appId: 'app_video_cut',
+      appId: videoCutAppId,
     }, {
       Cookie: ownerCookie,
     });
@@ -161,7 +174,7 @@ try {
     });
     assert.equal(visitorListResponse.status, 200, 'owner should be able to list visitors');
     assert.equal(
-      (visitorListResponse.json?.visitors || []).some((visitor) => visitor.name === 'Judge iPhone' && visitor.appId === 'app_video_cut'),
+      (visitorListResponse.json?.visitors || []).some((visitor) => visitor.name === 'Judge iPhone' && visitor.appId === videoCutAppId),
       true,
       'new visitor should appear in the visitor list with the assigned app',
     );
@@ -177,17 +190,17 @@ try {
     });
     assert.equal(visitorAuth.status, 200, 'visitor auth should work after opening a visitor link');
     assert.equal(visitorAuth.json?.role, 'visitor');
-    assert.equal(visitorAuth.json?.appId, 'app_video_cut');
+    assert.equal(visitorAuth.json?.appId, videoCutAppId);
     assert.equal(visitorAuth.json?.visitorId, createVisitorResponse.json.visitor.id);
 
-    const ownerAllUsers = await request(port, 'GET', '/api/sessions?includeVisitor=1&appId=app_video_cut', null, {
+    const ownerAllUsers = await request(port, 'GET', `/api/sessions?includeVisitor=1&appId=${videoCutAppId}`, null, {
       Cookie: ownerCookie,
     });
     assert.equal(ownerAllUsers.status, 200, 'owner should be able to list visitor sessions');
     const visitorSession = (ownerAllUsers.json?.sessions || []).find((session) => session.visitorId === createVisitorResponse.json.visitor.id);
     assert.ok(visitorSession, 'visitor session should appear in owner all-users view');
     assert.equal(visitorSession.visitorName, 'Judge iPhone', 'visitor session should preserve the visitor name for owner UI');
-    assert.equal(visitorSession.appId, 'app_video_cut', 'visitor session should stay inside the assigned app scope');
+    assert.equal(visitorSession.appId, videoCutAppId, 'visitor session should stay inside the assigned app scope');
 
     const deleteVisitorResponse = await request(port, 'DELETE', `/api/visitors/${createVisitorResponse.json.visitor.id}`, null, {
       Cookie: ownerCookie,

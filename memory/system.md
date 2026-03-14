@@ -181,6 +181,10 @@ Universal learnings and patterns that apply to all RemoteLab deployments, regard
 - If an integration like Email creates sessions with its own `appId`, ship a real built-in app entry for that scope so the UI can present it consistently instead of feeling like an unnamed Chat fallback.
 - Mark connector built-ins as non-template apps, and hide them from the sidebar when they have zero sessions; otherwise they clutter owner-facing app/template controls while still failing to model the connector cleanly.
 
+### Domain Workflow Apps Should Stay User-Created (2026-03-14)
+- Reserve built-in apps for product-structural roles such as the owner chat surface, app-creation helpers, or connector scopes that need a stable first-class identity in the UI.
+- Do not hardcode niche business workflows like video cutting as shipped built-ins; model them as normal shareable apps so they remain optional, editable, and unspecial in app ordering and product copy.
+
 ### Post-Run Integrations Should Live Outside `chat/` (2026-03-11)
 - Business-specific side effects triggered by finished runs, such as outbound email delivery, should not live under the core `chat/` domain modules even when the chat server invokes them.
 - A cleaner split is: `chat/` owns sessions, runs, and event history; integration modules under `lib/` or connector-specific areas consume those primitives and perform provider-specific delivery work.
