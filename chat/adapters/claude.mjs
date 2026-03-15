@@ -1,7 +1,11 @@
 import {
   messageEvent, toolUseEvent, toolResultEvent,
-  reasoningEvent, statusEvent, usageEvent,
+  reasoningEvent, statusEvent, usageEvent, sessionErrorEvent,
+  questionEvent, planApprovalEvent,
 } from '../normalizer.mjs';
+
+// Interactive tools that need user input — their tool_result (exit 1) should be suppressed
+const INTERACTIVE_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
 
 /**
  * Claude Code adapter.
@@ -15,6 +19,9 @@ import {
  * duplicated in complete messages).
  */
 export function createClaudeAdapter() {
+  // Track tool_use_ids for interactive tools so we can suppress their error results
+  const pendingInteractiveIds = new Set();
+
   return {
     parseLine(line) {
       const trimmed = line.trim();
@@ -46,12 +53,20 @@ export function createClaudeAdapter() {
               } else if (block.type === 'thinking') {
                 events.push(reasoningEvent(block.thinking));
               } else if (block.type === 'tool_use') {
-                events.push(toolUseEvent(
-                  block.name,
-                  typeof block.input === 'string'
-                    ? block.input
-                    : JSON.stringify(block.input, null, 2),
-                ));
+                if (block.name === 'AskUserQuestion' && block.input?.questions) {
+                  pendingInteractiveIds.add(block.id);
+                  events.push(questionEvent(block.input.questions, block.id));
+                } else if (block.name === 'ExitPlanMode') {
+                  pendingInteractiveIds.add(block.id);
+                  events.push(planApprovalEvent(block.input?.plan, block.input?.allowedPrompts, block.id));
+                } else {
+                  events.push(toolUseEvent(
+                    block.name,
+                    typeof block.input === 'string'
+                      ? block.input
+                      : JSON.stringify(block.input, null, 2),
+                  ));
+                }
               } else if (block.type === 'tool_result') {
                 const output = typeof block.content === 'string'
                   ? block.content
@@ -71,6 +86,11 @@ export function createClaudeAdapter() {
           if (Array.isArray(content)) {
             for (const block of content) {
               if (block.type === 'tool_result') {
+                // Suppress error results for interactive tools (they fail with exit 1 in headless mode)
+                if (pendingInteractiveIds.has(block.tool_use_id)) {
+                  pendingInteractiveIds.delete(block.tool_use_id);
+                  continue;
+                }
                 const output = typeof block.content === 'string'
                   ? block.content
                   : Array.isArray(block.content)
@@ -88,6 +108,12 @@ export function createClaudeAdapter() {
         }
 
         case 'result':
+          if (obj.is_error) {
+            // Session error (e.g. stale --resume ID, API failure). Emit dedicated event
+            // so the frontend can show recovery options.
+            events.push(sessionErrorEvent(obj.result || 'Session error during execution'));
+            break;
+          }
           // Skip obj.result text — it duplicates the last assistant message.
           // Only emit usage + completed status.
           if (obj.cost_usd !== undefined || obj.usage) {
@@ -95,6 +121,8 @@ export function createClaudeAdapter() {
             events.push(usageEvent(
               u.input_tokens || 0,
               u.output_tokens || 0,
+              u.cache_creation_input_tokens || 0,
+              u.cache_read_input_tokens || 0,
             ));
           }
           events.push(statusEvent('completed'));
@@ -144,6 +172,11 @@ export function buildClaudeArgs(prompt, options = {}) {
   }
   if (options.dangerouslySkipPermissions) {
     args.push('--dangerously-skip-permissions');
+  }
+
+  // Inject hook settings so AskUserQuestion/ExitPlanMode are intercepted by the web UI
+  if (options.hookSettingsJson) {
+    args.push('--settings', options.hookSettingsJson);
   }
 
   // Thinking: Claude Code enables extended thinking automatically on supported models.
