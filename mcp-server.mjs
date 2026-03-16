@@ -353,11 +353,13 @@ async function executeTool(name, args) {
         sessionName = sessRes.data.session?.name || '';
       }
 
-      // Send the message
+      // Send the message (include report_to so chat-server handles the callback server-side)
       const body = { text: args.text };
       if (args.tool) body.tool = args.tool;
       if (args.thinking) body.thinking = true;
       if (args.model) body.model = args.model;
+      const effectiveReportTo = args.report_to || MY_SESSION_ID;
+      if (effectiveReportTo) body.report_to = effectiveReportTo;
 
       const res = await apiRequest('POST', `/api/sessions/${args.session_id}/messages`, body);
       if (res.status !== 202) return { isError: true, content: [{ type: 'text', text: `Error ${res.status}: ${JSON.stringify(res.data)}` }] };

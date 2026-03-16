@@ -10,7 +10,7 @@ import {
   parseCookies, setCookie, clearCookie,
 } from '../lib/auth.mjs';
 import { getAvailableTools } from '../lib/tools.mjs';
-import { listSessions, getSession, createSession, deleteSession, sendMessage, getHistory, receiveHookRequest } from './session-manager.mjs';
+import { listSessions, getSession, createSession, deleteSession, sendMessage, getHistory, waitForIdle, receiveHookRequest } from './session-manager.mjs';
 import { executeWorkflow, listWorkflowRuns } from './workflow-engine.mjs';
 import { getSidebarState } from './summarizer.mjs';
 import { readBody, readBodyBinary } from '../lib/utils.mjs';
@@ -345,7 +345,7 @@ export async function handleRequest(req, res) {
         throw err;
       }
       try {
-        const { text, images, tool, thinking, model } = JSON.parse(body);
+        const { text, images, tool, thinking, model, report_to } = JSON.parse(body);
         if (!text) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'text is required' }));
@@ -354,6 +354,25 @@ export async function handleRequest(req, res) {
         sendMessage(id, text.trim(), images, { tool, thinking: !!thinking, model });
         res.writeHead(202, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, sessionId: id, status: 'running' }));
+
+        // Server-side report_to: watch in chat-server (survives Claude Code restarts)
+        if (report_to) {
+          const workerSession = getSession(id);
+          const workerName = workerSession?.name || id.slice(0, 8);
+          waitForIdle(id, 30 * 60 * 1000).then(async () => {
+            const history = getHistory(id);
+            const firstMsg = history.find(e => e.role === 'user')?.content || '';
+            const lastMsg = [...history].reverse().find(e => e.role === 'assistant')?.content || '';
+            const report = [
+              `[子任务完成汇报] Session "${workerName}"`,
+              firstMsg && `[Task] ${firstMsg}`,
+              lastMsg && `[Result] ${lastMsg}`,
+            ].filter(Boolean).join('\n');
+            sendMessage(report_to, report, undefined, {});
+          }).catch(err => {
+            console.warn(`[router] report_to failed for ${id.slice(0,8)}: ${err.message}`);
+          });
+        }
       } catch {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Invalid request body' }));
