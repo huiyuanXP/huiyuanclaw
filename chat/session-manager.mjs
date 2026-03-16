@@ -140,10 +140,10 @@ function persistSessionIds(sessionId, claudeSessionId, codexThreadId) {
 // ---- Session Labels ----
 
 const DEFAULT_LABELS = [
-  { id: 'running', name: 'Running', color: '#16a34a' },
+  { id: 'started', name: 'Started', color: '#3b82f6' },
   { id: 'pending-review', name: 'Pending Review', color: '#f59e0b' },
   { id: 'planned', name: 'Planned', color: '#8b5cf6' },
-  { id: 'done', name: 'Done', color: '#22c55e' },
+  { id: 'done', name: 'Done', color: '#10b981' },
 ];
 
 function loadLabels() {
@@ -444,7 +444,7 @@ export function sendMessage(sessionId, text, images, options = {}) {
     const metas = loadSessionsMeta();
     const idx = metas.findIndex(m => m.id === sessionId);
     if (idx !== -1) {
-      metas[idx].label = 'running';
+      metas[idx].label = 'started';
       saveSessionsMeta(metas);
       session = metas[idx];
     }

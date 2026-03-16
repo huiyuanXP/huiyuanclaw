@@ -357,10 +357,15 @@ body {
 }
 .session-item-logo {
   display: flex; align-items: center; justify-content: center;
-  color: var(--text-muted); flex-shrink: 0; transition: color 0.3s;
+  color: var(--text-muted); flex-shrink: 0;
+  cursor: pointer; border-radius: 6px; padding: 2px; margin: -2px;
+  transition: color 0.3s, background 0.15s, transform 0.15s;
 }
 .session-item-logo.running { color: var(--success); }
 .session-item-logo.running svg { animation: logo-spin 8s linear infinite; }
+.session-item:hover .session-item-logo { background: var(--bg-tertiary); }
+.session-item-logo:hover { background: var(--border-strong) !important; transform: scale(1.12); }
+.session-item-logo:active { transform: scale(0.9) !important; }
 .session-item:hover { background: var(--bg-secondary); }
 .session-item.active { background: var(--bg-tertiary); border-color: var(--border); }
 .session-item-info { flex: 1; min-width: 0; }
@@ -404,6 +409,9 @@ body {
 .session-dropdown-item:hover, .session-dropdown-item:active { background: var(--bg-tertiary); }
 .session-dropdown-item.del { color: var(--error); }
 .session-dropdown-item.del:hover, .session-dropdown-item.del:active { background: var(--error-bg); }
+.session-dropdown-label-dot {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+}
 .archived-section { padding: 0 8px 8px; }
 .archived-section-toggle {
   display: flex; align-items: center; gap: 6px;

@@ -1232,7 +1232,7 @@
   }
 
   // ---- Session Labels ----
-  const LABEL_PRESET_COLORS = ['#ef4444','#f59e0b','#eab308','#22c55e','#06b6d4','#3b82f6','#8b5cf6','#ec4899'];
+  const LABEL_PRESET_COLORS = ['#ef4444','#f59e0b','#eab308','#10b981','#06b6d4','#3b82f6','#8b5cf6','#ec4899'];
 
   async function loadSessionLabels() {
     try {
@@ -1515,7 +1515,7 @@
         const logoRunning = s.status === "running" ? " running" : "";
         const logoColor = (s.status !== "running" && label) ? ` style="color:${label.color}"` : "";
         div.innerHTML = `
-          <div class="session-item-logo${logoRunning}"${logoColor}>
+          <div class="session-item-logo${logoRunning}"${logoColor} title="Set label">
             <svg width="16" height="16" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
               <g stroke="currentColor" stroke-width="6" fill="none">
                 <circle cx="50" cy="28" r="19"/>
@@ -1938,8 +1938,11 @@
     const dropdown = document.createElement("div");
     dropdown.className = "session-dropdown";
     dropdown._triggerBtn = btn;
+    const curLabel = session.label ? getLabelById(session.label) : null;
+    const dotColor = curLabel ? curLabel.color : 'var(--text-muted)';
     dropdown.innerHTML = `
       <div class="session-dropdown-item rename-action">&#9998;&nbsp; Rename</div>
+      <div class="session-dropdown-item label-action"><span class="session-dropdown-label-dot" style="background:${dotColor}"></span>&nbsp; Label</div>
       <div class="session-dropdown-item archive-action">&#8863;&nbsp; Archive</div>
       <div class="session-dropdown-item del-action del">&#215;&nbsp; Delete</div>`;
     document.body.appendChild(dropdown);
@@ -1958,6 +1961,12 @@
       e.stopPropagation();
       dropdown.remove();
       startRename(itemEl, session);
+    });
+
+    dropdown.querySelector(".label-action").addEventListener("click", (e) => {
+      e.stopPropagation();
+      dropdown.remove();
+      showLabelPopover(itemEl.querySelector(".session-item-logo"), session);
     });
 
     dropdown.querySelector(".archive-action").addEventListener("click", (e) => {
