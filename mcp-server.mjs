@@ -23,6 +23,7 @@ import http from 'http';
 const AUTH_FILE = join(homedir(), '.config', 'claude-web', 'auth.json');
 const CHAT_PORT = parseInt(process.env.CHAT_PORT, 10) || 7690;
 const BASE_URL = `http://127.0.0.1:${CHAT_PORT}`;
+const MY_SESSION_ID = process.env.REMOTELAB_SESSION_ID || null;
 
 // ---- Auth token ----
 
@@ -117,7 +118,7 @@ function sendNotification(level, data) {
 // sessionId → { eventCountBefore, sessionName }
 const activeWatchers = new Map();
 
-async function watchSession(sessionId, eventCountBefore, sessionName) {
+async function watchSession(sessionId, eventCountBefore, sessionName, reportToSessionId = null) {
   if (activeWatchers.has(sessionId)) return; // already watching
   activeWatchers.set(sessionId, { eventCountBefore, sessionName });
 
@@ -144,6 +145,16 @@ async function watchSession(sessionId, eventCountBefore, sessionName) {
       if (lastMsg) parts.push(`[Result] ${lastMsg}`);
 
       sendNotification('info', parts.join('\n'));
+
+      if (reportToSessionId) {
+        const reportText = `[子任务完成汇报]\n${parts.join('\n')}`;
+        try {
+          await apiRequest('POST', `/api/sessions/${reportToSessionId}/messages`, { text: reportText });
+        } catch (err) {
+          sendNotification('error', `[report_to failed] ${err.message}`);
+        }
+      }
+
       break;
     }
   } catch (err) {
@@ -260,7 +271,7 @@ const TOOLS = [
   },
   {
     name: 'send_message',
-    description: 'Send a message to an AI session (fire-and-forget). The message is dispatched to the CLI tool and this returns immediately. When the session finishes, a notification is automatically sent back with the results. Set wait=true to block until the response is ready instead.',
+    description: 'Send a message to an AI session (fire-and-forget). The message is dispatched to the CLI tool and this returns immediately. When the session finishes, a notification is automatically sent back with the results. Set wait=true to block until the response is ready instead. Optionally set report_to to automatically send results back to another session when done.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -270,6 +281,7 @@ const TOOLS = [
         tool: { type: 'string', description: 'Override the CLI tool for this message (e.g. "claude", "codex").' },
         thinking: { type: 'boolean', description: 'Enable extended thinking mode.' },
         model: { type: 'string', description: 'Override the model to use.' },
+        report_to: { type: 'string', description: 'Session ID to report back to when this session completes. The result will be sent as a chat message to that session, waking it up if idle or interrupting if busy.' },
       },
       required: ['session_id', 'text'],
     },
@@ -352,7 +364,7 @@ async function executeTool(name, args) {
 
       if (!wait) {
         // Async: start background watcher, return immediately
-        watchSession(args.session_id, eventCountBefore, sessionName);
+        watchSession(args.session_id, eventCountBefore, sessionName, args.report_to || MY_SESSION_ID);
         return { content: [{ type: 'text', text: `Message dispatched to session "${sessionName || args.session_id.slice(0, 8)}". You will receive a notification when it completes.` }] };
       }
 

@@ -159,6 +159,7 @@ export function spawnTool(toolId, folder, prompt, onEvent, onExit, options = {})
   const cleanEnv = { ...process.env, PATH: fullPath };
   delete cleanEnv.CLAUDECODE;
   delete cleanEnv.CLAUDE_CODE_ENTRYPOINT;
+  if (options.sessionId) cleanEnv.REMOTELAB_SESSION_ID = options.sessionId;
 
   // Shared mutable state across potential auto-continue cycles
   const state = {

@@ -1,10 +1,11 @@
 import { randomBytes } from 'crypto';
-import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, readdirSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, readdirSync, unlinkSync } from 'fs';
 import { dirname, join } from 'path';
-import { CHAT_SESSIONS_FILE, CHAT_IMAGES_DIR } from '../lib/config.mjs';
+import { homedir } from 'os';
+import { CHAT_SESSIONS_FILE, CHAT_IMAGES_DIR, INTERRUPTED_SESSIONS_FILE } from '../lib/config.mjs';
 import { spawnTool } from './process-runner.mjs';
 import { loadHistory, appendEvent } from './history.mjs';
-import { messageEvent, statusEvent, compactEvent } from './normalizer.mjs';
+import { messageEvent, statusEvent, compactEvent, restartInterruptEvent, restartResumeEvent } from './normalizer.mjs';
 import { triggerSummary, removeSidebarEntry, generateCompactSummary, generateAutoTitle } from './summarizer.mjs';
 
 const MIME_EXT = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif', 'image/webp': '.webp' };
@@ -54,6 +55,10 @@ const claudeSessionMap = new Map();
 
 // Pending PreToolUse hook requests: remoteLabSessionId → { resolve, reject, toolName, toolInput }
 const pendingHooks = new Map();
+
+// Completion waiters: sessionId → [{ resolve, reject }]
+// Used by waitForIdle() / createAndRun() to block until a session finishes running.
+const completionWaiters = new Map();
 
 function generateId() {
   return randomBytes(16).toString('hex');
@@ -113,6 +118,25 @@ function saveSessionsMeta(list) {
   writeFileSync(CHAT_SESSIONS_FILE, JSON.stringify(list, null, 2), 'utf8');
 }
 
+/**
+ * Persist claudeSessionId / codexThreadId for a session to disk so they survive restart.
+ * Pass null to explicitly clear a field.
+ */
+function persistSessionIds(sessionId, claudeSessionId, codexThreadId) {
+  const metas = loadSessionsMeta();
+  const idx = metas.findIndex(m => m.id === sessionId);
+  if (idx === -1) return;
+  if (claudeSessionId !== undefined) {
+    if (claudeSessionId === null) delete metas[idx].claudeSessionId;
+    else metas[idx].claudeSessionId = claudeSessionId;
+  }
+  if (codexThreadId !== undefined) {
+    if (codexThreadId === null) delete metas[idx].codexThreadId;
+    else metas[idx].codexThreadId = codexThreadId;
+  }
+  saveSessionsMeta(metas);
+}
+
 // ---- Public API ----
 
 export function listSessions() {
@@ -147,6 +171,9 @@ export function createSession(folder, tool, name = '', options = {}) {
   };
   if (options.continuedFrom) {
     session.continuedFrom = options.continuedFrom;
+  }
+  if (options.hidden) {
+    session.hidden = true;
   }
 
   const metas = loadSessionsMeta();
@@ -194,7 +221,14 @@ export function renameSession(id, name) {
 export function subscribe(sessionId, ws) {
   let live = liveSessions.get(sessionId);
   if (!live) {
-    live = { status: 'idle', runner: null, listeners: new Set() };
+    const meta = loadSessionsMeta().find(m => m.id === sessionId);
+    live = {
+      status: 'idle',
+      runner: null,
+      listeners: new Set(),
+      claudeSessionId: meta?.claudeSessionId,
+      codexThreadId: meta?.codexThreadId,
+    };
     liveSessions.set(sessionId, live);
   }
   live.listeners.add(ws);
@@ -260,7 +294,14 @@ export function sendMessage(sessionId, text, images, options = {}) {
 
   let live = liveSessions.get(sessionId);
   if (!live) {
-    live = { status: 'idle', runner: null, listeners: new Set() };
+    const meta = loadSessionsMeta().find(m => m.id === sessionId);
+    live = {
+      status: 'idle',
+      runner: null,
+      listeners: new Set(),
+      claudeSessionId: meta?.claudeSessionId,
+      codexThreadId: meta?.codexThreadId,
+    };
     liveSessions.set(sessionId, live);
   }
 
@@ -271,6 +312,7 @@ export function sendMessage(sessionId, text, images, options = {}) {
     console.log(`[session-mgr] Tool switched from ${session.tool} to ${effectiveTool}, clearing resume IDs`);
     live.claudeSessionId = undefined;
     live.codexThreadId = undefined;
+    persistSessionIds(sessionId, null, null);
   }
 
   // If a process is still running, this is an "interrupt & send" — cancel old process
@@ -340,8 +382,16 @@ export function sendMessage(sessionId, text, images, options = {}) {
         l.codexThreadId = l.runner.codexThreadId;
         console.log(`[session-mgr] Saved codexThreadId=${l.codexThreadId} for session ${sessionId.slice(0,8)}`);
       }
+      // Persist IDs to disk so they survive server restart
+      persistSessionIds(sessionId, l.claudeSessionId, l.codexThreadId);
       l.status = 'idle';
       l.runner = null;
+    }
+    // Notify any waiters (e.g. workflow engine's createAndRun)
+    const waiters = completionWaiters.get(sessionId);
+    if (waiters && waiters.length > 0) {
+      completionWaiters.delete(sessionId);
+      for (const w of waiters) w.resolve();
     }
     // Reject any pending hook so the HTTP long-poll can unblock
     const pending = pendingHooks.get(sessionId);
@@ -361,7 +411,7 @@ export function sendMessage(sessionId, text, images, options = {}) {
 
   };
 
-  const spawnOptions = {};
+  const spawnOptions = { sessionId };
   if (live.claudeSessionId) {
     spawnOptions.claudeSessionId = live.claudeSessionId;
     console.log(`[session-mgr] Will resume Claude session: ${live.claudeSessionId}`);
@@ -447,6 +497,8 @@ export function cancelSession(sessionId) {
       live.codexThreadId = live.runner.codexThreadId;
       console.log(`[session-mgr] Cancel: saved codexThreadId=${live.codexThreadId} for session ${sessionId.slice(0,8)}`);
     }
+    // Persist IDs to disk so they survive server restart
+    persistSessionIds(sessionId, live.claudeSessionId, live.codexThreadId);
     live.runner.cancel();
     live.runner = null;
     live.status = 'idle';
@@ -548,9 +600,115 @@ export async function compactSession(sessionId) {
 }
 
 /**
+ * Returns a Promise that resolves when the session next becomes idle.
+ * Used by workflow engine tasks to wait for Claude to finish.
+ */
+export function waitForIdle(sessionId, timeoutMs = 300000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const waiters = completionWaiters.get(sessionId);
+      if (waiters) {
+        const idx = waiters.indexOf(entry);
+        if (idx !== -1) waiters.splice(idx, 1);
+      }
+      reject(new Error(`Timeout waiting for session ${sessionId.slice(0,8)} to become idle`));
+    }, timeoutMs);
+
+    const entry = {
+      resolve: () => { clearTimeout(timer); resolve(); },
+      reject,
+    };
+
+    if (!completionWaiters.has(sessionId)) completionWaiters.set(sessionId, []);
+    completionWaiters.get(sessionId).push(entry);
+  });
+}
+
+/**
+ * Create a session, send a prompt, wait for completion, return last assistant message.
+ * Used by the workflow engine to run tasks headlessly.
+ */
+export async function createAndRun(folder, model, prompt) {
+  const home = homedir();
+  const normalizedFolder = folder.startsWith(home + '/') ? folder.slice(home.length + 1) : folder;
+  const session = createSession(normalizedFolder, 'claude', `workflow-${Date.now()}`, { hidden: true });
+
+  // Register waiter BEFORE sendMessage to avoid a race where onExit fires synchronously
+  const idlePromise = waitForIdle(session.id, 5 * 60 * 1000);
+
+  sendMessage(session.id, prompt, undefined, { model });
+
+  await idlePromise;
+
+  // Extract last assistant message content from history
+  const history = loadHistory(session.id);
+  const lastMsg = [...history].reverse().find(e => e.type === 'message' && e.role === 'assistant');
+  return lastMsg?.content || '[no assistant output]';
+}
+
+// ---- Restart recovery ----
+
+function saveInterruptedSessions() {
+  const interrupted = [];
+  for (const [sessionId, live] of liveSessions) {
+    if (live.runner && live.status === 'running') {
+      const claudeSessionId = live.runner.claudeSessionId || live.claudeSessionId;
+      const codexThreadId = live.runner.codexThreadId || live.codexThreadId;
+      interrupted.push({ sessionId, claudeSessionId, codexThreadId });
+      // Record interrupt event in history
+      const evt = restartInterruptEvent();
+      appendEvent(sessionId, evt);
+      broadcast(sessionId, { type: 'event', event: evt });
+    }
+  }
+  if (interrupted.length > 0) {
+    const dir = dirname(INTERRUPTED_SESSIONS_FILE);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(INTERRUPTED_SESSIONS_FILE, JSON.stringify(interrupted, null, 2), 'utf8');
+    console.log(`[session-mgr] Saved ${interrupted.length} interrupted session(s) for recovery`);
+  }
+}
+
+export function broadcastRestart() {
+  broadcastGlobal({ type: 'server_restart', message: 'Server is restarting. Sessions will resume automatically...' });
+}
+
+export async function recoverInterruptedSessions() {
+  try {
+    if (!existsSync(INTERRUPTED_SESSIONS_FILE)) return;
+    const interrupted = JSON.parse(readFileSync(INTERRUPTED_SESSIONS_FILE, 'utf8'));
+    unlinkSync(INTERRUPTED_SESSIONS_FILE);
+    if (!interrupted || interrupted.length === 0) return;
+    console.log(`[session-mgr] Recovering ${interrupted.length} interrupted session(s)`);
+    // Brief delay to let the server fully initialize
+    await new Promise(r => setTimeout(r, 2000));
+    for (const { sessionId } of interrupted) {
+      const session = getSession(sessionId);
+      if (!session) {
+        console.log(`[session-mgr] Interrupted session ${sessionId.slice(0, 8)} not found, skipping`);
+        continue;
+      }
+      console.log(`[session-mgr] Auto-resuming session ${sessionId.slice(0, 8)}: ${session.name}`);
+      // Append resume event to history so it shows in chat on reconnect
+      const resumeEvt = restartResumeEvent();
+      appendEvent(sessionId, resumeEvt);
+      // Send resume message (uses existing --resume claudeSessionId mechanism)
+      try {
+        sendMessage(sessionId, '[SYSTEM RESTART] The server was restarted while you were working. Please check your conversation history and continue your previous task from where you left off.', null, {});
+      } catch (err) {
+        console.error(`[session-mgr] Failed to resume session ${sessionId.slice(0, 8)}:`, err.message);
+      }
+    }
+  } catch (err) {
+    console.error('[session-mgr] Failed to recover interrupted sessions:', err.message);
+  }
+}
+
+/**
  * Kill all running processes (for shutdown).
  */
 export function killAll() {
+  saveInterruptedSessions();
   for (const [, live] of liveSessions) {
     if (live.runner) {
       live.runner.cancel();

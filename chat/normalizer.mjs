@@ -59,3 +59,11 @@ export function planApprovalEvent(plan, allowedPrompts, toolUseId) {
 export function compactEvent(oldSessionId, newSessionId, summary) {
   return createEvent('compact', { role: 'system', oldSessionId, newSessionId, summary });
 }
+
+export function restartInterruptEvent() {
+  return createEvent('restart_interrupt', { role: 'system', content: 'Server is restarting. This session will be automatically resumed.' });
+}
+
+export function restartResumeEvent() {
+  return createEvent('restart_resume', { role: 'system', content: 'Server restarted. Continuing your work...' });
+}

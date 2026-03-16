@@ -10,7 +10,9 @@ import http from 'http';
 import { CHAT_PORT, SECURE_COOKIES } from './lib/config.mjs';
 import { handleRequest } from './chat/router.mjs';
 import { attachWebSocket } from './chat/ws.mjs';
-import { killAll } from './chat/session-manager.mjs';
+import { killAll, broadcastRestart, recoverInterruptedSessions } from './chat/session-manager.mjs';
+import { startScheduler } from './chat/scheduler.mjs';
+import { executeWorkflow } from './chat/workflow-engine.mjs';
 
 const server = http.createServer((req, res) => {
   handleRequest(req, res).catch(err => {
@@ -26,8 +28,12 @@ attachWebSocket(server);
 
 function shutdown() {
   console.log('Shutting down chat server...');
-  killAll();
-  process.exit(0);
+  broadcastRestart();
+  // Give WebSocket broadcast 300ms to reach clients before killing processes
+  setTimeout(() => {
+    killAll();
+    process.exit(0);
+  }, 300);
 }
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
@@ -35,4 +41,14 @@ process.on('SIGINT', shutdown);
 server.listen(CHAT_PORT, '127.0.0.1', () => {
   console.log(`Chat server listening on http://127.0.0.1:${CHAT_PORT}`);
   console.log(`Cookie mode: ${SECURE_COOKIES ? 'Secure (HTTPS)' : 'Non-secure (localhost)'}`);
+
+  // Recover any sessions that were interrupted by a previous restart
+  recoverInterruptedSessions();
+
+  // Start workflow scheduler (fires once server is up so createAndRun can reach itself)
+  startScheduler((schedule) => {
+    executeWorkflow(schedule.workflow).catch(err => {
+      console.error(`[Scheduler] Workflow "${schedule.workflow}" error:`, err.message);
+    });
+  });
 });

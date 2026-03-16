@@ -11,6 +11,7 @@ import {
 } from '../lib/auth.mjs';
 import { getAvailableTools } from '../lib/tools.mjs';
 import { listSessions, getSession, createSession, deleteSession, sendMessage, getHistory, receiveHookRequest } from './session-manager.mjs';
+import { executeWorkflow, listWorkflowRuns } from './workflow-engine.mjs';
 import { getSidebarState } from './summarizer.mjs';
 import { readBody, readBodyBinary } from '../lib/utils.mjs';
 import {
@@ -234,7 +235,7 @@ export async function handleRequest(req, res) {
   // ---- API endpoints ----
 
   if (pathname === '/api/sessions' && req.method === 'GET') {
-    const sessionList = listSessions();
+    const sessionList = listSessions().filter(s => !s.hidden);
     const folderFilter = parsedUrl.query.folder;
     const filtered = folderFilter
       ? sessionList.filter(s => s.folder === folderFilter)
@@ -363,7 +364,7 @@ export async function handleRequest(req, res) {
 
   // GET /api/folders — list folders with session counts
   if (pathname === '/api/folders' && req.method === 'GET') {
-    const allSessions = listSessions();
+    const allSessions = listSessions().filter(s => !s.hidden);
     const folderMap = new Map();
     for (const s of allSessions) {
       if (!folderMap.has(s.folder)) folderMap.set(s.folder, []);
@@ -610,6 +611,97 @@ export async function handleRequest(req, res) {
     } catch {
       res.writeHead(500, { 'Content-Type': 'text/plain' });
       res.end('Failed to load chat page');
+    }
+    return;
+  }
+
+  // ---- Workflow / Scheduler API ----
+
+  // GET /api/workflows — list workflow definitions
+  if (pathname === '/api/workflows' && req.method === 'GET') {
+    try {
+      const workflowsDir = join(__dirname, '..', 'workflows');
+      const files = existsSync(workflowsDir)
+        ? readdirSync(workflowsDir).filter(f => f.endsWith('.json') && f !== 'schedules.json')
+        : [];
+      const workflows = files.map(f => {
+        try { return JSON.parse(readFileSync(join(workflowsDir, f), 'utf8')); } catch { return null; }
+      }).filter(Boolean);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ workflows }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // GET /api/schedules — list schedules with lastRun
+  if (pathname === '/api/schedules' && req.method === 'GET') {
+    try {
+      const schedulesFile = join(__dirname, '..', 'workflows', 'schedules.json');
+      const data = existsSync(schedulesFile)
+        ? JSON.parse(readFileSync(schedulesFile, 'utf8'))
+        : { schedules: [] };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(data));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // GET /api/workflow-runs — list recent 10 run records
+  if (pathname === '/api/workflow-runs' && req.method === 'GET') {
+    const runs = listWorkflowRuns(10);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ runs }));
+    return;
+  }
+
+  // GET /api/workflow-runs/:runId/task/:taskId — read task output text
+  const taskOutputMatch = pathname.match(/^\/api\/workflow-runs\/([a-f0-9]+)\/task\/([^/]+)$/);
+  if (taskOutputMatch && req.method === 'GET') {
+    const [, runId, taskId] = taskOutputMatch;
+    const runsDir = join(homedir(), '.config', 'claude-web', 'workflow-runs');
+    const taskFile = join(runsDir, runId, `${taskId}.txt`);
+    if (!existsSync(taskFile)) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Task output not found' }));
+      return;
+    }
+    const text = readFileSync(taskFile, 'utf8');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ text }));
+    return;
+  }
+
+  // POST /api/schedules/:id/trigger — manually trigger a workflow
+  const triggerMatch = pathname.match(/^\/api\/schedules\/([^/]+)\/trigger$/);
+  if (triggerMatch && req.method === 'POST') {
+    const scheduleId = triggerMatch[1];
+    try {
+      const schedulesFile = join(__dirname, '..', 'workflows', 'schedules.json');
+      const data = existsSync(schedulesFile)
+        ? JSON.parse(readFileSync(schedulesFile, 'utf8'))
+        : { schedules: [] };
+      const schedule = data.schedules.find(s => s.id === scheduleId);
+      if (!schedule) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Schedule not found' }));
+        return;
+      }
+      // Fire-and-forget; return run ID immediately
+      const runPromise = executeWorkflow(schedule.workflow);
+      runPromise
+        .then(({ runId }) => console.log(`[router] Manual trigger run=${runId} completed`))
+        .catch(err => console.error(`[router] Manual trigger failed: ${err.message}`));
+      res.writeHead(202, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, workflow: schedule.workflow, status: 'triggered' }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
     }
     return;
   }
