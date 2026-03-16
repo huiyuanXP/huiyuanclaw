@@ -8,7 +8,7 @@ console.warn  = (...a) => _warn(`[${_ts()}]`, ...a);
 
 import http from 'http';
 import { CHAT_PORT, SECURE_COOKIES } from './lib/config.mjs';
-import { handleRequest } from './chat/router.mjs';
+import { handleRequest, recoverReportToWatchers } from './chat/router.mjs';
 import { attachWebSocket } from './chat/ws.mjs';
 import { killAll, broadcastRestart, recoverInterruptedSessions } from './chat/session-manager.mjs';
 import { startScheduler } from './chat/scheduler.mjs';
@@ -44,6 +44,8 @@ server.listen(CHAT_PORT, '127.0.0.1', () => {
 
   // Recover any sessions that were interrupted by a previous restart
   recoverInterruptedSessions();
+  // Recover any pending report_to watchers from before the restart
+  recoverReportToWatchers();
 
   // Start workflow scheduler (fires once server is up so createAndRun can reach itself)
   startScheduler((schedule) => {

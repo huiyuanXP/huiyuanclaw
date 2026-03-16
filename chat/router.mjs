@@ -3,7 +3,7 @@ import { createHash } from 'crypto';
 import { homedir } from 'os';
 import { join, resolve, dirname, basename } from 'path';
 import { parse as parseUrl, fileURLToPath } from 'url';
-import { SESSION_EXPIRY, CHAT_IMAGES_DIR, QUICK_REPLIES_FILE } from '../lib/config.mjs';
+import { SESSION_EXPIRY, CHAT_IMAGES_DIR, QUICK_REPLIES_FILE, REPORT_TO_FILE } from '../lib/config.mjs';
 import {
   sessions, saveAuthSessions,
   verifyToken, verifyPassword, generateToken,
@@ -18,6 +18,72 @@ import {
   getClientIp, isRateLimited, recordFailedAttempt, clearFailedAttempts,
   setSecurityHeaders, generateNonce, requireAuth,
 } from './middleware.mjs';
+
+// ---- report_to persistence (survives chat-server restarts) ----
+
+// workerSessionId → reportToSessionId
+const pendingReportTo = new Map();
+
+function saveReportTo() {
+  const data = Object.fromEntries(pendingReportTo);
+  writeFileSync(REPORT_TO_FILE, JSON.stringify(data), 'utf8');
+}
+
+function registerReportTo(workerSessionId, reportToSessionId) {
+  pendingReportTo.set(workerSessionId, reportToSessionId);
+  saveReportTo();
+  waitForIdle(workerSessionId, 30 * 60 * 1000).then(() => {
+    sendReport(workerSessionId, reportToSessionId);
+  }).catch(err => {
+    console.warn(`[router] report_to watcher failed for ${workerSessionId.slice(0,8)}: ${err.message}`);
+  }).finally(() => {
+    pendingReportTo.delete(workerSessionId);
+    saveReportTo();
+  });
+}
+
+function sendReport(workerSessionId, reportToSessionId) {
+  const workerSession = getSession(workerSessionId);
+  const workerName = workerSession?.name || workerSessionId.slice(0, 8);
+  const history = getHistory(workerSessionId);
+  const firstMsg = history.find(e => e.role === 'user')?.content || '';
+  const lastMsg = [...history].reverse().find(e => e.role === 'assistant')?.content || '';
+  const report = [
+    `[子任务完成汇报] Session "${workerName}"`,
+    firstMsg && `[Task] ${firstMsg}`,
+    lastMsg && `[Result] ${lastMsg}`,
+  ].filter(Boolean).join('\n');
+  sendMessage(reportToSessionId, report, undefined, {});
+}
+
+export function recoverReportToWatchers() {
+  try {
+    if (!existsSync(REPORT_TO_FILE)) return;
+    const data = JSON.parse(readFileSync(REPORT_TO_FILE, 'utf8'));
+    const entries = Object.entries(data);
+    if (entries.length === 0) return;
+    console.log(`[router] Recovering ${entries.length} report_to watcher(s)`);
+    for (const [workerSessionId, reportToSessionId] of entries) {
+      const session = getSession(workerSessionId);
+      if (!session) {
+        console.log(`[router] Worker session ${workerSessionId.slice(0,8)} gone, skipping`);
+        continue;
+      }
+      // If worker already idle, send report immediately; otherwise re-register watcher
+      if (session.status === 'idle') {
+        console.log(`[router] Worker ${workerSessionId.slice(0,8)} already idle, sending report`);
+        sendReport(workerSessionId, reportToSessionId);
+        pendingReportTo.delete(workerSessionId);
+      } else {
+        console.log(`[router] Re-watching worker ${workerSessionId.slice(0,8)}`);
+        registerReportTo(workerSessionId, reportToSessionId);
+      }
+    }
+    saveReportTo(); // update file (remove completed ones)
+  } catch (err) {
+    console.error(`[router] Failed to recover report_to watchers: ${err.message}`);
+  }
+}
 
 // Paths (files are read from disk on each request for hot-reload)
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -355,23 +421,9 @@ export async function handleRequest(req, res) {
         res.writeHead(202, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, sessionId: id, status: 'running' }));
 
-        // Server-side report_to: watch in chat-server (survives Claude Code restarts)
+        // Server-side report_to: persisted watcher survives both Claude Code and chat-server restarts
         if (report_to) {
-          const workerSession = getSession(id);
-          const workerName = workerSession?.name || id.slice(0, 8);
-          waitForIdle(id, 30 * 60 * 1000).then(async () => {
-            const history = getHistory(id);
-            const firstMsg = history.find(e => e.role === 'user')?.content || '';
-            const lastMsg = [...history].reverse().find(e => e.role === 'assistant')?.content || '';
-            const report = [
-              `[子任务完成汇报] Session "${workerName}"`,
-              firstMsg && `[Task] ${firstMsg}`,
-              lastMsg && `[Result] ${lastMsg}`,
-            ].filter(Boolean).join('\n');
-            sendMessage(report_to, report, undefined, {});
-          }).catch(err => {
-            console.warn(`[router] report_to failed for ${id.slice(0,8)}: ${err.message}`);
-          });
+          registerReportTo(id, report_to);
         }
       } catch {
         res.writeHead(400, { 'Content-Type': 'application/json' });
