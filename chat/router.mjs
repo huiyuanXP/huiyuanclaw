@@ -69,13 +69,20 @@ export function recoverReportToWatchers() {
         console.log(`[router] Worker session ${workerSessionId.slice(0,8)} gone, skipping`);
         continue;
       }
-      // If worker already idle, send report immediately; otherwise re-register watcher
-      if (session.status === 'idle') {
-        console.log(`[router] Worker ${workerSessionId.slice(0,8)} already idle, sending report`);
+      // Check if worker has a real result (last assistant msg after last user msg)
+      const history = getHistory(workerSessionId);
+      const lastUserIdx = [...history].map((e, i) => e.role === 'user' ? i : -1).filter(i => i >= 0).pop() ?? -1;
+      const lastAssistantIdx = [...history].map((e, i) => e.role === 'assistant' ? i : -1).filter(i => i >= 0).pop() ?? -1;
+      const hasResult = lastAssistantIdx > lastUserIdx;
+
+      if (session.status === 'idle' && hasResult) {
+        // Worker cleanly finished — send report immediately
+        console.log(`[router] Worker ${workerSessionId.slice(0,8)} idle with result, sending report`);
         sendReport(workerSessionId, reportToSessionId);
         pendingReportTo.delete(workerSessionId);
       } else {
-        console.log(`[router] Re-watching worker ${workerSessionId.slice(0,8)}`);
+        // Worker mid-task or interrupted — re-register watcher, wait for next idle
+        console.log(`[router] Re-watching worker ${workerSessionId.slice(0,8)} (status=${session.status}, hasResult=${hasResult})`);
         registerReportTo(workerSessionId, reportToSessionId);
       }
     }

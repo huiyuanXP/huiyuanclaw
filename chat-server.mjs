@@ -44,8 +44,8 @@ server.listen(CHAT_PORT, '127.0.0.1', () => {
 
   // Recover any sessions that were interrupted by a previous restart
   recoverInterruptedSessions();
-  // Recover any pending report_to watchers from before the restart
-  recoverReportToWatchers();
+  // Delay report_to recovery so interrupted sessions are running before we check their status
+  setTimeout(recoverReportToWatchers, 3000);
 
   // Start workflow scheduler (fires once server is up so createAndRun can reach itself)
   startScheduler((schedule) => {
