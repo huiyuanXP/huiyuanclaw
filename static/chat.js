@@ -36,8 +36,9 @@
   const quickReplies = document.getElementById("quickReplies");
   const tabSessions = document.getElementById("tabSessions");
   const tabProgress = document.getElementById("tabProgress");
+  const tabTasks = document.getElementById("tabTasks");
   const progressPanel = document.getElementById("progressPanel");
-  const taskSection = document.getElementById("taskSection");
+  const taskPanel = document.getElementById("taskPanel");
   const workflowView = document.getElementById("workflowView");
   const headerCtx = document.getElementById("headerCtx");
   const headerCtxDetail = document.getElementById("headerCtxDetail");
@@ -1476,8 +1477,7 @@
     renderSessionItems(sessions, sessionList, { allowAdd: true, allowDrag: true });
   }
 
-  // ---- Task section (schedules in sidebar) ----
-  let taskSectionOpen = true;
+  // ---- Task panel (schedules in sidebar tab) ----
   let taskExpandedSet = new Set();
 
   function formatCron(cron) {
@@ -1500,34 +1500,22 @@
       const { schedules = [] } = await schedRes.json();
       const { runs = [] } = await runsRes.json();
 
+      taskPanel.innerHTML = "";
+
       if (schedules.length === 0) {
-        taskSection.innerHTML = "";
+        taskPanel.innerHTML = '<div style="padding:16px;font-size:12px;color:var(--text-muted);text-align:center">No tasks configured</div>';
         return;
       }
 
-      taskSection.innerHTML = "";
-
-      // Section header
+      // Panel header with refresh
       const hdr = document.createElement("div");
-      hdr.className = "task-section-header";
+      hdr.className = "task-panel-header";
       hdr.innerHTML = `
-        <span class="task-section-chevron ${taskSectionOpen ? "open" : ""}">&#9654;</span>
-        <span class="task-section-label">Tasks</span>
-        <button class="task-section-refresh" title="Refresh">↻</button>
+        <span class="task-panel-label">Schedules</span>
+        <button class="task-panel-refresh" title="Refresh">↻</button>
       `;
-      const chevron = hdr.querySelector(".task-section-chevron");
-      const refreshBtn = hdr.querySelector(".task-section-refresh");
-      refreshBtn.addEventListener("click", (e) => { e.stopPropagation(); loadTaskSection(); });
-      hdr.addEventListener("click", () => {
-        taskSectionOpen = !taskSectionOpen;
-        chevron.classList.toggle("open", taskSectionOpen);
-        body.classList.toggle("open", taskSectionOpen);
-      });
-      taskSection.appendChild(hdr);
-
-      // Section body
-      const body = document.createElement("div");
-      body.className = "task-section-body" + (taskSectionOpen ? " open" : "");
+      hdr.querySelector(".task-panel-refresh").addEventListener("click", (e) => { e.stopPropagation(); loadTaskSection(); });
+      taskPanel.appendChild(hdr);
 
       for (const sched of schedules) {
         const enabled = sched.enabled !== false;
@@ -1576,7 +1564,6 @@
 
         // Click header: toggle expand (chevron area) or open detail view
         headerRow.addEventListener("click", (e) => {
-          // If clicking the chevron area (left 24px), toggle expand
           const rect = headerRow.getBoundingClientRect();
           const clickX = e.clientX - rect.left;
           if (clickX < 24) {
@@ -1593,19 +1580,16 @@
               taskExpandedSet.delete(sched.id);
             }
           } else {
-            // Click on the name/rest of header: open workflow detail view
             openWorkflowView(sched.id);
           }
         });
 
         item.appendChild(headerRow);
         item.appendChild(runsContainer);
-        body.appendChild(item);
+        taskPanel.appendChild(item);
       }
-
-      taskSection.appendChild(body);
     } catch (err) {
-      console.warn("Failed to load task section:", err);
+      console.warn("Failed to load task panel:", err);
     }
   }
 
@@ -1628,9 +1612,6 @@
       container.appendChild(entry);
     }
   }
-
-  // Load task section on startup
-  loadTaskSection();
 
   function startRename(itemEl, session) {
     const nameEl = itemEl.querySelector(".session-item-name");
@@ -2092,9 +2073,10 @@
     activeTab = tab;
     tabSessions.classList.toggle("active", tab === "sessions");
     tabProgress.classList.toggle("active", tab === "progress");
+    tabTasks.classList.toggle("active", tab === "tasks");
     sessionList.style.display = tab === "sessions" ? "" : "none";
-    if (taskSection) taskSection.style.display = tab === "sessions" ? "" : "none";
     progressPanel.classList.toggle("visible", tab === "progress");
+    taskPanel.classList.toggle("visible", tab === "tasks");
     newSessionBtn.classList.toggle("hidden", tab !== "sessions");
     if (tab === "progress") {
       fetchSidebarState();
@@ -2105,13 +2087,14 @@
       clearInterval(progressPollTimer);
       progressPollTimer = null;
     }
-    if (tab === "sessions") {
+    if (tab === "tasks") {
       loadTaskSection();
     }
   }
 
   tabSessions.addEventListener("click", () => switchTab("sessions"));
   tabProgress.addEventListener("click", () => switchTab("progress"));
+  tabTasks.addEventListener("click", () => switchTab("tasks"));
 
   function relativeTime(ts) {
     const diff = Date.now() - ts;
