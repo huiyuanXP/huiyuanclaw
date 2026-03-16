@@ -295,6 +295,26 @@ const renderedEventState = {
   eventCount: 0,
 };
 
+function shouldUseVisitorRequests() {
+  if (visitorMode) return true;
+  try {
+    return new URL(window.location.href).searchParams.get("visitor") === "1";
+  } catch {
+    return false;
+  }
+}
+
+function withVisitorModeUrl(url) {
+  const parsed = new URL(String(url || ""), window.location.href);
+  if (shouldUseVisitorRequests()) {
+    parsed.searchParams.set("visitor", "1");
+  }
+  if (parsed.origin === window.location.origin) {
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  }
+  return parsed.toString();
+}
+
 let currentTokens = 0;
 
 let preferredTool =

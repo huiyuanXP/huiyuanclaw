@@ -6,6 +6,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import http from 'http';
 import { spawn } from 'child_process';
+import WebSocket from 'ws';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = dirname(__dirname);
@@ -192,6 +193,55 @@ try {
     assert.equal(visitorAuth.json?.role, 'visitor');
     assert.equal(visitorAuth.json?.appId, videoCutAppId);
     assert.equal(visitorAuth.json?.visitorId, createVisitorResponse.json.visitor.id);
+
+    const mixedCookie = `${ownerCookie}; ${visitorCookie}`;
+    const mixedOwnerAuth = await request(port, 'GET', '/api/auth/me', null, {
+      Cookie: mixedCookie,
+    });
+    assert.equal(mixedOwnerAuth.status, 200, 'default mixed-cookie auth should preserve the owner session');
+    assert.equal(mixedOwnerAuth.json?.role, 'owner');
+
+    const mixedVisitorAuth = await request(port, 'GET', '/api/auth/me?visitor=1', null, {
+      Cookie: mixedCookie,
+    });
+    assert.equal(mixedVisitorAuth.status, 200, 'visitor-mode auth should prefer the visitor session when both cookies exist');
+    assert.equal(mixedVisitorAuth.json?.role, 'visitor');
+    assert.equal(mixedVisitorAuth.json?.visitorId, createVisitorResponse.json.visitor.id);
+
+    const mixedVisitorApps = await request(port, 'GET', '/api/apps?visitor=1', null, {
+      Cookie: mixedCookie,
+    });
+    assert.equal(mixedVisitorApps.status, 403, 'visitor-mode requests with mixed cookies should not inherit owner-only access');
+
+    const wsMessages = [];
+    const visitorSocket = await new Promise((resolve, reject) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${port}/ws?visitor=1`, {
+        headers: { Cookie: mixedCookie },
+      });
+      socket.on('open', () => resolve(socket));
+      socket.on('error', reject);
+      socket.on('message', (data) => {
+        try {
+          wsMessages.push(JSON.parse(data.toString()));
+        } catch {}
+      });
+    });
+
+    const ownerSessionCreate = await request(port, 'POST', '/api/sessions', {
+      folder: repoRoot,
+      tool: 'fake-codex',
+      name: 'Owner-only broadcast check',
+    }, {
+      Cookie: ownerCookie,
+    });
+    assert.equal(ownerSessionCreate.status, 201, 'owner should still be able to create a normal session');
+    await sleep(250);
+    visitorSocket.close();
+    assert.equal(
+      wsMessages.some((message) => message.type === 'sessions_invalidated'),
+      false,
+      'visitor-mode websocket with mixed cookies should not subscribe as an owner client',
+    );
 
     const ownerAllUsers = await request(port, 'GET', `/api/sessions?includeVisitor=1&appId=${videoCutAppId}`, null, {
       Cookie: ownerCookie,
