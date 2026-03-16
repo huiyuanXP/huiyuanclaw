@@ -36,10 +36,8 @@
   const quickReplies = document.getElementById("quickReplies");
   const tabSessions = document.getElementById("tabSessions");
   const tabProgress = document.getElementById("tabProgress");
-  const tabWorkflows = document.getElementById("tabWorkflows");
   const progressPanel = document.getElementById("progressPanel");
-  const workflowPanel = document.getElementById("workflowPanel");
-  const workflowPanelHeader = document.getElementById("workflowPanelHeader");
+  const taskSection = document.getElementById("taskSection");
   const workflowView = document.getElementById("workflowView");
   const headerCtx = document.getElementById("headerCtx");
   const headerCtxDetail = document.getElementById("headerCtxDetail");
@@ -300,7 +298,6 @@
         sessions = (msg.sessions || []).filter(s => !s.hidden);
         workflowSessions = (msg.sessions || []).filter(s => s.hidden);
         renderSessionList();
-        if (activeTab === "workflows") renderWorkflowSessionList();
         break;
 
       case "session":
@@ -332,7 +329,7 @@
             headerTitle.textContent = msg.session.name;
           }
           if (isHidden) {
-            if (activeTab === "workflows") renderWorkflowSessionList();
+            // workflow sessions update silently; task section refreshes on demand
           } else {
             renderSessionList();
           }
@@ -369,7 +366,6 @@
           showEmpty();
         }
         renderSessionList();
-        if (activeTab === "workflows") renderWorkflowSessionList();
         break;
 
       case "compact":
@@ -1480,9 +1476,161 @@
     renderSessionItems(sessions, sessionList, { allowAdd: true, allowDrag: true });
   }
 
-  function renderWorkflowSessionList() {
-    renderSessionItems(workflowSessions, workflowPanel, { allowAdd: false, allowDrag: false });
+  // ---- Task section (schedules in sidebar) ----
+  let taskSectionOpen = true;
+  let taskExpandedSet = new Set();
+
+  function formatCron(cron) {
+    if (!cron) return "manual";
+    const parts = cron.split(/\s+/);
+    if (parts.length < 5) return cron;
+    const [min, hour, dom, mon, dow] = parts;
+    const time = `${hour.padStart(2, "0")}:${min.padStart(2, "0")}`;
+    if (dom === "*" && mon === "*" && dow === "*") return `${time} daily`;
+    if (dom === "*" && mon === "*" && dow !== "*") return `${time} weekly`;
+    return `${time} ${cron}`;
   }
+
+  async function loadTaskSection() {
+    try {
+      const [schedRes, runsRes] = await Promise.all([
+        fetch("/api/schedules"),
+        fetch("/api/workflow-runs"),
+      ]);
+      const { schedules = [] } = await schedRes.json();
+      const { runs = [] } = await runsRes.json();
+
+      if (schedules.length === 0) {
+        taskSection.innerHTML = "";
+        return;
+      }
+
+      taskSection.innerHTML = "";
+
+      // Section header
+      const hdr = document.createElement("div");
+      hdr.className = "task-section-header";
+      hdr.innerHTML = `
+        <span class="task-section-chevron ${taskSectionOpen ? "open" : ""}">&#9654;</span>
+        <span class="task-section-label">Tasks</span>
+        <button class="task-section-refresh" title="Refresh">↻</button>
+      `;
+      const chevron = hdr.querySelector(".task-section-chevron");
+      const refreshBtn = hdr.querySelector(".task-section-refresh");
+      refreshBtn.addEventListener("click", (e) => { e.stopPropagation(); loadTaskSection(); });
+      hdr.addEventListener("click", () => {
+        taskSectionOpen = !taskSectionOpen;
+        chevron.classList.toggle("open", taskSectionOpen);
+        body.classList.toggle("open", taskSectionOpen);
+      });
+      taskSection.appendChild(hdr);
+
+      // Section body
+      const body = document.createElement("div");
+      body.className = "task-section-body" + (taskSectionOpen ? " open" : "");
+
+      for (const sched of schedules) {
+        const enabled = sched.enabled !== false;
+        const cronLabel = formatCron(sched.cron);
+        const isExpanded = taskExpandedSet.has(sched.id);
+
+        const item = document.createElement("div");
+        item.className = "task-item";
+
+        // Header row
+        const headerRow = document.createElement("div");
+        headerRow.className = "task-item-header";
+        headerRow.innerHTML = `
+          <span class="task-item-chevron ${isExpanded ? "open" : ""}">&#9654;</span>
+          <span class="task-item-name">${escapeHtml(sched.id)}</span>
+          <span class="task-item-cron">${escapeHtml(cronLabel)}</span>
+          <span class="workflow-badge ${enabled ? "enabled" : "disabled"}">${enabled ? "on" : "off"}</span>
+          <button class="task-item-trigger">Run</button>
+        `;
+
+        const itemChevron = headerRow.querySelector(".task-item-chevron");
+        const triggerBtn = headerRow.querySelector(".task-item-trigger");
+
+        // Trigger button
+        triggerBtn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          triggerBtn.disabled = true;
+          triggerBtn.textContent = "…";
+          try {
+            const res = await fetch("/api/schedules/" + encodeURIComponent(sched.id) + "/trigger", { method: "POST" });
+            triggerBtn.textContent = res.ok ? "OK" : "Err";
+          } catch { triggerBtn.textContent = "Err"; }
+          setTimeout(() => { triggerBtn.textContent = "Run"; triggerBtn.disabled = false; }, 2000);
+        });
+
+        // Runs container
+        const runsContainer = document.createElement("div");
+        runsContainer.className = "task-item-runs" + (isExpanded ? " open" : "");
+
+        // Filter runs for this schedule
+        const schedRuns = runs.filter(r => !sched.workflow || r.workflow === sched.workflow);
+
+        if (isExpanded) {
+          renderTaskRuns(schedRuns, runsContainer);
+        }
+
+        // Click header: toggle expand (chevron area) or open detail view
+        headerRow.addEventListener("click", (e) => {
+          // If clicking the chevron area (left 24px), toggle expand
+          const rect = headerRow.getBoundingClientRect();
+          const clickX = e.clientX - rect.left;
+          if (clickX < 24) {
+            const nowOpen = !runsContainer.classList.contains("open");
+            itemChevron.classList.toggle("open", nowOpen);
+            runsContainer.classList.toggle("open", nowOpen);
+            if (nowOpen) {
+              taskExpandedSet.add(sched.id);
+              if (!runsContainer.dataset.loaded) {
+                runsContainer.dataset.loaded = "1";
+                renderTaskRuns(schedRuns, runsContainer);
+              }
+            } else {
+              taskExpandedSet.delete(sched.id);
+            }
+          } else {
+            // Click on the name/rest of header: open workflow detail view
+            openWorkflowView(sched.id);
+          }
+        });
+
+        item.appendChild(headerRow);
+        item.appendChild(runsContainer);
+        body.appendChild(item);
+      }
+
+      taskSection.appendChild(body);
+    } catch (err) {
+      console.warn("Failed to load task section:", err);
+    }
+  }
+
+  function renderTaskRuns(runs, container) {
+    container.innerHTML = "";
+    if (runs.length === 0) {
+      container.innerHTML = '<div style="padding:6px 8px;font-size:11px;color:var(--text-muted)">No runs yet</div>';
+      return;
+    }
+    for (const run of runs) {
+      const entry = document.createElement("div");
+      entry.className = "task-run-entry";
+      const startedAt = run.startedAt ? relativeTime(new Date(run.startedAt).getTime()) : "—";
+      const status = run.status || "unknown";
+      entry.innerHTML = `
+        <span class="workflow-run-id">${escapeHtml(run.runId.slice(0, 8))}</span>
+        <span class="workflow-run-status ${escapeHtml(status)}">${escapeHtml(status)}</span>
+        <span class="workflow-run-time">${escapeHtml(startedAt)}</span>
+      `;
+      container.appendChild(entry);
+    }
+  }
+
+  // Load task section on startup
+  loadTaskSection();
 
   function startRename(itemEl, session) {
     const nameEl = itemEl.querySelector(".session-item-name");
@@ -1494,7 +1642,7 @@
     input.focus();
     input.select();
 
-    const rerender = session.hidden ? renderWorkflowSessionList : renderSessionList;
+    const rerender = renderSessionList;
 
     function commit() {
       const newName = input.value.trim();
@@ -1937,18 +2085,16 @@
   requestAnimationFrame(() => autoResizeInput());
 
   // ---- Progress sidebar ----
-  let activeTab = "sessions"; // "sessions" | "progress" | "workflows"
+  let activeTab = "sessions"; // "sessions" | "progress"
   let progressPollTimer = null;
   let lastProgressState = { sessions: {} };
   function switchTab(tab) {
     activeTab = tab;
     tabSessions.classList.toggle("active", tab === "sessions");
     tabProgress.classList.toggle("active", tab === "progress");
-    tabWorkflows.classList.toggle("active", tab === "workflows");
     sessionList.style.display = tab === "sessions" ? "" : "none";
+    if (taskSection) taskSection.style.display = tab === "sessions" ? "" : "none";
     progressPanel.classList.toggle("visible", tab === "progress");
-    workflowPanel.classList.toggle("visible", tab === "workflows");
-    workflowPanelHeader.style.display = tab === "workflows" ? "flex" : "none";
     newSessionBtn.classList.toggle("hidden", tab !== "sessions");
     if (tab === "progress") {
       fetchSidebarState();
@@ -1959,20 +2105,13 @@
       clearInterval(progressPollTimer);
       progressPollTimer = null;
     }
-    if (tab === "workflows") {
-      renderWorkflowSessionList();
-    } else {
-      // Hide workflow main view when leaving workflows tab
-      workflowView.style.display = "none";
-      messagesEl.style.display = "";
-      document.getElementById("inputArea").style.display = "";
+    if (tab === "sessions") {
+      loadTaskSection();
     }
   }
 
   tabSessions.addEventListener("click", () => switchTab("sessions"));
   tabProgress.addEventListener("click", () => switchTab("progress"));
-  tabWorkflows.addEventListener("click", () => switchTab("workflows"));
-  document.getElementById("refreshWorkflowsBtn").addEventListener("click", () => renderWorkflowSessionList());
 
   function relativeTime(ts) {
     const diff = Date.now() - ts;

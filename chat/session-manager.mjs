@@ -694,7 +694,7 @@ export async function recoverInterruptedSessions() {
       appendEvent(sessionId, resumeEvt);
       // Send resume message (uses existing --resume claudeSessionId mechanism)
       try {
-        sendMessage(sessionId, '[SYSTEM RESTART] The server was restarted while you were working. Please check your conversation history and continue your previous task from where you left off.', null, {});
+        sendMessage(sessionId, '[SERVER NOTIFICATION] The RemoteLab server was automatically restarted. Your session has been resumed. Do NOT restart any services. Please review your conversation history and continue your previous task from where you left off.', null, {});
       } catch (err) {
         console.error(`[session-mgr] Failed to resume session ${sessionId.slice(0, 8)}:`, err.message);
       }
