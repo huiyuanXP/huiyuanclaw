@@ -1109,7 +1109,7 @@ function buildExternalTriggerId(repo, item) {
 
 function buildSessionName(repo, item) {
   const title = trimString(item.title);
-  return title ? `GitHub: ${repo}#${item.number} — ${title}` : `GitHub: ${repo}#${item.number}`;
+  return title ? `${repo}#${item.number} — ${title}` : `${repo}#${item.number}`;
 }
 
 function buildSessionDescription(repo, item, kind) {

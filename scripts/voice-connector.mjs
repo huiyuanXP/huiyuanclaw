@@ -350,8 +350,7 @@ function buildRequestId(summary) {
 
 function buildSessionName(config, summary) {
   if (trimString(config.sessionName)) return config.sessionName
-  const label = trimString(summary?.roomName || config.roomName || summary?.connectorId || config.connectorId || 'Main')
-  return `${config.appName} · ${label}`
+  return trimString(summary?.roomName || config.roomName || summary?.connectorId || config.connectorId)
 }
 
 function buildSessionDescription(config, summary) {

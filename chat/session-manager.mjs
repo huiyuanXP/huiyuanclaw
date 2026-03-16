@@ -2130,6 +2130,8 @@ async function finalizeDetachedRun(sessionId, run, manifest) {
         name: latestSession.name || '',
         group: latestSession.group || '',
         description: latestSession.description || '',
+        appName: latestSession.appName || '',
+        sourceName: latestSession.sourceName || '',
         autoRenamePending: latestSession.autoRenamePending,
         tool: finalizedRun.tool || latestSession.tool,
         model: finalizedRun.model || undefined,
@@ -2400,6 +2402,15 @@ export async function createSession(folder, tool, name, extra = {}) {
   const requestedVisitorName = normalizeSessionVisitorName(extra.visitorName);
   const requestedUserId = typeof extra.userId === 'string' ? extra.userId.trim() : '';
   const requestedUserName = normalizeSessionUserName(extra.userName);
+  const requestedGroup = normalizeSessionGroup(extra.group || '');
+  const requestedDescription = normalizeSessionDescription(extra.description || '');
+  const requestedInitialNaming = resolveInitialSessionName(name, {
+    group: requestedGroup,
+    appName: requestedAppName,
+    sourceId: requestedSourceId,
+    sourceName: requestedSourceName,
+    externalTriggerId,
+  });
   const created = await withSessionsMetaMutation(async (metas, saveSessionsMeta) => {
     if (externalTriggerId) {
       const existingIndex = metas.findIndex((meta) => meta.externalTriggerId === externalTriggerId && !meta.archived);
@@ -2408,16 +2419,29 @@ export async function createSession(folder, tool, name, extra = {}) {
         const updated = { ...existing };
         let changed = false;
 
-        const group = normalizeSessionGroup(extra.group || '');
-        if (group && updated.group !== group) {
-          updated.group = group;
+        if (requestedGroup && updated.group !== requestedGroup) {
+          updated.group = requestedGroup;
           changed = true;
         }
 
-        const description = normalizeSessionDescription(extra.description || '');
-        if (description && updated.description !== description) {
-          updated.description = description;
+        if (requestedDescription && updated.description !== requestedDescription) {
+          updated.description = requestedDescription;
           changed = true;
+        }
+
+        const refreshedInitialNaming = resolveInitialSessionName(name, {
+          group: requestedGroup || updated.group || '',
+          appName: requestedAppName || updated.appName || '',
+          sourceId: requestedSourceId || updated.sourceId || '',
+          sourceName: requestedSourceName || updated.sourceName || '',
+          externalTriggerId: externalTriggerId || updated.externalTriggerId || '',
+        });
+        if (isSessionAutoRenamePending(updated) && !refreshedInitialNaming.autoRenamePending) {
+          if (updated.name !== refreshedInitialNaming.name || updated.autoRenamePending !== false) {
+            updated.name = refreshedInitialNaming.name;
+            updated.autoRenamePending = false;
+            changed = true;
+          }
         }
 
         const workflowState = normalizeSessionWorkflowState(extra.workflowState || '');
@@ -2492,10 +2516,8 @@ export async function createSession(folder, tool, name, extra = {}) {
     }
 
     const id = generateId();
-    const initialNaming = resolveInitialSessionName(name);
+    const initialNaming = requestedInitialNaming;
     const now = nowIso();
-    const group = normalizeSessionGroup(extra.group || '');
-    const description = normalizeSessionDescription(extra.description || '');
     const workflowState = normalizeSessionWorkflowState(extra.workflowState || '');
     const workflowPriority = normalizeSessionWorkflowPriority(extra.workflowPriority || '');
     const completionTargets = sanitizeEmailCompletionTargets(extra.completionTargets || []);
@@ -2511,8 +2533,8 @@ export async function createSession(folder, tool, name, extra = {}) {
       updatedAt: now,
     };
 
-    if (group) session.group = group;
-    if (description) session.description = description;
+    if (requestedGroup) session.group = requestedGroup;
+    if (requestedDescription) session.description = requestedDescription;
     if (workflowState) session.workflowState = workflowState;
     if (workflowPriority) session.workflowPriority = workflowPriority;
     if (requestedAppName) session.appName = requestedAppName;
@@ -3178,6 +3200,8 @@ export async function submitHttpMessage(sessionId, text, images, options = {}) {
       name: session.name || '',
       group: session.group || '',
       description: session.description || '',
+      appName: session.appName || '',
+      sourceName: session.sourceName || '',
       autoRenamePending: session.autoRenamePending,
       tool: effectiveTool,
       model: options.model || undefined,

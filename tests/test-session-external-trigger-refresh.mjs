@@ -56,7 +56,7 @@ try {
   });
 
   assert.equal(second.id, first.id, 'same external trigger should reuse the existing session');
-  assert.equal(second.name, 'Mail: hello', 'reused connector sessions should preserve the original title');
+  assert.equal(second.name, 'hello', 'reused connector sessions should preserve the original normalized title');
   assert.equal(second.description, 'Inbound email from owner@example.com about Re: hello');
   assert.equal(second.systemPrompt, 'Reply with plain text only and keep thread continuity.');
   assert.equal(second.completionTargets?.length, 1);

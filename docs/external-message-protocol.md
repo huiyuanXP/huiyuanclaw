@@ -121,13 +121,20 @@ Required fields:
 
 Useful optional fields for connectors:
 
-- `name` — initial session title
+- `name` — optional seed title; omit it unless you already have concrete thread/task context
 - `appId` — stable app/category id for owner-side session filtering; defaults to `chat`
 - `appName` — human-facing label for that `appId`, such as `GitHub` or `Email`
 - `group` — top-level grouping such as `Mail`, `GitHub`, `Bots`
 - `description` — short human-facing description
 - `systemPrompt` — source-specific guidance for this session
 - `externalTriggerId` — stable dedupe key for the upstream thread
+
+Naming policy for connector-created sessions:
+
+- prefer letting RemoteLab auto-rename after the actual inbound message lands
+- only send `name` when it already contains clear thread-specific context
+- do not repeat provider/app/group words already stored in `group`, `appName`, or other metadata
+- generic names such as `Feishu group`, `GitHub issue`, or `Mail reply` are treated as temporary and may be discarded
 
 For recurring owner-side automations, prefer treating the connector as an Automation App:
 
@@ -147,7 +154,7 @@ curl -sS \
   -d '{
     "folder": "~",
     "tool": "codex",
-    "name": "GitHub: owner/repo#123",
+    "name": "owner/repo#123 — macOS build failure",
     "appId": "github",
     "appName": "GitHub",
     "group": "GitHub",
@@ -160,6 +167,7 @@ Important behavior:
 
 - if an unarchived session with the same `externalTriggerId` already exists, RemoteLab returns that session instead of creating a new one
 - this is the main dedupe mechanism for “one external thread → one RemoteLab session”
+- if the provided `name` is generic or only repeats connector/app/group metadata, RemoteLab keeps the session auto-renameable instead of locking that title in
 - the owner sidebar app filter derives its options from session metadata rather than a hardcoded frontend list; if every session is still in the default `chat` app, the filter stays hidden
 
 ---

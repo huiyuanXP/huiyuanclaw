@@ -905,9 +905,7 @@ function buildReplyUuid(summary) {
 }
 
 function buildSessionName(summary) {
-  const chatType = trimString(summary.chatType) || 'chat';
-  if (chatType === 'p2p') return 'Feishu DM';
-  return `Feishu ${chatType}`;
+  return trimString(summary.chatName);
 }
 
 function buildSessionDescription(summary) {

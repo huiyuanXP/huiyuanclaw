@@ -161,9 +161,9 @@ function buildReplySubject(subject) {
 function buildSessionName(item) {
   const subject = trimString(item?.message?.subject);
   const sender = trimString(item?.message?.fromAddress);
-  if (subject) return `Mail: ${subject}`;
-  if (sender) return `Mail from ${sender}`;
-  return 'Mail reply';
+  if (subject) return subject;
+  if (sender) return sender;
+  return '';
 }
 
 function buildSessionDescription(item, fallbackDescription) {
