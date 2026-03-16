@@ -36,7 +36,11 @@
   const quickReplies = document.getElementById("quickReplies");
   const tabSessions = document.getElementById("tabSessions");
   const tabProgress = document.getElementById("tabProgress");
+  const tabWorkflows = document.getElementById("tabWorkflows");
   const progressPanel = document.getElementById("progressPanel");
+  const workflowPanel = document.getElementById("workflowPanel");
+  const workflowPanelHeader = document.getElementById("workflowPanelHeader");
+  const workflowView = document.getElementById("workflowView");
   const headerCtx = document.getElementById("headerCtx");
   const headerCtxDetail = document.getElementById("headerCtxDetail");
   const headerCtxFill = document.getElementById("headerCtxFill");
@@ -53,6 +57,7 @@
   let sessionStatus = "idle";
   let reconnectTimer = null;
   let sessions = [];
+  let workflowSessions = []; // hidden sessions created by workflow engine
   let currentHistory = []; // raw events for current session (used by Recover)
   let sessionContextTotal = 0; // latest total context tokens (input + cache)
   let pendingSummary = new Set(); // sessionIds awaiting summary generation
@@ -247,6 +252,8 @@
 
     ws.onopen = () => {
       updateStatus("connected", "idle");
+      const restartBanner = document.getElementById("restart-banner");
+      if (restartBanner) restartBanner.remove();
       ws.send(JSON.stringify({ action: "list" }));
       if (currentSessionId) {
         ws.send(
@@ -290,16 +297,20 @@
   function handleWsMessage(msg) {
     switch (msg.type) {
       case "sessions":
-        sessions = msg.sessions || [];
+        sessions = (msg.sessions || []).filter(s => !s.hidden);
+        workflowSessions = (msg.sessions || []).filter(s => s.hidden);
         renderSessionList();
+        if (activeTab === "workflows") renderWorkflowSessionList();
         break;
 
       case "session":
         if (msg.session) {
+          const isHidden = !!msg.session.hidden;
+          const targetArr = isHidden ? workflowSessions : sessions;
           const prevStatus = sessionStatus;
           sessionStatus = msg.session.status || "idle";
           updateStatus("connected", sessionStatus);
-          const prevEntry = sessions.find((s) => s.id === msg.session.id);
+          const prevEntry = targetArr.find((s) => s.id === msg.session.id);
           const wasRunning = prevEntry?.status === "running";
           if (
             msg.session.id === currentSessionId &&
@@ -313,14 +324,18 @@
             pendingSummary.add(msg.session.id);
             if (activeTab === "progress") renderProgressPanel(lastProgressState);
           }
-          const idx = sessions.findIndex((s) => s.id === msg.session.id);
-          if (idx >= 0) sessions[idx] = msg.session;
-          else sessions.push(msg.session);
+          const idx = targetArr.findIndex((s) => s.id === msg.session.id);
+          if (idx >= 0) targetArr[idx] = msg.session;
+          else targetArr.push(msg.session);
           // Update header title if current session was renamed (e.g. auto-title)
           if (msg.session.id === currentSessionId && msg.session.name) {
             headerTitle.textContent = msg.session.name;
           }
-          renderSessionList();
+          if (isHidden) {
+            if (activeTab === "workflows") renderWorkflowSessionList();
+          } else {
+            renderSessionList();
+          }
         }
         break;
 
@@ -347,12 +362,14 @@
 
       case "deleted":
         sessions = sessions.filter((s) => s.id !== msg.sessionId);
+        workflowSessions = workflowSessions.filter((s) => s.id !== msg.sessionId);
         if (currentSessionId === msg.sessionId) {
           currentSessionId = null;
           clearMessages();
           showEmpty();
         }
         renderSessionList();
+        if (activeTab === "workflows") renderWorkflowSessionList();
         break;
 
       case "compact":
@@ -375,10 +392,33 @@
         }
         break;
 
+      case "server_restart":
+        showRestartBanner(msg.message);
+        break;
+
       case "error":
         console.error("WS error:", msg.message);
         break;
     }
+  }
+
+  function showRestartBanner(message) {
+    const existing = document.getElementById("restart-banner");
+    if (existing) existing.remove();
+    const banner = document.createElement("div");
+    banner.id = "restart-banner";
+    banner.className = "restart-banner";
+    banner.textContent = message || "Server is restarting...";
+    document.body.appendChild(banner);
+  }
+
+  function renderRestartDivider(text, extraClass) {
+    if (inThinkingBlock) finalizeThinkingBlock();
+    const div = document.createElement("div");
+    div.className = `restart-divider ${extraClass}`;
+    div.innerHTML = `<span class="restart-divider-text">${text}</span>`;
+    messagesInner.appendChild(div);
+    scrollToBottom();
   }
 
   // ---- Status ----
@@ -536,6 +576,12 @@
         break;
       case "compact":
         renderCompactDivider(evt);
+        break;
+      case "restart_interrupt":
+        renderRestartDivider("\u26a1 Server restarting \u2014 session will resume automatically", "restart-interrupt-divider");
+        break;
+      case "restart_resume":
+        renderRestartDivider("\u2713 Server restarted \u2014 continuing your work...", "restart-resume-divider");
         break;
     }
 
@@ -1180,38 +1226,48 @@
     localStorage.setItem("folderOrder", JSON.stringify(order));
   }
 
-  function renderSessionList() {
-    sessionList.innerHTML = "";
+  // Shared rendering logic for both sessions and workflow sessions.
+  // opts.allowAdd — show the "+" button to create a new session in the folder
+  // opts.allowDrag — enable drag-to-reorder folders
+  function renderSessionItems(sessArr, containerEl, opts = {}) {
+    const { allowAdd = false, allowDrag = false } = opts;
+    containerEl.innerHTML = "";
 
     const groups = new Map();
-    for (const s of sessions) {
+    for (const s of sessArr) {
       const folder = s.folder || "?";
       if (!groups.has(folder)) groups.set(folder, []);
       groups.get(folder).push(s);
     }
 
-    // Stable folder ordering: manual order first, then by earliest created time
-    const sortedFolders = [...groups.keys()].sort((a, b) => {
-      const idxA = folderOrderList.indexOf(a);
-      const idxB = folderOrderList.indexOf(b);
-      // Both in manual order — respect it
-      if (idxA !== -1 && idxB !== -1) return idxA - idxB;
-      // Manual-ordered folders come first
-      if (idxA !== -1) return -1;
-      if (idxB !== -1) return 1;
-      // Neither in manual order — sort by earliest session created time
-      const earliestA = groups.get(a).reduce((min, s) => s.created && s.created < min ? s.created : min, "z");
-      const earliestB = groups.get(b).reduce((min, s) => s.created && s.created < min ? s.created : min, "z");
-      return earliestA.localeCompare(earliestB);
-    });
-
-    // Sync folderOrder to include all current folders (add new ones at end)
-    const currentOrder = [...folderOrderList.filter(f => groups.has(f))];
-    for (const f of sortedFolders) {
-      if (!currentOrder.includes(f)) currentOrder.push(f);
-    }
-    if (JSON.stringify(currentOrder) !== JSON.stringify(folderOrderList)) {
-      saveFolderOrder(currentOrder);
+    let sortedFolders;
+    if (allowDrag) {
+      // Stable folder ordering: manual order first, then by earliest created time
+      sortedFolders = [...groups.keys()].sort((a, b) => {
+        const idxA = folderOrderList.indexOf(a);
+        const idxB = folderOrderList.indexOf(b);
+        if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+        if (idxA !== -1) return -1;
+        if (idxB !== -1) return 1;
+        const earliestA = groups.get(a).reduce((min, s) => s.created && s.created < min ? s.created : min, "z");
+        const earliestB = groups.get(b).reduce((min, s) => s.created && s.created < min ? s.created : min, "z");
+        return earliestA.localeCompare(earliestB);
+      });
+      // Sync folderOrder to include all current folders (add new ones at end)
+      const currentOrder = [...folderOrderList.filter(f => groups.has(f))];
+      for (const f of sortedFolders) {
+        if (!currentOrder.includes(f)) currentOrder.push(f);
+      }
+      if (JSON.stringify(currentOrder) !== JSON.stringify(folderOrderList)) {
+        saveFolderOrder(currentOrder);
+      }
+    } else {
+      // Simple sort by earliest created time
+      sortedFolders = [...groups.keys()].sort((a, b) => {
+        const ea = groups.get(a).reduce((min, s) => s.created && s.created < min ? s.created : min, "z");
+        const eb = groups.get(b).reduce((min, s) => s.created && s.created < min ? s.created : min, "z");
+        return ea.localeCompare(eb);
+      });
     }
 
     for (const folder of sortedFolders) {
@@ -1226,38 +1282,36 @@
       const header = document.createElement("div");
       header.className =
         "folder-group-header" + (collapsedFolders[folder] ? " collapsed" : "");
-      header.innerHTML = `<span class="folder-drag-handle" title="Drag to reorder">⠿</span>
+      header.innerHTML = `${allowDrag ? `<span class="folder-drag-handle" title="Drag to reorder">⠿</span>` : ""}
         <span class="folder-chevron">&#9660;</span>
         <span class="folder-name" title="${esc(shortFolder)}">${esc(folderName)}</span>
         <span class="folder-count">${folderSessions.length}</span>
-        <button class="folder-add-btn" title="New session">+</button>`;
+        ${allowAdd ? `<button class="folder-add-btn" title="New session">+</button>` : ""}`;
       header.addEventListener("click", (e) => {
-        if (e.target.classList.contains("folder-add-btn")) return;
-        if (e.target.classList.contains("folder-drag-handle")) return;
+        if (allowAdd && e.target.classList.contains("folder-add-btn")) return;
+        if (allowDrag && e.target.classList.contains("folder-drag-handle")) return;
         header.classList.toggle("collapsed");
         collapsedFolders[folder] = header.classList.contains("collapsed");
-        localStorage.setItem(
-          "collapsedFolders",
-          JSON.stringify(collapsedFolders),
-        );
+        localStorage.setItem("collapsedFolders", JSON.stringify(collapsedFolders));
       });
-      header.querySelector(".folder-add-btn").addEventListener("click", (e) => {
-        e.stopPropagation();
-        if (!isDesktop) closeSidebarFn();
-        // Directly create session in this folder — title auto-generated by summarizer
-        const tool = selectedTool || (toolsList.length > 0 ? toolsList[0].id : "claude");
-        wsSend({ action: "create", folder, tool, name: "" });
-        const handler = (ev) => {
-          let msg;
-          try { msg = JSON.parse(ev.data); } catch { return; }
-          if (msg.type === "session" && msg.session) {
-            ws.removeEventListener("message", handler);
-            attachSession(msg.session.id, msg.session);
-            wsSend({ action: "list" });
-          }
-        };
-        ws.addEventListener("message", handler);
-      });
+      if (allowAdd) {
+        header.querySelector(".folder-add-btn").addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (!isDesktop) closeSidebarFn();
+          const tool = selectedTool || (toolsList.length > 0 ? toolsList[0].id : "claude");
+          wsSend({ action: "create", folder, tool, name: "" });
+          const handler = (ev) => {
+            let msg;
+            try { msg = JSON.parse(ev.data); } catch { return; }
+            if (msg.type === "session" && msg.session) {
+              ws.removeEventListener("message", handler);
+              attachSession(msg.session.id, msg.session);
+              wsSend({ action: "list" });
+            }
+          };
+          ws.addEventListener("message", handler);
+        });
+      }
 
       const items = document.createElement("div");
       items.className = "folder-group-items";
@@ -1268,9 +1322,6 @@
           "session-item" + (s.id === currentSessionId ? " active" : "");
 
         const displayName = s.name || s.tool || "session";
-        const metaParts = [];
-        if (s.name && s.tool) metaParts.push(s.tool);
-        if (s.status === "running") metaParts.push("●&nbsp;running");
         const metaHtml =
           s.status === "running"
             ? `<span class="status-running">● running</span>`
@@ -1325,109 +1376,112 @@
         items.appendChild(div);
       }
 
-      // Drag-to-reorder: desktop (HTML5 drag) + mobile (touch)
-      // Only enable draggable when handle is grabbed (prevents interfering with session clicks)
-      header.querySelector(".folder-drag-handle").addEventListener("mousedown", () => {
-        group.draggable = true;
-      });
-      group.addEventListener("dragend", () => {
-        group.classList.remove("dragging");
-        group.draggable = false;
-      });
-      group.addEventListener("dragstart", (e) => {
-        e.dataTransfer.effectAllowed = "move";
-        e.dataTransfer.setData("text/plain", folder);
-        group.classList.add("dragging");
-      });
-      group.addEventListener("dragover", (e) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
-        const dragging = sessionList.querySelector(".folder-group.dragging");
-        if (dragging && dragging !== group) {
-          const rect = group.getBoundingClientRect();
-          const midY = rect.top + rect.height / 2;
-          if (e.clientY < midY) {
-            sessionList.insertBefore(dragging, group);
-          } else {
-            sessionList.insertBefore(dragging, group.nextSibling);
+      if (allowDrag) {
+        // Drag-to-reorder: desktop (HTML5 drag) + mobile (touch)
+        header.querySelector(".folder-drag-handle").addEventListener("mousedown", () => {
+          group.draggable = true;
+        });
+        group.addEventListener("dragend", () => {
+          group.classList.remove("dragging");
+          group.draggable = false;
+        });
+        group.addEventListener("dragstart", (e) => {
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("text/plain", folder);
+          group.classList.add("dragging");
+        });
+        group.addEventListener("dragover", (e) => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          const dragging = containerEl.querySelector(".folder-group.dragging");
+          if (dragging && dragging !== group) {
+            const rect = group.getBoundingClientRect();
+            const midY = rect.top + rect.height / 2;
+            if (e.clientY < midY) {
+              containerEl.insertBefore(dragging, group);
+            } else {
+              containerEl.insertBefore(dragging, group.nextSibling);
+            }
           }
-        }
-      });
-      group.addEventListener("drop", (e) => {
-        e.preventDefault();
-        // Persist new order
-        const newOrder = [...sessionList.querySelectorAll(".folder-group")].map(g => g.dataset.folder);
-        saveFolderOrder(newOrder);
-      });
+        });
+        group.addEventListener("drop", (e) => {
+          e.preventDefault();
+          const newOrder = [...containerEl.querySelectorAll(".folder-group")].map(g => g.dataset.folder);
+          saveFolderOrder(newOrder);
+        });
 
-      // Touch drag for mobile
-      const handle = header.querySelector(".folder-drag-handle");
-      let touchDragState = null;
-      handle.addEventListener("touchstart", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const touch = e.touches[0];
-        touchDragState = { startY: touch.clientY, el: group, placeholder: null };
-        group.classList.add("dragging");
-        // Create placeholder
-        const ph = document.createElement("div");
-        ph.className = "folder-drag-placeholder";
-        ph.style.height = group.offsetHeight + "px";
-        group.parentNode.insertBefore(ph, group);
-        touchDragState.placeholder = ph;
-        // Float the group
-        group.style.position = "fixed";
-        group.style.zIndex = "1000";
-        group.style.width = group.offsetWidth + "px";
-        group.style.left = group.getBoundingClientRect().left + "px";
-        group.style.top = touch.clientY - group.offsetHeight / 2 + "px";
-        group.style.pointerEvents = "none";
-      }, { passive: false });
+        // Touch drag for mobile
+        const handle = header.querySelector(".folder-drag-handle");
+        let touchDragState = null;
+        handle.addEventListener("touchstart", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const touch = e.touches[0];
+          touchDragState = { startY: touch.clientY, el: group, placeholder: null };
+          group.classList.add("dragging");
+          const ph = document.createElement("div");
+          ph.className = "folder-drag-placeholder";
+          ph.style.height = group.offsetHeight + "px";
+          group.parentNode.insertBefore(ph, group);
+          touchDragState.placeholder = ph;
+          group.style.position = "fixed";
+          group.style.zIndex = "1000";
+          group.style.width = group.offsetWidth + "px";
+          group.style.left = group.getBoundingClientRect().left + "px";
+          group.style.top = touch.clientY - group.offsetHeight / 2 + "px";
+          group.style.pointerEvents = "none";
+        }, { passive: false });
 
-      handle.addEventListener("touchmove", (e) => {
-        if (!touchDragState) return;
-        e.preventDefault();
-        const touch = e.touches[0];
-        const group = touchDragState.el;
-        group.style.top = touch.clientY - group.offsetHeight / 2 + "px";
-        // Find target position
-        const groups = [...sessionList.querySelectorAll(".folder-group:not(.dragging)")];
-        for (const g of groups) {
-          const rect = g.getBoundingClientRect();
-          if (touch.clientY < rect.top + rect.height / 2) {
-            sessionList.insertBefore(touchDragState.placeholder, g);
-            return;
+        handle.addEventListener("touchmove", (e) => {
+          if (!touchDragState) return;
+          e.preventDefault();
+          const touch = e.touches[0];
+          const group = touchDragState.el;
+          group.style.top = touch.clientY - group.offsetHeight / 2 + "px";
+          const groups = [...containerEl.querySelectorAll(".folder-group:not(.dragging)")];
+          for (const g of groups) {
+            const rect = g.getBoundingClientRect();
+            if (touch.clientY < rect.top + rect.height / 2) {
+              containerEl.insertBefore(touchDragState.placeholder, g);
+              return;
+            }
           }
-        }
-        sessionList.appendChild(touchDragState.placeholder);
-      }, { passive: false });
+          containerEl.appendChild(touchDragState.placeholder);
+        }, { passive: false });
 
-      handle.addEventListener("touchend", () => {
-        if (!touchDragState) return;
-        const group = touchDragState.el;
-        group.classList.remove("dragging");
-        group.style.position = "";
-        group.style.zIndex = "";
-        group.style.width = "";
-        group.style.left = "";
-        group.style.top = "";
-        group.style.pointerEvents = "";
-        // Place group where placeholder is
-        if (touchDragState.placeholder.parentNode) {
-          touchDragState.placeholder.parentNode.insertBefore(group, touchDragState.placeholder);
-          touchDragState.placeholder.remove();
-        }
-        touchDragState = null;
-        // Persist new order
-        const newOrder = [...sessionList.querySelectorAll(".folder-group")].map(g => g.dataset.folder);
-        saveFolderOrder(newOrder);
-      });
+        handle.addEventListener("touchend", () => {
+          if (!touchDragState) return;
+          const group = touchDragState.el;
+          group.classList.remove("dragging");
+          group.style.position = "";
+          group.style.zIndex = "";
+          group.style.width = "";
+          group.style.left = "";
+          group.style.top = "";
+          group.style.pointerEvents = "";
+          if (touchDragState.placeholder.parentNode) {
+            touchDragState.placeholder.parentNode.insertBefore(group, touchDragState.placeholder);
+            touchDragState.placeholder.remove();
+          }
+          touchDragState = null;
+          const newOrder = [...containerEl.querySelectorAll(".folder-group")].map(g => g.dataset.folder);
+          saveFolderOrder(newOrder);
+        });
+      }
 
       group.appendChild(header);
       group.appendChild(items);
-      sessionList.appendChild(group);
+      containerEl.appendChild(group);
     }
-    updateFloatingLogo();
+    if (allowDrag) updateFloatingLogo();
+  }
+
+  function renderSessionList() {
+    renderSessionItems(sessions, sessionList, { allowAdd: true, allowDrag: true });
+  }
+
+  function renderWorkflowSessionList() {
+    renderSessionItems(workflowSessions, workflowPanel, { allowAdd: false, allowDrag: false });
   }
 
   function startRename(itemEl, session) {
@@ -1440,12 +1494,14 @@
     input.focus();
     input.select();
 
+    const rerender = session.hidden ? renderWorkflowSessionList : renderSessionList;
+
     function commit() {
       const newName = input.value.trim();
       if (newName && newName !== current) {
         wsSend({ action: "rename", sessionId: session.id, name: newName });
       } else {
-        renderSessionList(); // revert
+        rerender(); // revert
       }
     }
 
@@ -1457,12 +1513,17 @@
       }
       if (e.key === "Escape") {
         input.removeEventListener("blur", commit);
-        renderSessionList();
+        rerender();
       }
     });
   }
 
   function attachSession(id, session) {
+    // Hide workflow view and restore normal chat layout
+    workflowView.style.display = "none";
+    messagesEl.style.display = "";
+    document.getElementById("inputArea").style.display = "";
+
     currentSessionId = id;
     clearMessages();
     resetHeaderContext();
@@ -1876,17 +1937,19 @@
   requestAnimationFrame(() => autoResizeInput());
 
   // ---- Progress sidebar ----
-  let activeTab = "sessions"; // "sessions" | "progress"
+  let activeTab = "sessions"; // "sessions" | "progress" | "workflows"
   let progressPollTimer = null;
   let lastProgressState = { sessions: {} };
-
   function switchTab(tab) {
     activeTab = tab;
     tabSessions.classList.toggle("active", tab === "sessions");
     tabProgress.classList.toggle("active", tab === "progress");
+    tabWorkflows.classList.toggle("active", tab === "workflows");
     sessionList.style.display = tab === "sessions" ? "" : "none";
     progressPanel.classList.toggle("visible", tab === "progress");
-    newSessionBtn.classList.toggle("hidden", tab === "progress");
+    workflowPanel.classList.toggle("visible", tab === "workflows");
+    workflowPanelHeader.style.display = tab === "workflows" ? "flex" : "none";
+    newSessionBtn.classList.toggle("hidden", tab !== "sessions");
     if (tab === "progress") {
       fetchSidebarState();
       if (!progressPollTimer) {
@@ -1896,10 +1959,20 @@
       clearInterval(progressPollTimer);
       progressPollTimer = null;
     }
+    if (tab === "workflows") {
+      renderWorkflowSessionList();
+    } else {
+      // Hide workflow main view when leaving workflows tab
+      workflowView.style.display = "none";
+      messagesEl.style.display = "";
+      document.getElementById("inputArea").style.display = "";
+    }
   }
 
   tabSessions.addEventListener("click", () => switchTab("sessions"));
   tabProgress.addEventListener("click", () => switchTab("progress"));
+  tabWorkflows.addEventListener("click", () => switchTab("workflows"));
+  document.getElementById("refreshWorkflowsBtn").addEventListener("click", () => renderWorkflowSessionList());
 
   function relativeTime(ts) {
     const diff = Date.now() - ts;
@@ -1988,6 +2061,153 @@
       card.style.cursor = "pointer";
 
       progressPanel.appendChild(card);
+    }
+  }
+
+
+  // ---- Workflow main view (reserved for future run history detail) ----
+  function buildRunTasksHtml(run, container) {
+    const steps = run.steps || {};
+    const stepEntries = Object.entries(steps);
+    if (stepEntries.length === 0) {
+      container.innerHTML = '<div class="workflow-empty" style="padding:6px 8px">No steps recorded</div>';
+      return;
+    }
+    for (const [stepId, stepInfo] of stepEntries) {
+      for (const taskId of (stepInfo.tasks || [])) {
+        const taskRow = document.createElement("div");
+        taskRow.className = "workflow-task-row";
+        taskRow.innerHTML = `
+          <div class="workflow-task-header">
+            <span class="workflow-task-id">${escapeHtml(stepId + "/" + taskId)}</span>
+            <span class="workflow-task-chevron">▶</span>
+          </div>
+          <div class="workflow-task-body"></div>
+        `;
+        const taskHeader = taskRow.querySelector(".workflow-task-header");
+        const body = taskRow.querySelector(".workflow-task-body");
+        const chevron = taskRow.querySelector(".workflow-task-chevron");
+        taskHeader.addEventListener("click", async () => {
+          const wasOpen = body.classList.contains("open");
+          body.classList.toggle("open", !wasOpen);
+          chevron.style.transform = wasOpen ? "" : "rotate(90deg)";
+          if (!wasOpen && !body.dataset.loaded) {
+            body.textContent = "Loading…";
+            try {
+              const res = await fetch(`/api/workflow-runs/${encodeURIComponent(run.runId)}/task/${encodeURIComponent(taskId)}`);
+              const data = await res.json();
+              body.textContent = data.text || "(empty)";
+              body.dataset.loaded = "1";
+            } catch {
+              body.textContent = "(failed to load)";
+            }
+          }
+        });
+        container.appendChild(taskRow);
+      }
+    }
+  }
+
+  async function openWorkflowView(scheduleId) {
+    // Switch main area: hide messages/input, show workflowView
+    messagesEl.style.display = "none";
+    document.getElementById("inputArea").style.display = "none";
+    workflowView.style.display = "flex";
+    workflowView.style.flexDirection = "column";
+    workflowView.innerHTML = '<div class="workflow-empty">Loading…</div>';
+
+    try {
+      const [schedulesRes, runsRes] = await Promise.all([
+        fetch("/api/schedules"),
+        fetch("/api/workflow-runs"),
+      ]);
+      const { schedules = [] } = await schedulesRes.json();
+      const { runs = [] } = await runsRes.json();
+
+      const sched = schedules.find(s => s.id === scheduleId);
+      if (!sched) {
+        workflowView.innerHTML = '<div class="workflow-empty">Workflow not found.</div>';
+        return;
+      }
+
+      workflowView.innerHTML = "";
+
+      // Header
+      const header = document.createElement("div");
+      header.className = "wv-header";
+      const lastRun = sched.lastRun ? relativeTime(new Date(sched.lastRun).getTime()) : "never";
+      const enabled = sched.enabled !== false;
+      header.innerHTML = `
+        <div class="wv-header-top">
+          <span class="wv-name">${escapeHtml(sched.id)}</span>
+          <span class="workflow-badge ${enabled ? "enabled" : "disabled"}">${enabled ? "on" : "off"}</span>
+          <button class="wv-trigger-btn">Trigger</button>
+        </div>
+        <div class="wv-last-run">Last run: ${escapeHtml(lastRun)} · Cron: ${escapeHtml(sched.cron || "manual")}</div>
+      `;
+      const triggerBtn = header.querySelector(".wv-trigger-btn");
+      triggerBtn.addEventListener("click", async () => {
+        triggerBtn.disabled = true;
+        triggerBtn.textContent = "…";
+        try {
+          const res = await fetch(`/api/schedules/${encodeURIComponent(sched.id)}/trigger`, { method: "POST" });
+          triggerBtn.textContent = res.ok ? "Triggered!" : "Error";
+        } catch {
+          triggerBtn.textContent = "Error";
+        }
+        setTimeout(() => { triggerBtn.textContent = "Trigger"; triggerBtn.disabled = false; }, 2500);
+      });
+      workflowView.appendChild(header);
+
+      // Runs
+      const schedRuns = runs.filter(r => !sched.workflow || r.workflow === sched.workflow);
+      if (schedRuns.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "workflow-empty";
+        empty.textContent = "No runs yet.";
+        workflowView.appendChild(empty);
+        return;
+      }
+
+      const sectionTitle = document.createElement("div");
+      sectionTitle.className = "wv-section-title";
+      sectionTitle.textContent = "Run History";
+      workflowView.appendChild(sectionTitle);
+
+      const runList = document.createElement("div");
+      runList.className = "wv-run-list";
+
+      for (const run of schedRuns) {
+        const item = document.createElement("div");
+        item.className = "workflow-run-item";
+        const startedAt = run.startedAt ? relativeTime(new Date(run.startedAt).getTime()) : "—";
+        const status = run.status || "unknown";
+        item.innerHTML = `
+          <div class="workflow-run-row">
+            <span class="workflow-run-id">${escapeHtml(run.runId.slice(0, 8))}</span>
+            <span class="workflow-run-status ${escapeHtml(status)}">${escapeHtml(status)}</span>
+            <span class="workflow-run-time">${escapeHtml(startedAt)}</span>
+            <span class="workflow-run-wf">${escapeHtml(run.workflow || "")}</span>
+          </div>
+          <div class="workflow-run-detail"></div>
+        `;
+        const detail = item.querySelector(".workflow-run-detail");
+        item.querySelector(".workflow-run-row").addEventListener("click", () => {
+          const isOpen = detail.classList.contains("open");
+          runList.querySelectorAll(".workflow-run-detail.open").forEach(el => el.classList.remove("open"));
+          if (isOpen) return;
+          detail.classList.add("open");
+          if (!detail.dataset.loaded) {
+            detail.dataset.loaded = "1";
+            buildRunTasksHtml(run, detail);
+          }
+        });
+        runList.appendChild(item);
+      }
+
+      workflowView.appendChild(runList);
+    } catch {
+      workflowView.innerHTML = '<div class="workflow-empty">Failed to load workflow details.</div>';
     }
   }
 
