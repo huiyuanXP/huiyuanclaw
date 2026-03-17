@@ -2,48 +2,53 @@
 
 [中文](README.zh.md) | English
 
-**The mobile-first orchestration workbench for AI workers running on your own machine.**
+**The AI workbench for super-individuals.**
 
-Your phone becomes the command center. Your Mac or Linux machine stays the place where AI actually works.
+RemoteLab exists to maximize the efficiency of human-AI collaboration for people who already use AI seriously — and for the larger class of AI-native super-individuals that will emerge next.
 
-RemoteLab is built for the shift from **"I personally operate the computer"** to **"I assign goals, review progress, and make decisions while AI executes."** It lets you control `codex`, `claude`, `cline`, and compatible local tools from a phone browser without pretending the phone is the workstation.
+It does not care much whether the control surface is a phone, tablet, or desktop. The point is to give the human the highest-leverage way to direct AI work while strong executors like `codex`, `claude`, and compatible local tools do the heavy lifting on a real machine.
 
 ![Chat UI](docs/demo.gif)
 
-> Current baseline: `v0.3` — owner-first session orchestration, detached runners, durable on-disk history, App-based workflow packaging, and a no-build mobile UI.
+> Current baseline: `v0.3` — owner-first session orchestration, durable on-disk history, executor adapters, App-based workflow packaging, and a no-build web UI that works across phone and desktop.
 
 ---
 
 ## For Humans
 
-### Why RemoteLab exists
+### Vision
 
-AI is getting good enough that the bottleneck is no longer typing commands fast enough. The new bottleneck is **orchestrating multiple long-running work threads without carrying all the context in your head**.
+If you want the blunt version, RemoteLab is an AI IDE workbench for future super-individuals: people who can use AI so well that their personal leverage compounds far beyond that of a normal individual.
 
-RemoteLab is for that shift. It helps one owner:
+The goal is simple: find the most effective interaction shape between humans and increasingly autonomous agents, then turn that interaction shape into a product that materially increases real-world productivity.
 
-- start and steer AI work on a real machine from a phone
-- come back hours later and recover context quickly
-- see which thread needs a decision instead of rereading raw logs
-- turn a proven workflow into an `App` that can be reused or shared
+### Core judgments
 
-If you want the sharper phrase, RemoteLab is an orchestration workbench for the AI-super-individual era.
+- Task scope keeps expanding: from minutes, to hours, to days, and eventually even week-scale work.
+- Concurrency becomes default: to fully use AI, people will run many agents in parallel.
+- Human memory becomes a bottleneck: when a task finishes hours later, the human needs fast context recovery, not raw logs.
+- Project orchestration becomes personal infrastructure: people need help managing priority, blockers, and follow-ups across many concurrent threads.
+- Super-individuals will want distribution: once a workflow works, they will want to package it and let other people use it too.
 
-### What RemoteLab is — and what it is not
+### What RemoteLab is
 
-**RemoteLab is:**
+- an AI workbench that sits above strong executors running on a real machine
+- a project and orchestration layer for concurrent agent work
+- an external memory / context-recovery system for long-running sessions
+- a packaging and distribution layer for agentic-native apps
+- an endpoint-flexible web product rather than a phone-only or desktop-only experience
 
-- a control plane for AI workers running on your own Mac or Linux machine
-- an owner-first system for durable sessions, long-running work, and context recovery
-- a workflow packaging layer that turns repeatable agent behavior into reusable `Apps`
-- a thin mobile surface for decisions, approvals, quick inputs, and status
-
-**RemoteLab is not:**
+### What RemoteLab is not
 
 - a terminal emulator
-- a mobile IDE
+- a traditional editor-first IDE
 - a generic multi-user chat SaaS
-- a replacement for the strongest local executors like `codex` or `claude`
+- a closed all-in-one executor stack trying to out-execute `codex` or `claude`
+
+### Two core product layers
+
+1. **Orchestration above single-task executors.** RemoteLab helps the user manage the full portfolio of ongoing work above tools like `Codex` or `Claude Code`: more concurrency, clearer progress, faster context recovery, better attention allocation, and better final quality.
+2. **Agentic-native app building and distribution.** RemoteLab gives super-individuals a low-friction way to turn their own SOPs into distributable agentic-native workflows — whether the surface is a built-in web UI, an external bot, or another frontend.
 
 ### Product grammar
 
@@ -60,20 +65,20 @@ The architectural assumptions behind that model:
 - the browser is a control surface, not the system of record
 - runtime processes are disposable; durable state lives on disk
 - the product is single-owner first, with visitor access scoped through `Apps`
-- the frontend stays framework-light and mobile-friendly
+- the frontend stays framework-light and endpoint-flexible
 
-### What feels different
+### Why this boundary matters
 
 RemoteLab is opinionated in a few ways:
 
-- **Orchestrate, do not mirror the desktop.** The phone is for steering work, not pretending to be a tiny laptop.
+- **Do not rebuild the executor layer.** RemoteLab should not spend most of its energy optimizing single-task agent internals.
 - **Recover context, do not dump logs.** Durable sessions matter more than raw terminal continuity.
 - **Package workflows, do not just share prompts.** `Apps` are reusable operating shapes, not just copy-pasted text.
-- **Plug into strong executors, do not rebuild them.** RemoteLab coordinates tools like `codex` and `claude`; it does not try to replace them.
+- **Integrate the strongest tools, keep them replaceable.** The point is a stable abstraction layer so better executors can be adopted quickly as the ecosystem evolves.
 
 ### What you can do
 
-- start a session from your phone while the agent works on your real machine
+- start a session from phone or desktop while the agent works on your real machine
 - keep durable history even if the browser disconnects
 - recover long-running work after control-plane restarts
 - let the agent auto-title and auto-group sessions in the sidebar
@@ -85,9 +90,10 @@ RemoteLab is opinionated in a few ways:
 ### Provider note
 
 - RemoteLab treats `Codex` (`codex`) as the default built-in tool and shows it first in the picker.
-- The product boundary is deliberate: RemoteLab aims to integrate the strongest executors available locally, not re-implement them behind a heavier UI.
+- That is not because executor choice is the product. The opposite is true: RemoteLab should stay adapter-first and integrate the strongest executors available locally.
 - API-key / local-CLI style integrations are usually a cleaner fit for a self-hosted control plane than consumer-login-based remote wrappers.
 - `Claude Code` still works in RemoteLab, and any other compatible local tool can fit as long as its auth and terms work for your setup.
+- Over time, the goal is portability across executors, not loyalty to one closed runtime.
 - In practice, the main risk is usually the underlying provider auth / terms, not the binary name by itself. Make your own call based on the provider and account type behind that tool.
 
 ### Get set up in 5 minutes — hand it to an AI
@@ -104,12 +110,12 @@ The best pattern is one early handoff: the agent asks for everything it needs in
 - At least one AI tool installed (`codex`, `claude`, `cline`, or a compatible local tool)
 - **Network** (pick one):
   - **Cloudflare Tunnel**: a domain pointed at Cloudflare ([free account](https://cloudflare.com), domain ~$1–12/yr from Namecheap or Porkbun)
-  - **Tailscale**: [free for personal use](https://tailscale.com) — install on both phone and dev machine, join the same tailnet, no domain needed
+  - **Tailscale**: [free for personal use](https://tailscale.com) — install on the host machine and any client device you want to use, join the same tailnet, no domain needed
 
 **Copy this prompt into Codex or another coding agent:**
 
 ```text
-I want to set up RemoteLab on this machine so I can control AI coding tools from my phone.
+I want to set up RemoteLab on this machine so I can control AI workers from any device and keep long-running AI work organized.
 
 Network mode: [cloudflare | tailscale]
 
@@ -118,7 +124,7 @@ My domain: [YOUR_DOMAIN]
 Subdomain I want to use: [SUBDOMAIN]
 
 # For Tailscale mode:
-(No extra config needed — both phone and dev machine are on the same tailnet.)
+(No extra config needed — the host machine and the client devices I want to use are on the same tailnet.)
 
 Please follow the full setup guide at docs/setup.md in this repository.
 Keep the workflow inside this chat.
@@ -132,7 +138,7 @@ If you want the full setup contract and the human-only checkpoints, use `docs/se
 
 ### What you'll have when done
 
-Open your RemoteLab URL on your phone:
+Open your RemoteLab URL on the device you want to use:
 - **Cloudflare**: `https://[subdomain].[domain]/?token=YOUR_TOKEN`
 - **Tailscale**: `http://[hostname].[tailnet].ts.net:7690/?token=YOUR_TOKEN`
 
@@ -147,7 +153,7 @@ Open your RemoteLab URL on your phone:
 
 ### Daily usage
 
-Once set up, the service can auto-start on boot (macOS LaunchAgent / Linux systemd). Open the URL on your phone and work from there.
+Once set up, the service can auto-start on boot (macOS LaunchAgent / Linux systemd). Open the URL from phone or desktop and work from there.
 
 ```bash
 remotelab start
@@ -177,7 +183,7 @@ RemoteLab’s shipped architecture is now centered on a stable chat control plan
 | `chat-server.mjs` | `7690` | Primary chat/control plane for production use |
 
 ```
-Phone Browser                          Phone Browser
+Browser / client surface               Browser / client surface
    │                                      │
    ▼                                      ▼
 Cloudflare Tunnel                    Tailscale (VPN)

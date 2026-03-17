@@ -9,9 +9,9 @@
 
 ## What Is RemoteLab
 
-A web app that lets users control AI coding tools (Claude Code, Codex) from a phone browser. The user is on mobile, the AI agent runs on their macOS/Linux machine.
+A web app that gives super-individuals an AI workbench for orchestrating AI work across phone and desktop. Strong executors run on the owner’s macOS/Linux machine; the human manages goals, projects, and decisions from whichever endpoint is most convenient.
 
-**Not** a terminal emulator, IDE, or chatbot. It's a **control console for AI workers** — the user gives intent, the AI executes.
+**Not** a terminal emulator, a traditional editor-first IDE, or a chatbot. It's an **AI workbench / control console for human-AI collaboration** — the user sets direction, the executors do the work, and RemoteLab keeps orchestration and context coherent.
 
 - Single owner, not multi-user
 - Node.js, no external frameworks (only `ws` for WebSocket)
@@ -33,7 +33,7 @@ For setup, deployment, integration, and feature-activation docs, use a model-fir
 ## Architecture
 
 ```
-Phone Browser ──HTTPS──→ Cloudflare Tunnel ──→ chat-server.mjs (:7690)
+Browser / app surface ──HTTPS──→ Cloudflare Tunnel ──→ chat-server.mjs (:7690)
                                                     │
                                       HTTP control plane + WS hints
                                                     │

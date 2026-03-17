@@ -1,7 +1,7 @@
 {
   "name": "@ninglo/remotelab",
   "version": "0.3.1",
-  "description": "Mobile-first orchestration workbench for AI workers running on your own Mac or Linux machine",
+  "description": "AI workbench for super-individuals: orchestrate agents and distribute agentic-native apps",
   "type": "module",
   "license": "MIT",
   "author": "Ninglo",

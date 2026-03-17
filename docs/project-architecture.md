@@ -40,20 +40,22 @@ When the architecture changes materially, keep these docs aligned as part of the
 
 ## 1. What RemoteLab is
 
-RemoteLab is a **mobile-first control console for AI workers running on a real computer**.
+RemoteLab is an **endpoint-flexible AI workbench for super-individuals coordinating AI work on a real computer**.
 
 The core product shape is:
 
-- the user talks to an agent from a phone browser
-- the agent runs on the owner’s macOS/Linux machine
+- the user steers work from phone or desktop, whichever is most convenient
+- strong executors run on the owner’s macOS/Linux machine
+- RemoteLab sits above them as an orchestration, context-recovery, and workflow-packaging layer
 - the agent is treated more like a person operating a full computer than a sandboxed in-browser chatbot
 - the browser is mainly a control surface and a status surface, not the system of record
 
 RemoteLab is explicitly **not** trying to be:
 
 - a terminal emulator
-- a mobile IDE
+- a traditional editor-first IDE
 - a generic multi-user SaaS chat app
+- a closed all-in-one executor stack
 
 Important product assumptions that shape the code:
 
@@ -62,7 +64,7 @@ Important product assumptions that shape the code:
 - **HTTP is the canonical state path**
 - **WebSocket is only an invalidation hint**
 - **filesystem-first persistence** is preferred over a database until proven necessary
-- **frontend stays minimal** and agent-driven workflows are preferred over heavy UI orchestration
+- **frontend stays minimal and endpoint-flexible** and agent-driven workflows are preferred over heavy UI orchestration
 
 ---
 
@@ -81,7 +83,7 @@ Then branch by the change you need:
 
 - runtime / message execution → `chat/session-manager.mjs`, `chat/runs.mjs`, `chat/runner-sidecar.mjs`, `chat/adapters/*.mjs`
 - HTTP / API / role checks → `chat/router.mjs`, `lib/auth.mjs`, `chat/middleware.mjs`
-- UI / mobile behavior → `templates/chat.html`, `static/chat/`, `static/sw.js`
+- UI / cross-endpoint behavior → `templates/chat.html`, `static/chat/`, `static/sw.js`
 - Apps / visitor flow → `chat/apps.mjs`, `chat/router.mjs`, `chat/session-manager.mjs`
 - session labeling / rename / grouping → `chat/summarizer.mjs`, `chat/session-naming.mjs`
 - memory activation / startup prompt → `chat/system-prompt.mjs`, `notes/current/memory-activation-architecture.md`
@@ -109,7 +111,7 @@ Optional side subsystem:
 ### 3.2 End-to-end shape
 
 ```text
-Phone Browser
+Browser / client surface
    │
    ▼
 Cloudflare Tunnel
@@ -198,7 +200,7 @@ This layer should stay comparatively thin and avoid absorbing product policy.
 
 ### 4.4 Frontend layer
 
-Responsible for rendering HTTP-derived state in a mobile-friendly UI.
+Responsible for rendering HTTP-derived state in an endpoint-flexible UI that works well on phone and desktop.
 
 - `templates/chat.html`
 - `templates/share.html`
@@ -924,7 +926,7 @@ Use these notes when needed:
 
 If you only remember one mental model, remember this:
 
-> RemoteLab is a **filesystem-backed HTTP control plane for long-lived AI work sessions**, with **detached CLI runners**, **normalized append-only session history**, **thin WebSocket invalidation**, and a **minimal mobile UI** that always converges back to durable state.
+> RemoteLab is a **filesystem-backed HTTP control plane for long-lived AI work sessions**, with **detached CLI runners**, **normalized append-only session history**, **thin WebSocket invalidation**, and a **minimal endpoint-flexible web UI** that always converges back to durable state.
 
 Everything else in the repo is either:
 

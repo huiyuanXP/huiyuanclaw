@@ -2,48 +2,53 @@
 
 [English](README.md) | 中文
 
-**面向 AI worker 的移动端 orchestration workbench / control plane。**
+**面向超级个体的 AI 工作台。**
 
-让你的手机成为指挥台，让 AI 继续在你自己的 Mac 或 Linux 机器上干活。
+RemoteLab 的目标，是为那些已经熟练使用 AI、以及未来会越来越多出现的 AI-native 超级个体，提供最高效率的人机协作形态。
 
-RemoteLab 面向这样一种新协作模式：**人不再亲自操作每一步，而是发目标、看进度、做判断，由 AI 在真实电脑上持续执行。** 你可以用手机浏览器去控制 `codex`、`claude`、`cline` 以及兼容的本地工具，而不是把手机硬做成一个缩水版工作站。
+它并不执着于用户到底从手机、平板还是桌面端进入。端只是入口，真正重要的是：让人用最低认知负担去指挥 AI 工作，让 `codex`、`claude` 和兼容的本地工具在真实机器上把活做掉。
 
 ![Chat UI](docs/demo.gif)
 
-> 当前基线：`v0.3` —— owner-first 的 session 编排、detached runners、落盘的持久历史、基于 App 的 workflow packaging，以及无构建步骤的移动端 UI。
+> 当前基线：`v0.3` —— owner-first 的 session 编排、落盘的持久历史、可替换的 executor adapter、基于 App 的 workflow packaging，以及同时兼容手机和桌面的无构建 Web UI。
 
 ---
 
 ## 给人类看的部分
 
-### 为什么会有 RemoteLab
+### 愿景
 
-AI 发展到这个阶段，真正的瓶颈已经不只是“手敲命令够不够快”，而是：**如何同时编排多个长任务线程，却又不把所有上下文都塞在自己脑子里。**
+如果说得更直接一点，RemoteLab 是面向未来超级个体的 AI IDE 工作台：服务于那群能熟练运用 AI，把个人杠杆放大到普通人数倍乃至数十倍的人。
 
-RemoteLab 就是为这个问题来的。它帮助一个 owner：
+它的目标很简单：找到人与越来越自主的 Agent 之间最高效的交互形式，再把这种交互形式产品化，真正提升人类运用 AI 的生产力。
 
-- 用手机发起并指挥运行在真实机器上的 AI 工作
-- 几小时甚至几天后回来时，快速恢复上下文
-- 先看到哪里需要自己决策，而不是被迫重读一大堆 execution log
-- 把已经验证过的 workflow 沉淀成可复用、可分享的 `App`
+### 基础判断
 
-如果一定要给它一个更尖锐的定义：RemoteLab 是 AI 超级个体时代的 orchestration workbench。
+- 单轮任务的 scope 会持续放大：从分钟级，到小时级，再到天级，甚至周级。
+- 并发会成为默认状态：想最大化 AI 生产效率，人就会同时跑越来越多 Agent。
+- 人类记忆会成为瓶颈：几个小时后任务回来时，人需要的是上下文快速恢复，而不是原始日志堆砌。
+- 项目编排会成为个人基础设施：并发线程一多，就必须有人机协同地处理优先级、阻塞点和跟进节奏。
+- 超级个体一定会有分发需求：当某个 workflow 被验证有效后，他们会希望把它封装起来，让更多人也能直接使用。
 
-### RemoteLab 是什么，不是什么
+### RemoteLab 是什么
 
-**RemoteLab 是：**
+- 一个架在强执行器之上的 AI 工作台
+- 一个面向并发 Agent 工作的项目管理与编排层
+- 一个帮助人类在长任务中恢复上下文的外置记忆系统
+- 一个面向 Agentic Native 应用的工作流封装与分发层
+- 一个不锁定具体端形态、而是让手机和桌面都能顺手工作的 Web 产品
 
-- 一个运行在你自己机器之上的 AI worker control plane
-- 一个以单 owner 为中心、强调 durable sessions 与 context recovery 的系统
-- 一个把可重复 agent 协作方式沉淀为 `Apps` 的 workflow packaging 层
-- 一个面向决策、审批、快速输入与状态查看的轻量移动端界面
-
-**RemoteLab 不是：**
+### RemoteLab 不是什么
 
 - 终端模拟器
-- 移动 IDE
+- 传统的 editor-first IDE
 - 通用多用户聊天 SaaS
-- 再造一套 `codex` / `claude` 这类本地强执行器的替代品
+- 一套试图在单任务执行层面正面超越 `codex` / `claude` 的闭环执行栈
+
+### 两条核心产品线
+
+1. **单任务执行器之上的任务编排与项目管理。** RemoteLab 帮用户管理自己正在推进的全量工作：开更多并发、看更清进度、更快恢复上下文、更合理分配注意力，并尽可能提高最终质量与效率。
+2. **Agentic Native 应用的低成本搭建与分发。** RemoteLab 让超级个体可以把自己的 SOP 沉淀成可分发的 agentic-native workflow，无论最终承载它的是内置 Web UI、外部 Bot，还是其他前端入口。
 
 ### 产品语法
 
@@ -60,20 +65,20 @@ RemoteLab 就是为这个问题来的。它帮助一个 owner：
 - 浏览器是控制面，不是系统事实来源
 - 运行时进程可以丢，持久状态必须落在磁盘上
 - 产品默认单 owner，visitor 访问通过 `Apps` 进行 scope 控制
-- 前端保持轻量、无框架、移动端友好
+- 前端保持轻量、无框架，并兼容不同端的使用方式
 
-### 它为什么手感不一样
+### 为什么这个边界重要
 
 RemoteLab 在几个点上是刻意有立场的：
 
-- **强调编排，不镜像桌面。** 手机是用来指挥工作的，不是为了假装自己是一台小电脑。
+- **不重造执行器这一层。** RemoteLab 不应该把主要精力花在优化单任务 Agent 内部实现细节上。
 - **强调上下文恢复，不堆原始日志。** 比起终端连续性，durable session 更重要。
 - **强调 workflow packaging，不只是分享 prompt。** `App` 不是一段复制粘贴文本，而是一种可复用的工作形态。
-- **强调接入强执行器，而不是重造执行器。** RemoteLab 负责编排 `codex`、`claude` 这类工具，而不是试图替代它们。
+- **接入最强工具，并保持可替换。** 它更像一层稳定抽象，让更强执行器出现时可以被快速接入，而不是把自己做成重闭环 runtime。
 
 ### 你现在可以做什么
 
-- 用手机发消息，让 agent 在真实机器上执行
+- 用手机或桌面端发消息，让 agent 在真实机器上执行
 - 浏览器断开后依然保留持久化历史
 - 在控制面重启后恢复长时间运行的工作
 - 让 agent 自动生成会话标题和侧边栏分组
@@ -85,9 +90,10 @@ RemoteLab 在几个点上是刻意有立场的：
 ### Provider 说明
 
 - RemoteLab 现在把 `Codex`（`codex`）作为默认内置工具，并放到选择器最前面。
-- 这背后是明确的产品边界：RemoteLab 要做的是接入本地最强执行器，而不是再套一层更重的 UI 去重写它们。
+- 这并不意味着“执行器选择本身就是产品”。恰恰相反：RemoteLab 应该保持 adapter-first，把当前最强的本地执行器接进来。
 - 对这种自托管控制面来说，API key / 本地 CLI 风格的集成通常比基于消费级登录态的远程封装更稳妥。
 - `Claude Code` 依然可以在 RemoteLab 里使用；其他兼容的本地工具也可以接入，前提是它们的认证方式和服务条款适合你的实际场景。
+- 长期目标是 executor portability，而不是绑定某一个闭环 runtime。
 - 实际风险通常来自底层提供商的认证方式和服务条款，而不只是某个 CLI 的名字本身。是否接入、是否继续用，请你自行判断。
 
 ### 5 分钟配置完成——直接交给 AI
@@ -104,12 +110,12 @@ RemoteLab 在几个点上是刻意有立场的：
 - 至少安装了一个 AI 工具（`codex`、`claude`、`cline` 或兼容的本地工具）
 - **网络**（二选一）：
   - **Cloudflare Tunnel**：域名已接入 Cloudflare（[免费账号](https://cloudflare.com)，域名约 ¥10–90/年，可从 Namecheap 或 Porkbun 购买）
-  - **Tailscale**：[个人使用免费](https://tailscale.com)——手机和开发机都安装 Tailscale 并加入同一个 tailnet，无需域名
+  - **Tailscale**：[个人使用免费](https://tailscale.com)——宿主机和你想使用的各个客户端设备都安装 Tailscale 并加入同一个 tailnet，无需域名
 
 **把这段 prompt 粘贴到 Codex 或其他 coding agent：**
 
 ```text
-我想在这台机器上配置 RemoteLab，这样我就能用手机远程控制 AI 编程工具了。
+我想在这台机器上配置 RemoteLab，这样我就能从不同设备控制 AI worker，并把长时间运行的 AI 工作组织起来。
 
 网络模式：[cloudflare | tailscale]
 
@@ -118,7 +124,7 @@ RemoteLab 在几个点上是刻意有立场的：
 我想用的子域名：[SUBDOMAIN]
 
 # Tailscale 模式：
-（无需额外配置——手机和开发机都已安装 Tailscale 并在同一个 tailnet 中。）
+（无需额外配置——宿主机和我想使用的客户端设备都已安装 Tailscale，并在同一个 tailnet 中。）
 
 请按照本仓库 docs/setup.md 中的完整安装指南一步步来。
 把 docs/setup.md 当作配置契约，而不是让我手工抄步骤。
@@ -133,7 +139,7 @@ RemoteLab 在几个点上是刻意有立场的：
 
 ### 配置完成后你会得到什么
 
-在手机上打开你的 RemoteLab 地址：
+在你想使用的设备上打开 RemoteLab 地址：
 - **Cloudflare**：`https://[subdomain].[domain]/?token=YOUR_TOKEN`
 - **Tailscale**：`http://[hostname].[tailnet].ts.net:7690/?token=YOUR_TOKEN`
 
@@ -148,7 +154,7 @@ RemoteLab 在几个点上是刻意有立场的：
 
 ### 日常使用
 
-配置完成后，服务可以在开机时自动启动（macOS LaunchAgent / Linux systemd）。你平时只需要在手机上打开网址。
+配置完成后，服务可以在开机时自动启动（macOS LaunchAgent / Linux systemd）。你平时只需要在手机或桌面端打开网址。
 
 ```bash
 remotelab start
@@ -178,7 +184,7 @@ RemoteLab 当前的落地架构已经稳定在：一个主 chat 控制面、deta
 | `chat-server.mjs` | `7690` | 生产可用的主 chat / 控制面 |
 
 ```
-手机浏览器                             手机浏览器
+浏览器 / 客户端入口                    浏览器 / 客户端入口
    │                                      │
    ▼                                      ▼
 Cloudflare Tunnel                    Tailscale (VPN)
