@@ -141,6 +141,7 @@ function persistSessionIds(sessionId, claudeSessionId, codexThreadId) {
 
 const DEFAULT_LABELS = [
   { id: 'started', name: 'Started', color: '#3b82f6' },
+  { id: 'asked-for-restart', name: 'Asked for Restart', color: '#eab308' },
   { id: 'pending-review', name: 'Pending Review', color: '#f59e0b' },
   { id: 'planned', name: 'Planned', color: '#8b5cf6' },
   { id: 'done', name: 'Done', color: '#10b981' },
@@ -219,6 +220,41 @@ export function setSessionLabel(sessionId, labelId) {
   broadcast(sessionId, { type: 'session', session: updated });
   broadcastGlobal({ type: 'session', session: updated });
   return updated;
+}
+
+// ---- Boot-time label recovery ----
+// After a restart, convert all "asked-for-restart" labels back to "started"
+{
+  const metas = loadSessionsMeta();
+  let changed = false;
+  for (const m of metas) {
+    if (m.label === 'asked-for-restart') {
+      m.label = 'started';
+      changed = true;
+    }
+  }
+  if (changed) {
+    saveSessionsMeta(metas);
+    console.log('[session-mgr] Boot: recovered asked-for-restart sessions → started');
+  }
+}
+
+/**
+ * Restart the chat server. Sets the triggering session's label to "asked-for-restart",
+ * then exits. systemd will restart the process automatically.
+ */
+export function restartServer(triggerSessionId) {
+  if (triggerSessionId) {
+    const metas = loadSessionsMeta();
+    const idx = metas.findIndex(m => m.id === triggerSessionId);
+    if (idx !== -1) {
+      metas[idx].label = 'asked-for-restart';
+      saveSessionsMeta(metas);
+    }
+  }
+  console.log(`[session-mgr] Server restart requested by session ${triggerSessionId || 'unknown'}`);
+  // Delay slightly to allow the HTTP response to be sent
+  setTimeout(() => process.exit(0), 500);
 }
 
 // ---- Public API ----

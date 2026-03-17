@@ -16,6 +16,7 @@
 
 import { readFileSync } from 'fs';
 import { createInterface } from 'readline';
+import { execSync } from 'child_process';
 import { homedir } from 'os';
 import { join } from 'path';
 import http from 'http';
@@ -308,6 +309,17 @@ const TOOLS = [
     description: 'List all available session labels with their names and colors.',
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
+  {
+    name: 'restart_server',
+    description: 'Restart all RemoteLab services (chat-server, proxy, tunnel). The triggering session is labeled "asked-for-restart" (yellow) during the restart, then restored to "started" after boot. Includes daemon-reload, service restart, tunnel health check, and status verification. If session_id is omitted, the current session (self) is used as the trigger.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: { type: 'string', description: 'The session ID that triggered the restart. If omitted, uses the current session (self).' },
+      },
+      required: [],
+    },
+  },
 ];
 
 // ---- Tool execution ----
@@ -426,6 +438,75 @@ async function executeTool(name, args) {
       const res = await apiRequest('GET', '/api/session-labels');
       if (res.status !== 200) return { isError: true, content: [{ type: 'text', text: `Error ${res.status}: ${JSON.stringify(res.data)}` }] };
       return { content: [{ type: 'text', text: JSON.stringify(res.data, null, 2) }] };
+    }
+
+    case 'restart_server': {
+      const triggerId = args.session_id || MY_SESSION_ID;
+      const XDG = `XDG_RUNTIME_DIR=/run/user/${process.getuid()}`;
+      const log = [];
+
+      // Step 1: Label the triggering session (while chat-server is still alive)
+      if (triggerId) {
+        try {
+          await apiRequest('PATCH', `/api/sessions/${triggerId}/label`, { label: 'asked-for-restart' });
+          log.push(`✓ Labeled session ${triggerId.slice(0, 8)} as "asked-for-restart"`);
+        } catch (e) {
+          log.push(`⚠ Could not label session: ${e.message}`);
+        }
+      }
+
+      // Step 2: daemon-reload + restart chat & proxy
+      try {
+        execSync(`${XDG} systemctl --user daemon-reload`, { timeout: 10000 });
+        log.push('✓ daemon-reload complete');
+      } catch (e) {
+        log.push(`⚠ daemon-reload failed: ${e.message}`);
+      }
+
+      try {
+        execSync(`${XDG} systemctl --user restart remotelab-chat.service remotelab-proxy.service`, { timeout: 30000 });
+        log.push('✓ Restarted remotelab-chat + remotelab-proxy');
+      } catch (e) {
+        log.push(`⚠ Restart failed: ${e.message}`);
+      }
+
+      // Step 3: Wait for chat-server to come back (poll up to 30s)
+      let serverUp = false;
+      for (let i = 0; i < 15; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+          const health = await apiRequest('GET', '/api/session-labels');
+          if (health.status === 200) { serverUp = true; break; }
+        } catch {}
+      }
+      log.push(serverUp ? '✓ Chat-server is back online' : '✗ Chat-server did not recover within 30s');
+
+      // Step 4: Check tunnel, start if needed
+      try {
+        const tunnelStatus = execSync(`${XDG} systemctl --user is-active remotelab-tunnel.service`, { timeout: 5000 }).toString().trim();
+        if (tunnelStatus === 'active') {
+          log.push('✓ Cloudflare tunnel is active');
+        } else {
+          execSync(`${XDG} systemctl --user start remotelab-tunnel.service`, { timeout: 10000 });
+          log.push('✓ Cloudflare tunnel was down, restarted');
+        }
+      } catch {
+        try {
+          execSync(`${XDG} systemctl --user start remotelab-tunnel.service`, { timeout: 10000 });
+          log.push('✓ Cloudflare tunnel was down, restarted');
+        } catch (e2) {
+          log.push(`⚠ Cloudflare tunnel failed to start: ${e2.message}`);
+        }
+      }
+
+      // Step 5: Final status
+      try {
+        const status = execSync(`${XDG} systemctl --user is-active remotelab-chat.service remotelab-proxy.service remotelab-tunnel.service`, { timeout: 5000 }).toString().trim();
+        const lines = status.split('\n');
+        log.push(`\nService status:\n  chat:   ${lines[0] || '?'}\n  proxy:  ${lines[1] || '?'}\n  tunnel: ${lines[2] || '?'}`);
+      } catch {}
+
+      return { content: [{ type: 'text', text: log.join('\n') }] };
     }
 
     default:
