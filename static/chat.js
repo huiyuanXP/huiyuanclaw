@@ -1795,27 +1795,35 @@
   }
 
   // ---- Task panel (schedules in sidebar tab) ----
-  let taskExpandedSet = new Set();
 
   function formatCron(cron) {
-    if (!cron) return "manual";
+    if (!cron) return "Manual only";
     const parts = cron.split(/\s+/);
     if (parts.length < 5) return cron;
     const [min, hour, dom, mon, dow] = parts;
     const time = `${hour.padStart(2, "0")}:${min.padStart(2, "0")}`;
-    if (dom === "*" && mon === "*" && dow === "*") return `${time} daily`;
-    if (dom === "*" && mon === "*" && dow !== "*") return `${time} weekly`;
+    if (dom === "*" && mon === "*" && dow === "*") return `Daily at ${time}`;
+    if (dom === "*" && mon === "*" && dow !== "*") {
+      const days = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+      const dayLabel = /^\d$/.test(dow) ? (days[+dow] || dow) : dow;
+      return `${dayLabel} at ${time}`;
+    }
     return `${time} ${cron}`;
+  }
+
+  function formatRunAt(runAt) {
+    if (!runAt) return null;
+    const diff = new Date(runAt).getTime() - Date.now();
+    if (diff <= 0) return "past due";
+    if (diff < 3_600_000) return `in ${Math.ceil(diff / 60_000)} min`;
+    if (diff < 86_400_000) return `in ${Math.floor(diff / 3_600_000)}h ${Math.ceil((diff % 3_600_000) / 60_000)}m`;
+    return new Date(runAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
   }
 
   async function loadTaskSection() {
     try {
-      const [schedRes, runsRes] = await Promise.all([
-        fetch("/api/schedules"),
-        fetch("/api/workflow-runs"),
-      ]);
+      const schedRes = await fetch("/api/schedules");
       const { schedules = [] } = await schedRes.json();
-      const { runs = [] } = await runsRes.json();
 
       taskPanel.innerHTML = "";
 
@@ -1836,22 +1844,22 @@
 
       for (const sched of schedules) {
         let enabled = sched.enabled !== false;
-        const cronLabel = formatCron(sched.cron);
-        const isExpanded = taskExpandedSet.has(sched.id);
+
+        // Build summary line: cron or runAt or "Manual only"
+        let summaryText = formatCron(sched.cron);
+        const runAtLabel = formatRunAt(sched.runAt);
+        if (runAtLabel) summaryText = runAtLabel;
 
         const item = document.createElement("div");
         item.className = "task-item" + (enabled ? "" : " disabled");
 
-        // Header row
+        const disposableBadge = sched.disposable ? ' <span title="Disposable">\u{1F5D1}\uFE0F</span>' : "";
+
+        // Header row: name + badge, toggle, run
         const headerRow = document.createElement("div");
         headerRow.className = "task-item-header";
-
-        const disposableBadge = sched.disposable ? ' <span class="badge-disposable" title="Disposable">\u{1F5D1}\uFE0F</span>' : "";
-
         headerRow.innerHTML = `
-          <span class="task-item-chevron ${isExpanded ? "open" : ""}">&#9654;</span>
           <span class="task-item-name">${escapeHtml(sched.id)}${disposableBadge}</span>
-          <span class="task-item-cron">${escapeHtml(cronLabel)}</span>
           <label class="task-item-toggle" title="${enabled ? "Enabled" : "Disabled"}">
             <input type="checkbox" ${enabled ? "checked" : ""}>
             <span class="toggle-track"></span>
@@ -1860,15 +1868,18 @@
           <button class="task-item-trigger">Run</button>
         `;
 
-        const itemChevron = headerRow.querySelector(".task-item-chevron");
+        // Summary line below header
+        const summaryRow = document.createElement("div");
+        summaryRow.className = "task-item-summary";
+        summaryRow.textContent = summaryText;
+
         const triggerBtn = headerRow.querySelector(".task-item-trigger");
         const toggleInput = headerRow.querySelector(".task-item-toggle input");
 
-        // Toggle enable/disable
+        // Toggle enable/disable (stop propagation so card click doesn't fire)
         toggleInput.addEventListener("click", (e) => e.stopPropagation());
         toggleInput.addEventListener("change", async () => {
           const newEnabled = toggleInput.checked;
-          // Optimistic update
           enabled = newEnabled;
           item.classList.toggle("disabled", !newEnabled);
           headerRow.querySelector(".task-item-toggle").title = newEnabled ? "Enabled" : "Disabled";
@@ -1880,7 +1891,6 @@
             });
             if (!res.ok) throw new Error("PATCH failed");
           } catch (err) {
-            // Rollback
             console.error("Failed to toggle schedule:", err);
             enabled = !newEnabled;
             toggleInput.checked = !newEnabled;
@@ -1901,75 +1911,11 @@
           setTimeout(() => { triggerBtn.textContent = "Run"; triggerBtn.disabled = false; }, 2000);
         });
 
-        // Metadata row (runCount, maxRuns, runAt)
-        const runCountDisplay = sched.maxRuns != null
-          ? `Runs: ${sched.runCount || 0}/${sched.maxRuns}`
-          : `Runs: ${sched.runCount || 0}/\u221E`;
-        let metaHtml = `<span>${escapeHtml(runCountDisplay)}</span>`;
-        if (sched.runAt) {
-          const runAtDate = new Date(sched.runAt);
-          const diff = runAtDate.getTime() - Date.now();
-          let runAtLabel;
-          if (diff > 0 && diff < 3_600_000) {
-            runAtLabel = `in ${Math.ceil(diff / 60_000)}m`;
-          } else if (diff > 0 && diff < 86_400_000) {
-            runAtLabel = `in ${Math.floor(diff / 3_600_000)}h ${Math.ceil((diff % 3_600_000) / 60_000)}m`;
-          } else {
-            runAtLabel = runAtDate.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-          }
-          metaHtml += ` · <span>Scheduled: ${escapeHtml(runAtLabel)}</span>`;
-        }
-        const metaRow = document.createElement("div");
-        metaRow.className = "task-item-meta";
-        metaRow.innerHTML = metaHtml;
-
-        // Runs container
-        const runsContainer = document.createElement("div");
-        runsContainer.className = "task-item-runs" + (isExpanded ? " open" : "");
-
-        // Workflow detail container (lazy-loaded)
-        const detailContainer = document.createElement("div");
-        detailContainer.className = "task-item-detail";
-
-        // Filter runs for this schedule
-        const schedRuns = runs.filter(r => !sched.workflow || r.workflow === sched.workflow);
-
-        if (isExpanded) {
-          renderTaskRuns(schedRuns, runsContainer);
-        }
-
-        // Click header: toggle expand (chevron area) or open detail view
-        headerRow.addEventListener("click", (e) => {
-          const rect = headerRow.getBoundingClientRect();
-          const clickX = e.clientX - rect.left;
-          if (clickX < 24) {
-            const nowOpen = !runsContainer.classList.contains("open");
-            itemChevron.classList.toggle("open", nowOpen);
-            runsContainer.classList.toggle("open", nowOpen);
-            detailContainer.classList.toggle("open", nowOpen);
-            if (nowOpen) {
-              taskExpandedSet.add(sched.id);
-              if (!runsContainer.dataset.loaded) {
-                runsContainer.dataset.loaded = "1";
-                renderTaskRuns(schedRuns, runsContainer);
-              }
-              // Lazy-load workflow detail
-              if (!detailContainer.dataset.loaded && sched.workflow) {
-                detailContainer.dataset.loaded = "1";
-                loadWorkflowDetail(sched.workflow, detailContainer);
-              }
-            } else {
-              taskExpandedSet.delete(sched.id);
-            }
-          } else {
-            openWorkflowView(sched.id);
-          }
-        });
+        // Click card → open detail panel
+        item.addEventListener("click", () => openTaskDetail(sched.id));
 
         item.appendChild(headerRow);
-        item.appendChild(metaRow);
-        item.appendChild(detailContainer);
-        item.appendChild(runsContainer);
+        item.appendChild(summaryRow);
         taskPanel.appendChild(item);
       }
     } catch (err) {
@@ -1977,82 +1923,223 @@
     }
   }
 
-  function renderTaskRuns(runs, container) {
-    container.innerHTML = "";
-    if (runs.length === 0) {
-      container.innerHTML = '<div style="padding:6px 8px;font-size:11px;color:var(--text-muted)">No runs yet</div>';
-      return;
-    }
-    for (const run of runs) {
-      const entry = document.createElement("div");
-      entry.className = "task-run-entry";
-      const startedAt = run.startedAt ? relativeTime(new Date(run.startedAt).getTime()) : "—";
-      const status = run.status || "unknown";
-      entry.innerHTML = `
-        <span class="workflow-run-id">${escapeHtml(run.runId.slice(0, 8))}</span>
-        <span class="workflow-run-status ${escapeHtml(status)}">${escapeHtml(status)}</span>
-        <span class="workflow-run-time">${escapeHtml(startedAt)}</span>
+  // ---- Task detail panel (slide-over) ----
+  const taskDetailOverlay = document.getElementById("taskDetailOverlay");
+  const taskDetailPanel = document.getElementById("taskDetailPanel");
+
+  function closeTaskDetail() {
+    taskDetailOverlay.classList.remove("open");
+    taskDetailPanel.innerHTML = "";
+  }
+
+  // Click overlay backdrop to close
+  taskDetailOverlay.addEventListener("click", (e) => {
+    if (e.target === taskDetailOverlay) closeTaskDetail();
+  });
+
+  async function openTaskDetail(scheduleId) {
+    taskDetailOverlay.classList.add("open");
+    taskDetailPanel.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-muted)">Loading…</div>';
+
+    try {
+      const [schedulesRes, runsRes] = await Promise.all([
+        fetch("/api/schedules"),
+        fetch("/api/workflow-runs"),
+      ]);
+      const { schedules = [] } = await schedulesRes.json();
+      const { runs = [] } = await runsRes.json();
+
+      const sched = schedules.find(s => s.id === scheduleId);
+      if (!sched) {
+        taskDetailPanel.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-muted)">Task not found.</div>';
+        return;
+      }
+
+      let enabled = sched.enabled !== false;
+      taskDetailPanel.innerHTML = "";
+
+      // ── Header ──
+      const header = document.createElement("div");
+      header.className = "tdp-header";
+      header.innerHTML = `
+        <span class="tdp-title">${escapeHtml(sched.id)}</span>
+        <button class="tdp-close" title="Close">&times;</button>
       `;
-      container.appendChild(entry);
+      header.querySelector(".tdp-close").addEventListener("click", closeTaskDetail);
+      taskDetailPanel.appendChild(header);
+
+      // ── Body (scrollable) ──
+      const body = document.createElement("div");
+      body.className = "tdp-body";
+
+      // ── Basic Info ──
+      const infoSection = document.createElement("div");
+      const cronLabel = formatCron(sched.cron);
+      const runAtLabel = formatRunAt(sched.runAt);
+      const runCountDisplay = sched.maxRuns != null
+        ? `${sched.runCount || 0} / ${sched.maxRuns}`
+        : `${sched.runCount || 0} / \u221E`;
+
+      infoSection.innerHTML = `
+        <div class="tdp-section-title">Basic Info</div>
+        <div class="tdp-info-grid">
+          <span class="tdp-info-label">Schedule</span>
+          <span class="tdp-info-value">${escapeHtml(cronLabel)}</span>
+          ${runAtLabel ? `<span class="tdp-info-label">Run At</span><span class="tdp-info-value">${escapeHtml(runAtLabel)}</span>` : ""}
+          <span class="tdp-info-label">Disposable</span>
+          <span class="tdp-info-value">${sched.disposable ? "Yes \u{1F5D1}\uFE0F" : "No"}</span>
+          <span class="tdp-info-label">Runs</span>
+          <span class="tdp-info-value">${escapeHtml(runCountDisplay)}</span>
+        </div>
+      `;
+      body.appendChild(infoSection);
+
+      // ── Actions (toggle + run) ──
+      const actionsSection = document.createElement("div");
+      actionsSection.className = "tdp-actions";
+      actionsSection.innerHTML = `
+        <label class="tdp-toggle" title="${enabled ? "Enabled" : "Disabled"}">
+          <input type="checkbox" ${enabled ? "checked" : ""}>
+          <span class="toggle-track"></span>
+          <span class="toggle-thumb"></span>
+        </label>
+        <span class="tdp-toggle-label">${enabled ? "Enabled" : "Disabled"}</span>
+        <button class="tdp-run-btn">Run Now</button>
+      `;
+
+      const panelToggle = actionsSection.querySelector(".tdp-toggle input");
+      const panelToggleLabel = actionsSection.querySelector(".tdp-toggle-label");
+      const panelRunBtn = actionsSection.querySelector(".tdp-run-btn");
+
+      panelToggle.addEventListener("change", async () => {
+        const newEnabled = panelToggle.checked;
+        enabled = newEnabled;
+        panelToggleLabel.textContent = newEnabled ? "Enabled" : "Disabled";
+        try {
+          const res = await fetch("/api/schedules/" + encodeURIComponent(sched.id), {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled: newEnabled }),
+          });
+          if (!res.ok) throw new Error("PATCH failed");
+          // Sync sidebar
+          loadTaskSection();
+        } catch (err) {
+          console.error("Failed to toggle schedule:", err);
+          enabled = !newEnabled;
+          panelToggle.checked = !newEnabled;
+          panelToggleLabel.textContent = !newEnabled ? "Enabled" : "Disabled";
+        }
+      });
+
+      panelRunBtn.addEventListener("click", async () => {
+        panelRunBtn.disabled = true;
+        panelRunBtn.textContent = "Running…";
+        try {
+          const res = await fetch("/api/schedules/" + encodeURIComponent(sched.id) + "/trigger", { method: "POST" });
+          panelRunBtn.textContent = res.ok ? "Triggered!" : "Error";
+        } catch { panelRunBtn.textContent = "Error"; }
+        setTimeout(() => { panelRunBtn.textContent = "Run Now"; panelRunBtn.disabled = false; }, 2500);
+      });
+
+      body.appendChild(actionsSection);
+
+      // ── Workflow Detail ──
+      if (sched.workflow) {
+        const wfSection = document.createElement("div");
+        wfSection.innerHTML = `<div class="tdp-section-title">Workflow Detail</div>
+          <div style="font-size:11px;color:var(--text-muted)">Loading workflow…</div>`;
+        body.appendChild(wfSection);
+
+        // Async load
+        loadWorkflowIntoPanel(sched.workflow, wfSection);
+      }
+
+      // ── Run History ──
+      const schedRuns = runs.filter(r => !sched.workflow || r.workflow === sched.workflow);
+      const runSection = document.createElement("div");
+      runSection.innerHTML = `<div class="tdp-section-title">Run History</div>`;
+      if (schedRuns.length === 0) {
+        runSection.innerHTML += '<div class="tdp-empty">No runs yet</div>';
+      } else {
+        const runList = document.createElement("div");
+        runList.style.cssText = "display:flex;flex-direction:column;gap:4px";
+        for (const run of schedRuns) {
+          const entry = document.createElement("div");
+          const startedAt = run.startedAt ? relativeTime(new Date(run.startedAt).getTime()) : "—";
+          const status = run.status || "unknown";
+          entry.innerHTML = `
+            <div class="tdp-run-entry">
+              <span class="tdp-run-id">${escapeHtml(run.runId.slice(0, 8))}</span>
+              <span class="tdp-run-status ${escapeHtml(status)}">${escapeHtml(status)}</span>
+              <span class="tdp-run-time">${escapeHtml(startedAt)}</span>
+            </div>
+            <div class="tdp-run-detail"></div>
+          `;
+          const detail = entry.querySelector(".tdp-run-detail");
+          entry.querySelector(".tdp-run-entry").addEventListener("click", () => {
+            const isOpen = detail.classList.contains("open");
+            runList.querySelectorAll(".tdp-run-detail.open").forEach(el => el.classList.remove("open"));
+            if (isOpen) return;
+            detail.classList.add("open");
+            if (!detail.dataset.loaded) {
+              detail.dataset.loaded = "1";
+              buildRunTasksHtml(run, detail);
+            }
+          });
+          runList.appendChild(entry);
+        }
+        runSection.appendChild(runList);
+      }
+      body.appendChild(runSection);
+
+      taskDetailPanel.appendChild(body);
+    } catch (err) {
+      console.error("Failed to open task detail:", err);
+      taskDetailPanel.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-muted)">Failed to load task details.</div>';
     }
   }
 
-  // Lazy-load workflow definition and render step/task tree
-  async function loadWorkflowDetail(workflowName, container) {
-    container.innerHTML = '<div style="font-size:11px;color:var(--text-muted);padding:2px 0">Loading workflow…</div>';
+  async function loadWorkflowIntoPanel(workflowName, container) {
     try {
       const res = await fetch("/api/workflows");
       if (!res.ok) throw new Error("Failed to fetch workflows");
       const { workflows = [] } = await res.json();
       const wf = workflows.find(w => w.id === workflowName || w.name === workflowName);
       if (!wf) {
-        container.innerHTML = '<div style="font-size:11px;color:var(--text-muted);padding:2px 0">Workflow definition not found</div>';
+        container.innerHTML = '<div class="tdp-section-title">Workflow Detail</div><div class="tdp-empty">Workflow definition not found</div>';
         return;
       }
-      container.innerHTML = '<div class="task-detail-title">Workflow Detail</div>';
+      container.innerHTML = `<div class="tdp-section-title">Workflow: ${escapeHtml(wf.name || wf.id)}</div>`;
       const steps = wf.steps || [];
       if (steps.length === 0) {
-        container.innerHTML += '<div style="font-size:11px;color:var(--text-muted)">No steps defined</div>';
+        container.innerHTML += '<div class="tdp-empty">No steps defined</div>';
         return;
       }
       for (const step of steps) {
         const stepEl = document.createElement("div");
-        stepEl.className = "task-detail-step";
+        stepEl.className = "tdp-step";
         const stepType = step.type || "sequential";
-        stepEl.innerHTML = `<div class="task-detail-step-header">${escapeHtml(step.id || "step")} <span style="font-weight:400;color:var(--text-muted)">(${escapeHtml(stepType)})</span></div>`;
+        stepEl.innerHTML = `<div class="tdp-step-header">${escapeHtml(step.id || "step")} <span style="font-weight:400;color:var(--text-muted);font-size:11px">(${escapeHtml(stepType)})</span></div>`;
         const tasks = step.tasks || [];
         for (const task of tasks) {
           const taskEl = document.createElement("div");
-          taskEl.className = "task-detail-task";
+          taskEl.className = "tdp-task";
           const workspace = task.workspace || "—";
           const model = task.model || "—";
           const prompt = task.prompt || "";
-          const truncated = prompt.length > 150;
-          const displayPrompt = truncated ? prompt.slice(0, 150) : prompt;
           taskEl.innerHTML = `
-            <div class="task-detail-task-id">${escapeHtml(task.id || "task")}</div>
-            <div class="task-detail-task-meta">workspace: ${escapeHtml(workspace)} · model: ${escapeHtml(model)}</div>
-            <div class="task-detail-prompt${truncated ? " truncated" : ""}" data-full="${escapeHtml(prompt)}">${escapeHtml(displayPrompt)}</div>
+            <div class="tdp-task-id">${escapeHtml(task.id || "task")}</div>
+            <div class="tdp-task-meta">workspace: ${escapeHtml(workspace)} · model: ${escapeHtml(model)}</div>
+            ${prompt ? `<div class="tdp-task-prompt">${escapeHtml(prompt)}</div>` : ""}
           `;
-          if (truncated) {
-            const promptEl = taskEl.querySelector(".task-detail-prompt");
-            promptEl.addEventListener("click", () => {
-              if (promptEl.classList.contains("truncated")) {
-                promptEl.textContent = prompt;
-                promptEl.classList.remove("truncated");
-              } else {
-                promptEl.textContent = displayPrompt;
-                promptEl.classList.add("truncated");
-              }
-            });
-          }
           stepEl.appendChild(taskEl);
         }
         container.appendChild(stepEl);
       }
     } catch (err) {
       console.error("Failed to load workflow detail:", err);
-      container.innerHTML = '<div style="font-size:11px;color:var(--text-muted);padding:2px 0">Failed to load workflow detail</div>';
+      container.innerHTML = '<div class="tdp-section-title">Workflow Detail</div><div class="tdp-empty">Failed to load</div>';
     }
   }
 
@@ -2860,109 +2947,6 @@
         });
         container.appendChild(taskRow);
       }
-    }
-  }
-
-  async function openWorkflowView(scheduleId) {
-    // Switch main area: hide messages/input, show workflowView
-    messagesEl.style.display = "none";
-    document.getElementById("inputArea").style.display = "none";
-    workflowView.style.display = "flex";
-    workflowView.style.flexDirection = "column";
-    workflowView.innerHTML = '<div class="workflow-empty">Loading…</div>';
-
-    try {
-      const [schedulesRes, runsRes] = await Promise.all([
-        fetch("/api/schedules"),
-        fetch("/api/workflow-runs"),
-      ]);
-      const { schedules = [] } = await schedulesRes.json();
-      const { runs = [] } = await runsRes.json();
-
-      const sched = schedules.find(s => s.id === scheduleId);
-      if (!sched) {
-        workflowView.innerHTML = '<div class="workflow-empty">Workflow not found.</div>';
-        return;
-      }
-
-      workflowView.innerHTML = "";
-
-      // Header
-      const header = document.createElement("div");
-      header.className = "wv-header";
-      const lastRun = sched.lastRun ? relativeTime(new Date(sched.lastRun).getTime()) : "never";
-      const enabled = sched.enabled !== false;
-      header.innerHTML = `
-        <div class="wv-header-top">
-          <span class="wv-name">${escapeHtml(sched.id)}</span>
-          <span class="workflow-badge ${enabled ? "enabled" : "disabled"}">${enabled ? "on" : "off"}</span>
-          <button class="wv-trigger-btn">Trigger</button>
-        </div>
-        <div class="wv-last-run">Last run: ${escapeHtml(lastRun)} · Cron: ${escapeHtml(sched.cron || "manual")}</div>
-      `;
-      const triggerBtn = header.querySelector(".wv-trigger-btn");
-      triggerBtn.addEventListener("click", async () => {
-        triggerBtn.disabled = true;
-        triggerBtn.textContent = "…";
-        try {
-          const res = await fetch(`/api/schedules/${encodeURIComponent(sched.id)}/trigger`, { method: "POST" });
-          triggerBtn.textContent = res.ok ? "Triggered!" : "Error";
-        } catch {
-          triggerBtn.textContent = "Error";
-        }
-        setTimeout(() => { triggerBtn.textContent = "Trigger"; triggerBtn.disabled = false; }, 2500);
-      });
-      workflowView.appendChild(header);
-
-      // Runs
-      const schedRuns = runs.filter(r => !sched.workflow || r.workflow === sched.workflow);
-      if (schedRuns.length === 0) {
-        const empty = document.createElement("div");
-        empty.className = "workflow-empty";
-        empty.textContent = "No runs yet.";
-        workflowView.appendChild(empty);
-        return;
-      }
-
-      const sectionTitle = document.createElement("div");
-      sectionTitle.className = "wv-section-title";
-      sectionTitle.textContent = "Run History";
-      workflowView.appendChild(sectionTitle);
-
-      const runList = document.createElement("div");
-      runList.className = "wv-run-list";
-
-      for (const run of schedRuns) {
-        const item = document.createElement("div");
-        item.className = "workflow-run-item";
-        const startedAt = run.startedAt ? relativeTime(new Date(run.startedAt).getTime()) : "—";
-        const status = run.status || "unknown";
-        item.innerHTML = `
-          <div class="workflow-run-row">
-            <span class="workflow-run-id">${escapeHtml(run.runId.slice(0, 8))}</span>
-            <span class="workflow-run-status ${escapeHtml(status)}">${escapeHtml(status)}</span>
-            <span class="workflow-run-time">${escapeHtml(startedAt)}</span>
-            <span class="workflow-run-wf">${escapeHtml(run.workflow || "")}</span>
-          </div>
-          <div class="workflow-run-detail"></div>
-        `;
-        const detail = item.querySelector(".workflow-run-detail");
-        item.querySelector(".workflow-run-row").addEventListener("click", () => {
-          const isOpen = detail.classList.contains("open");
-          runList.querySelectorAll(".workflow-run-detail.open").forEach(el => el.classList.remove("open"));
-          if (isOpen) return;
-          detail.classList.add("open");
-          if (!detail.dataset.loaded) {
-            detail.dataset.loaded = "1";
-            buildRunTasksHtml(run, detail);
-          }
-        });
-        runList.appendChild(item);
-      }
-
-      workflowView.appendChild(runList);
-    } catch {
-      workflowView.innerHTML = '<div class="workflow-empty">Failed to load workflow details.</div>';
     }
   }
 

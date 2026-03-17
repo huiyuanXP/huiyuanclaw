@@ -1154,26 +1154,22 @@ body {
   cursor: pointer; padding: 0 2px; font-family: inherit;
 }
 .task-panel-refresh:hover { color: var(--text); }
+/* ---- Sidebar task cards (slim) ---- */
 .task-item {
   border-radius: 8px; border: 1px solid var(--border);
-  background: var(--bg-secondary); overflow: hidden;
+  background: var(--bg-secondary); overflow: hidden; cursor: pointer;
 }
+.task-item:hover { background: var(--bg-tertiary); }
 .task-item-header {
   display: flex; align-items: center; gap: 6px; padding: 8px 10px;
-  cursor: pointer; font-size: 12px;
+  font-size: 12px;
 }
-.task-item-header:hover { background: var(--bg-tertiary); }
-.task-item-chevron {
-  font-size: 9px; color: var(--text-muted); transition: transform 0.15s;
-  flex-shrink: 0;
-}
-.task-item-chevron.open { transform: rotate(90deg); }
 .task-item-name {
   font-weight: 600; color: var(--text); flex: 1;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.task-item-cron {
-  font-size: 10px; color: var(--text-muted); flex-shrink: 0;
+.task-item-summary {
+  font-size: 10px; color: var(--text-muted); padding: 0 10px 7px;
   font-family: 'SF Mono', Monaco, Consolas, monospace;
 }
 .task-item-toggle {
@@ -1203,108 +1199,134 @@ body {
 }
 .task-item-trigger:hover:not(:disabled) { background: var(--bg-tertiary); color: var(--text); }
 .task-item-trigger:disabled { opacity: 0.5; cursor: not-allowed; }
-.task-item-runs {
-  display: none; border-top: 1px solid var(--border); padding: 4px 6px;
-  flex-direction: column; gap: 3px;
+
+/* ---- Task detail panel (slide-over) ---- */
+.task-detail-overlay {
+  display: none; position: fixed; inset: 0; z-index: 1100;
+  background: rgba(0,0,0,0.35); backdrop-filter: blur(2px);
+  animation: tdp-fade-in 0.15s ease;
 }
-.task-item-runs.open { display: flex; }
-.task-run-entry {
-  display: flex; align-items: center; gap: 6px; padding: 5px 6px;
-  border-radius: 6px; cursor: default; font-size: 11px;
+.task-detail-overlay.open { display: block; }
+@keyframes tdp-fade-in { from { opacity: 0; } to { opacity: 1; } }
+.task-detail-panel {
+  position: absolute; right: 0; top: 0; bottom: 0;
+  width: min(420px, 90vw); background: var(--bg);
+  border-left: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  animation: tdp-slide-in 0.2s ease;
+  box-shadow: -4px 0 24px rgba(0,0,0,0.08);
 }
-.task-run-entry:hover { background: var(--bg-tertiary); }
-.task-item-meta {
-  display: flex; align-items: center; gap: 6px; padding: 4px 10px 6px;
-  font-size: 10px; color: var(--text-muted); flex-wrap: wrap;
+@keyframes tdp-slide-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
+.tdp-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 14px 16px; border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
-.task-item-meta .badge-disposable {
-  font-size: 10px; flex-shrink: 0;
+.tdp-title {
+  font-size: 15px; font-weight: 600; flex: 1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.task-item-detail {
-  display: none; border-top: 1px solid var(--border); padding: 8px 10px;
-  flex-direction: column; gap: 6px; font-size: 11px;
+.tdp-close {
+  font-size: 18px; background: none; border: none; color: var(--text-muted);
+  cursor: pointer; padding: 0 4px; line-height: 1;
 }
-.task-item-detail.open { display: flex; }
-.task-detail-title {
+.tdp-close:hover { color: var(--text); }
+.tdp-body {
+  flex: 1; overflow-y: auto; padding: 16px;
+  display: flex; flex-direction: column; gap: 16px;
+}
+.tdp-section-title {
   font-size: 10px; font-weight: 600; color: var(--text-muted);
-  text-transform: uppercase; letter-spacing: 0.04em;
+  text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px;
 }
-.task-detail-step {
+.tdp-info-grid {
+  display: grid; grid-template-columns: auto 1fr; gap: 4px 12px;
+  font-size: 12px;
+}
+.tdp-info-label { color: var(--text-muted); font-weight: 500; }
+.tdp-info-value { color: var(--text); }
+.tdp-actions {
+  display: flex; gap: 8px; align-items: center;
+}
+.tdp-toggle {
+  position: relative; width: 34px; height: 20px; flex-shrink: 0; cursor: pointer;
+}
+.tdp-toggle input { display: none; }
+.tdp-toggle .toggle-track {
+  position: absolute; inset: 0; border-radius: 10px;
+  background: var(--bg-tertiary); border: 1px solid var(--border);
+  transition: background 0.15s, border-color 0.15s;
+}
+.tdp-toggle input:checked + .toggle-track {
+  background: var(--success); border-color: var(--success);
+}
+.tdp-toggle .toggle-thumb {
+  position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
+  border-radius: 50%; background: #fff; transition: transform 0.15s;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.15);
+}
+.tdp-toggle input:checked ~ .toggle-thumb { transform: translateX(14px); }
+.tdp-toggle-label { font-size: 12px; color: var(--text-secondary); }
+.tdp-run-btn {
+  padding: 5px 14px; font-size: 12px; border-radius: 6px; font-weight: 500;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text-secondary);
+  cursor: pointer; font-family: inherit; margin-left: auto;
+}
+.tdp-run-btn:hover:not(:disabled) { background: var(--bg-tertiary); color: var(--text); }
+.tdp-run-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+/* Workflow detail inside panel */
+.tdp-step {
   padding: 4px 0 2px; color: var(--text-secondary);
 }
-.task-detail-step-header {
-  font-weight: 600; color: var(--text); margin-bottom: 3px;
+.tdp-step-header {
+  font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 4px;
 }
-.task-detail-task {
-  padding: 3px 0 3px 12px; border-left: 2px solid var(--border);
-  margin-left: 4px; margin-bottom: 4px;
+.tdp-task {
+  padding: 4px 0 4px 12px; border-left: 2px solid var(--border);
+  margin-left: 4px; margin-bottom: 6px;
 }
-.task-detail-task-id {
+.tdp-task-id {
   font-weight: 500; color: var(--text);
   font-family: 'SF Mono', Monaco, Consolas, monospace; font-size: 11px;
 }
-.task-detail-task-meta {
+.tdp-task-meta {
   font-size: 10px; color: var(--text-muted); margin-top: 1px;
 }
-.task-detail-prompt {
+.tdp-task-prompt {
   font-family: 'SF Mono', Monaco, Consolas, monospace; font-size: 10px;
   color: var(--text-secondary); background: var(--bg-tertiary);
-  padding: 4px 6px; border-radius: 4px; margin-top: 2px;
+  padding: 6px 8px; border-radius: 4px; margin-top: 3px;
   white-space: pre-wrap; word-break: break-word; line-height: 1.4;
+  max-height: 200px; overflow-y: auto;
 }
-.task-detail-prompt.truncated { cursor: pointer; }
-.task-detail-prompt.truncated::after {
-  content: "… ▸ show more"; color: var(--text-muted); font-style: italic;
+/* Run history inside panel */
+.tdp-run-entry {
+  display: flex; align-items: center; gap: 6px; padding: 6px 8px;
+  border-radius: 6px; font-size: 11px; cursor: pointer;
 }
-
-/* ---- Workflow panel (legacy, kept for workflow-view) ---- */
-.workflow-badge {
-  font-size: 10px; padding: 1px 7px; border-radius: 10px; font-weight: 500; flex-shrink: 0;
-}
-.workflow-badge.enabled { background: var(--success-bg); color: var(--success); }
-.workflow-badge.disabled { background: var(--bg-tertiary); color: var(--text-muted); }
-.workflow-last-run { font-size: 11px; color: var(--text-muted); }
-.workflow-trigger-btn {
-  padding: 4px 10px; font-size: 11px; border-radius: 6px; font-weight: 500;
-  border: 1px solid var(--border); background: var(--bg); color: var(--text-secondary);
-  cursor: pointer; font-family: inherit; flex-shrink: 0;
-}
-.workflow-trigger-btn:hover:not(:disabled) { background: var(--bg-tertiary); color: var(--text); }
-.workflow-trigger-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.workflow-section-title {
-  font-size: 10px; font-weight: 500; color: var(--text-muted); text-transform: uppercase;
-  letter-spacing: 0.04em; padding: 6px 4px 2px;
-}
-.workflow-run-item {
-  border-radius: 8px; border: 1px solid var(--border);
-  background: var(--bg-secondary); overflow: hidden;
-}
-.workflow-run-row {
-  display: flex; align-items: center; gap: 6px;
-  padding: 8px 10px; cursor: pointer;
-}
-.workflow-run-row:hover { background: var(--bg-tertiary); }
-.workflow-run-id {
-  font-size: 11px; font-family: 'SF Mono', Monaco, Consolas, monospace;
+.tdp-run-entry:hover { background: var(--bg-tertiary); }
+.tdp-run-id {
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
   color: var(--text-muted); flex-shrink: 0;
 }
-.workflow-run-status {
+.tdp-run-status {
   font-size: 10px; padding: 1px 6px; border-radius: 4px; font-weight: 500; flex-shrink: 0;
 }
-.workflow-run-status.completed { background: var(--success-bg); color: var(--success); }
-.workflow-run-status.failed { background: var(--error-bg); color: var(--error); }
-.workflow-run-status.running { background: var(--bg-tertiary); color: var(--text-secondary); }
-.workflow-run-status.unknown { background: var(--bg-tertiary); color: var(--text-muted); }
-.workflow-run-time { font-size: 11px; color: var(--text-muted); flex: 1; }
-.workflow-run-wf {
-  font-size: 11px; color: var(--text-secondary); flex-shrink: 0;
-  max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.tdp-run-status.completed { background: var(--success-bg); color: var(--success); }
+.tdp-run-status.failed { background: var(--error-bg); color: var(--error); }
+.tdp-run-status.running { background: var(--bg-tertiary); color: var(--text-secondary); }
+.tdp-run-status.unknown { background: var(--bg-tertiary); color: var(--text-muted); }
+.tdp-run-time { font-size: 11px; color: var(--text-muted); flex: 1; }
+.tdp-run-detail {
+  display: none; padding: 6px 8px; gap: 4px; flex-direction: column;
+  border-top: 1px solid var(--border); margin-top: 4px;
 }
-.workflow-run-detail {
-  display: none; border-top: 1px solid var(--border); padding: 6px 8px; gap: 4px;
-  flex-direction: column;
+.tdp-run-detail.open { display: flex; }
+.tdp-empty {
+  font-size: 12px; color: var(--text-muted); padding: 8px 0;
 }
-.workflow-run-detail.open { display: flex; }
+
+/* ---- Workflow run detail (used by buildRunTasksHtml) ---- */
 .workflow-task-row { border-radius: 6px; overflow: hidden; }
 .workflow-task-header {
   display: flex; align-items: center; gap: 6px; padding: 5px 8px;
@@ -1329,37 +1351,10 @@ body {
   padding: 24px 16px; text-align: center; color: var(--text-muted);
   font-size: 12px; line-height: 1.6;
 }
-.workflow-refresh-btn {
-  align-self: flex-end; padding: 3px 10px; font-size: 11px; border-radius: 5px;
-  border: 1px solid var(--border); background: transparent; color: var(--text-muted);
-  cursor: pointer; font-family: inherit;
-}
-.workflow-refresh-btn:hover { background: var(--bg-tertiary); color: var(--text); }
-
-/* ---- Workflow main view ---- */
+/* ---- Workflow main view (reserved) ---- */
 .workflow-view {
   flex: 1; overflow-y: auto; padding: 20px 24px; display: flex; flex-direction: column; gap: 12px;
 }
-.wv-header {
-  padding-bottom: 14px; border-bottom: 1px solid var(--border);
-}
-.wv-header-top {
-  display: flex; align-items: center; gap: 10px; margin-bottom: 6px;
-}
-.wv-name { font-size: 17px; font-weight: 600; flex: 1; }
-.wv-last-run { font-size: 12px; color: var(--text-muted); }
-.wv-trigger-btn {
-  padding: 6px 14px; font-size: 12px; border-radius: 7px; font-weight: 500;
-  border: 1px solid var(--border); background: var(--bg); color: var(--text-secondary);
-  cursor: pointer; font-family: inherit; flex-shrink: 0;
-}
-.wv-trigger-btn:hover:not(:disabled) { background: var(--bg-tertiary); color: var(--text); }
-.wv-trigger-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.wv-section-title {
-  font-size: 10px; font-weight: 500; color: var(--text-muted); text-transform: uppercase;
-  letter-spacing: 0.04em; padding: 4px 0 2px;
-}
-.wv-run-list { display: flex; flex-direction: column; gap: 6px; }
 </style>
 </head>
 <body>
@@ -1462,6 +1457,11 @@ body {
       </div>
     </div>
   </main>
+</div>
+
+<!-- Task Detail Panel (slide-over) -->
+<div class="task-detail-overlay" id="taskDetailOverlay">
+  <div class="task-detail-panel" id="taskDetailPanel"></div>
 </div>
 
 <!-- New Session Modal -->
