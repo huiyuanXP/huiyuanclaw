@@ -306,6 +306,7 @@
   function handleWsMessage(msg) {
     switch (msg.type) {
       case "sessions":
+        // Filter: hidden → workflow engine sessions; archived → includes disposable task runs
         sessions = (msg.sessions || []).filter(s => !s.hidden && !s.archived);
         workflowSessions = (msg.sessions || []).filter(s => s.hidden);
         archivedSessions = (msg.sessions || []).filter(s => !s.hidden && s.archived);
@@ -1834,26 +1835,59 @@
       taskPanel.appendChild(hdr);
 
       for (const sched of schedules) {
-        const enabled = sched.enabled !== false;
+        let enabled = sched.enabled !== false;
         const cronLabel = formatCron(sched.cron);
         const isExpanded = taskExpandedSet.has(sched.id);
 
         const item = document.createElement("div");
-        item.className = "task-item";
+        item.className = "task-item" + (enabled ? "" : " disabled");
 
         // Header row
         const headerRow = document.createElement("div");
         headerRow.className = "task-item-header";
+
+        const disposableBadge = sched.disposable ? ' <span class="badge-disposable" title="Disposable">\u{1F5D1}\uFE0F</span>' : "";
+
         headerRow.innerHTML = `
           <span class="task-item-chevron ${isExpanded ? "open" : ""}">&#9654;</span>
-          <span class="task-item-name">${escapeHtml(sched.id)}</span>
+          <span class="task-item-name">${escapeHtml(sched.id)}${disposableBadge}</span>
           <span class="task-item-cron">${escapeHtml(cronLabel)}</span>
-          <span class="workflow-badge ${enabled ? "enabled" : "disabled"}">${enabled ? "on" : "off"}</span>
+          <label class="task-item-toggle" title="${enabled ? "Enabled" : "Disabled"}">
+            <input type="checkbox" ${enabled ? "checked" : ""}>
+            <span class="toggle-track"></span>
+            <span class="toggle-thumb"></span>
+          </label>
           <button class="task-item-trigger">Run</button>
         `;
 
         const itemChevron = headerRow.querySelector(".task-item-chevron");
         const triggerBtn = headerRow.querySelector(".task-item-trigger");
+        const toggleInput = headerRow.querySelector(".task-item-toggle input");
+
+        // Toggle enable/disable
+        toggleInput.addEventListener("click", (e) => e.stopPropagation());
+        toggleInput.addEventListener("change", async () => {
+          const newEnabled = toggleInput.checked;
+          // Optimistic update
+          enabled = newEnabled;
+          item.classList.toggle("disabled", !newEnabled);
+          headerRow.querySelector(".task-item-toggle").title = newEnabled ? "Enabled" : "Disabled";
+          try {
+            const res = await fetch("/api/schedules/" + encodeURIComponent(sched.id), {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ enabled: newEnabled }),
+            });
+            if (!res.ok) throw new Error("PATCH failed");
+          } catch (err) {
+            // Rollback
+            console.error("Failed to toggle schedule:", err);
+            enabled = !newEnabled;
+            toggleInput.checked = !newEnabled;
+            item.classList.toggle("disabled", newEnabled);
+            headerRow.querySelector(".task-item-toggle").title = !newEnabled ? "Enabled" : "Disabled";
+          }
+        });
 
         // Trigger button
         triggerBtn.addEventListener("click", async (e) => {
@@ -1867,9 +1901,35 @@
           setTimeout(() => { triggerBtn.textContent = "Run"; triggerBtn.disabled = false; }, 2000);
         });
 
+        // Metadata row (runCount, maxRuns, runAt)
+        const runCountDisplay = sched.maxRuns != null
+          ? `Runs: ${sched.runCount || 0}/${sched.maxRuns}`
+          : `Runs: ${sched.runCount || 0}/\u221E`;
+        let metaHtml = `<span>${escapeHtml(runCountDisplay)}</span>`;
+        if (sched.runAt) {
+          const runAtDate = new Date(sched.runAt);
+          const diff = runAtDate.getTime() - Date.now();
+          let runAtLabel;
+          if (diff > 0 && diff < 3_600_000) {
+            runAtLabel = `in ${Math.ceil(diff / 60_000)}m`;
+          } else if (diff > 0 && diff < 86_400_000) {
+            runAtLabel = `in ${Math.floor(diff / 3_600_000)}h ${Math.ceil((diff % 3_600_000) / 60_000)}m`;
+          } else {
+            runAtLabel = runAtDate.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+          }
+          metaHtml += ` · <span>Scheduled: ${escapeHtml(runAtLabel)}</span>`;
+        }
+        const metaRow = document.createElement("div");
+        metaRow.className = "task-item-meta";
+        metaRow.innerHTML = metaHtml;
+
         // Runs container
         const runsContainer = document.createElement("div");
         runsContainer.className = "task-item-runs" + (isExpanded ? " open" : "");
+
+        // Workflow detail container (lazy-loaded)
+        const detailContainer = document.createElement("div");
+        detailContainer.className = "task-item-detail";
 
         // Filter runs for this schedule
         const schedRuns = runs.filter(r => !sched.workflow || r.workflow === sched.workflow);
@@ -1886,11 +1946,17 @@
             const nowOpen = !runsContainer.classList.contains("open");
             itemChevron.classList.toggle("open", nowOpen);
             runsContainer.classList.toggle("open", nowOpen);
+            detailContainer.classList.toggle("open", nowOpen);
             if (nowOpen) {
               taskExpandedSet.add(sched.id);
               if (!runsContainer.dataset.loaded) {
                 runsContainer.dataset.loaded = "1";
                 renderTaskRuns(schedRuns, runsContainer);
+              }
+              // Lazy-load workflow detail
+              if (!detailContainer.dataset.loaded && sched.workflow) {
+                detailContainer.dataset.loaded = "1";
+                loadWorkflowDetail(sched.workflow, detailContainer);
               }
             } else {
               taskExpandedSet.delete(sched.id);
@@ -1901,6 +1967,8 @@
         });
 
         item.appendChild(headerRow);
+        item.appendChild(metaRow);
+        item.appendChild(detailContainer);
         item.appendChild(runsContainer);
         taskPanel.appendChild(item);
       }
@@ -1926,6 +1994,65 @@
         <span class="workflow-run-time">${escapeHtml(startedAt)}</span>
       `;
       container.appendChild(entry);
+    }
+  }
+
+  // Lazy-load workflow definition and render step/task tree
+  async function loadWorkflowDetail(workflowName, container) {
+    container.innerHTML = '<div style="font-size:11px;color:var(--text-muted);padding:2px 0">Loading workflow…</div>';
+    try {
+      const res = await fetch("/api/workflows");
+      if (!res.ok) throw new Error("Failed to fetch workflows");
+      const { workflows = [] } = await res.json();
+      const wf = workflows.find(w => w.id === workflowName || w.name === workflowName);
+      if (!wf) {
+        container.innerHTML = '<div style="font-size:11px;color:var(--text-muted);padding:2px 0">Workflow definition not found</div>';
+        return;
+      }
+      container.innerHTML = '<div class="task-detail-title">Workflow Detail</div>';
+      const steps = wf.steps || [];
+      if (steps.length === 0) {
+        container.innerHTML += '<div style="font-size:11px;color:var(--text-muted)">No steps defined</div>';
+        return;
+      }
+      for (const step of steps) {
+        const stepEl = document.createElement("div");
+        stepEl.className = "task-detail-step";
+        const stepType = step.type || "sequential";
+        stepEl.innerHTML = `<div class="task-detail-step-header">${escapeHtml(step.id || "step")} <span style="font-weight:400;color:var(--text-muted)">(${escapeHtml(stepType)})</span></div>`;
+        const tasks = step.tasks || [];
+        for (const task of tasks) {
+          const taskEl = document.createElement("div");
+          taskEl.className = "task-detail-task";
+          const workspace = task.workspace || "—";
+          const model = task.model || "—";
+          const prompt = task.prompt || "";
+          const truncated = prompt.length > 150;
+          const displayPrompt = truncated ? prompt.slice(0, 150) : prompt;
+          taskEl.innerHTML = `
+            <div class="task-detail-task-id">${escapeHtml(task.id || "task")}</div>
+            <div class="task-detail-task-meta">workspace: ${escapeHtml(workspace)} · model: ${escapeHtml(model)}</div>
+            <div class="task-detail-prompt${truncated ? " truncated" : ""}" data-full="${escapeHtml(prompt)}">${escapeHtml(displayPrompt)}</div>
+          `;
+          if (truncated) {
+            const promptEl = taskEl.querySelector(".task-detail-prompt");
+            promptEl.addEventListener("click", () => {
+              if (promptEl.classList.contains("truncated")) {
+                promptEl.textContent = prompt;
+                promptEl.classList.remove("truncated");
+              } else {
+                promptEl.textContent = displayPrompt;
+                promptEl.classList.add("truncated");
+              }
+            });
+          }
+          stepEl.appendChild(taskEl);
+        }
+        container.appendChild(stepEl);
+      }
+    } catch (err) {
+      console.error("Failed to load workflow detail:", err);
+      container.innerHTML = '<div style="font-size:11px;color:var(--text-muted);padding:2px 0">Failed to load workflow detail</div>';
     }
   }
 
