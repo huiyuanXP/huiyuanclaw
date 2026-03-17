@@ -126,6 +126,7 @@ function classifyApiRoute(method, pathname) {
         if (parts[3] === 'compact') return 'POST /api/sessions/:sessionId/compact';
         if (parts[3] === 'drop-tools') return 'POST /api/sessions/:sessionId/drop-tools';
         if (parts[3] === 'fork') return 'POST /api/sessions/:sessionId/fork';
+        if (parts[3] === 'delegate') return 'POST /api/sessions/:sessionId/delegate';
         if (parts[3] === 'share') return 'POST /api/sessions/:sessionId/share';
       }
     }

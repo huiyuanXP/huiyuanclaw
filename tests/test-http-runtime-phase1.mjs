@@ -220,6 +220,12 @@ async function waitForRunState(port, runId, expectedState) {
   }, `run ${runId} ${expectedState}`);
 }
 
+function readRunManifest(home, runId) {
+  return JSON.parse(
+    readFileSync(join(home, '.config', 'remotelab', 'chat-runs', runId, 'manifest.json'), 'utf8'),
+  );
+}
+
 async function getEvents(port, sessionId) {
   const res = await request(port, 'GET', `/api/sessions/${sessionId}/events`);
   assert.equal(res.status, 200, 'events request should succeed');
@@ -700,6 +706,63 @@ async function phase12QueuedMessageRouteContract() {
   }
 }
 
+async function phase13DelegateSession() {
+  const { home } = setupTempHome();
+  const port = randomPort();
+  const server = await startServer({ home, port, delayMs: 1200 });
+  try {
+    const session = await createSession(port, {
+      name: 'Delegate parent',
+      group: 'Tests',
+      description: 'Delegate route contract',
+    });
+    const submit = await submitMessage(port, session.id, 'req-delegate-parent', 'Please investigate the board design problem before delegating');
+    await waitForRunTerminal(port, submit.json.run.id);
+
+    const delegate = await request(port, 'POST', `/api/sessions/${session.id}/delegate`, {
+      task: 'Figure out a lightweight child-session strategy for parallel work.',
+    });
+    assert.equal(delegate.status, 201, 'delegate should create a child session');
+    assert.ok(delegate.json.session?.id, 'delegate should return the child session');
+    assert.ok(delegate.json.run?.id, 'delegate should start the child session immediately');
+    assert.notEqual(delegate.json.session.id, session.id, 'delegate should create a distinct child session id');
+    assert.equal(delegate.json.session.delegatedFromSessionId, session.id, 'delegate should record the parent session id');
+    assert.equal(delegate.json.session.rootSessionId, session.id, 'first delegated child should use parent as root');
+    assert.equal(typeof delegate.json.session.delegatedAt, 'string', 'delegate should record delegatedAt');
+
+    const childRun = await waitForRunTerminal(port, delegate.json.run.id);
+    assert.equal(childRun.state, 'completed', 'delegated child run should complete');
+
+    const manifest = readRunManifest(home, delegate.json.run.id);
+    assert.match(manifest.prompt || '', /Figure out a lightweight child-session strategy for parallel work\./, 'delegated prompt should include the requested child task');
+    assert.match(manifest.prompt || '', /Please investigate the board design problem before delegating/, 'delegated prompt should include the latest parent user message');
+    assert.match(manifest.prompt || '', /finished from fake codex/, 'delegated prompt should include the latest parent assistant result');
+    assert.doesNotMatch(manifest.prompt || '', /echo fake/, 'delegated prompt should omit intermediate tool details from the parent');
+
+    const parentEvents = await getEvents(port, session.id);
+    const delegateStatus = parentEvents.events.find((event) => event.type === 'status' && /Delegated/.test(event.content || ''));
+    assert.ok(delegateStatus, 'delegation should append a durable status note to the parent session');
+
+    const running = await createSession(port, {
+      name: 'Delegate busy',
+      group: 'Tests',
+      description: 'Delegate rejection while running',
+    });
+    const runningSubmit = await submitMessage(port, running.id, 'req-delegate-busy', 'slow run for delegate rejection');
+    await waitForRunState(port, runningSubmit.json.run.id, 'running');
+    const reject = await request(port, 'POST', `/api/sessions/${running.id}/delegate`, {
+      task: 'Spawn a child anyway',
+    });
+    assert.equal(reject.status, 409, 'delegate should reject running sessions');
+    assert.equal(reject.json.error, 'Session is running');
+
+    console.log('phase13-delegate-session: ok');
+  } finally {
+    await stopServer(server);
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
 const phase = process.argv[2] || 'all';
 const phases = {
   phase1: phase1Contract,
@@ -715,6 +778,7 @@ const phases = {
   phase10: phase10EventIndexContract,
   phase11: phase11ForkSession,
   phase12: phase12QueuedMessageRouteContract,
+  phase13: phase13DelegateSession,
 };
 
 if (phase === 'all') {

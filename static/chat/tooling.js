@@ -404,6 +404,19 @@ function syncForkButton() {
   forkSessionBtn.disabled = !session || activity.run.state === "running" || activity.compact.state === "pending";
 }
 
+function syncDelegateButton() {
+  if (!delegateSessionBtn) return;
+  const visible = !visitorMode && !!currentSessionId;
+  delegateSessionBtn.style.display = visible ? "" : "none";
+  if (!visible) {
+    resetHeaderActionButton(delegateSessionBtn);
+    return;
+  }
+  const session = getCurrentSession();
+  const activity = getSessionActivity(session);
+  delegateSessionBtn.disabled = !session || activity.run.state === "running" || activity.compact.state === "pending";
+}
+
 async function shareCurrentSessionSnapshot() {
   if (!currentSessionId || visitorMode || !shareSnapshotBtn) return;
 
@@ -482,6 +495,54 @@ async function forkCurrentSession() {
     updateCopyButtonLabel(forkSessionBtn, "Failed");
   } finally {
     syncForkButton();
+  }
+}
+
+async function delegateCurrentSession() {
+  if (!currentSessionId || visitorMode || !delegateSessionBtn) return;
+  const sourceSessionId = currentSessionId;
+
+  const task = window.prompt(
+    "Describe the focused child task to run in parallel.",
+    "",
+  );
+  if (task === null) {
+    syncDelegateButton();
+    return;
+  }
+  const normalizedTask = task.trim();
+  if (!normalizedTask) {
+    updateCopyButtonLabel(delegateSessionBtn, "Canceled");
+    syncDelegateButton();
+    return;
+  }
+
+  const original = delegateSessionBtn.dataset.originalLabel || delegateSessionBtn.textContent;
+  delegateSessionBtn.dataset.originalLabel = original;
+  delegateSessionBtn.disabled = true;
+  delegateSessionBtn.textContent = "Delegating…";
+
+  try {
+    const data = await fetchJsonOrRedirect(`/api/sessions/${encodeURIComponent(sourceSessionId)}/delegate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task: normalizedTask }),
+    });
+    if (data.session) {
+      upsertSession(data.session);
+      renderSessionList();
+      updateCopyButtonLabel(delegateSessionBtn, "Delegated");
+      if (currentSessionId === sourceSessionId && typeof refreshCurrentSession === "function") {
+        refreshCurrentSession().catch(() => {});
+      }
+    } else {
+      updateCopyButtonLabel(delegateSessionBtn, "Failed");
+    }
+  } catch (err) {
+    console.warn("[delegate] Failed to create child session:", err.message);
+    updateCopyButtonLabel(delegateSessionBtn, "Failed");
+  } finally {
+    syncDelegateButton();
   }
 }
 
@@ -883,6 +944,10 @@ if (shareSnapshotBtn) {
 
 if (forkSessionBtn) {
   forkSessionBtn.addEventListener("click", forkCurrentSession);
+}
+
+if (delegateSessionBtn) {
+  delegateSessionBtn.addEventListener("click", delegateCurrentSession);
 }
 
 document.addEventListener("keydown", (e) => {

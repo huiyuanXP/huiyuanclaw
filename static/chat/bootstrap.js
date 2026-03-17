@@ -136,6 +136,7 @@ window.RemoteLabBuild = {
 const menuBtn = document.getElementById("menuBtn");
 const sidebarOverlay = document.getElementById("sidebarOverlay");
 const closeSidebar = document.getElementById("closeSidebar");
+const delegateSessionBtn = document.getElementById("delegateSessionBtn");
 const forkSessionBtn = document.getElementById("forkSessionBtn");
 const shareSnapshotBtn = document.getElementById("shareSnapshotBtn");
 const sidebarFilters = document.getElementById("sidebarFilters");

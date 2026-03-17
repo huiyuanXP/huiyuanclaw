@@ -14,6 +14,7 @@ import {
   getForkContext,
   getHistorySnapshot,
   loadHistory,
+  readLastTurnEvents,
   readEventsAfter,
   setForkContext,
   setContextHead,
@@ -302,6 +303,42 @@ function generateId() {
 function buildForkSessionName(session) {
   const sourceName = typeof session?.name === 'string' ? session.name.trim() : '';
   return `fork - ${sourceName || 'session'}`;
+}
+
+function buildDelegatedSessionName(session, task) {
+  const taskLabel = buildTemporarySessionName(task, 48);
+  if (taskLabel) {
+    return `delegate - ${taskLabel}`;
+  }
+  const sourceName = typeof session?.name === 'string' ? session.name.trim() : '';
+  return `delegate - ${sourceName || 'session'}`;
+}
+
+function findLatestTurnMessage(events, role) {
+  const list = Array.isArray(events) ? events : [];
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    const event = list[index];
+    if (event?.type === 'message' && event.role === role) {
+      return event;
+    }
+  }
+  return null;
+}
+
+function buildDelegationStatusText(task, childSession) {
+  const normalizedTask = clipCompactionSection(task, 120)
+    .replace(/\s+/g, ' ')
+    .trim();
+  const childName = typeof childSession?.name === 'string'
+    ? childSession.name.trim()
+    : '';
+  if (normalizedTask && childName) {
+    return `Delegated "${normalizedTask}" to ${childName}`;
+  }
+  if (childName) {
+    return `Delegated work to ${childName}`;
+  }
+  return 'Delegated work to a child session';
 }
 
 function normalizeSessionAppName(value) {
@@ -1189,6 +1226,59 @@ function clipCompactionSection(value, maxChars = 12000) {
   const headChars = Math.max(1, Math.floor(maxChars * 0.6));
   const tailChars = Math.max(1, maxChars - headChars);
   return `${text.slice(0, headChars).trimEnd()}\n[... truncated by RemoteLab ...]\n${text.slice(-tailChars).trimStart()}`;
+}
+
+function buildDelegationHandoff({
+  source,
+  task,
+  lastUserMessage,
+  lastAssistantMessage,
+  contextHead,
+}) {
+  const normalizedTask = clipCompactionSection(task, 4000);
+  const parentName = typeof source?.name === 'string' ? source.name.trim() : '';
+  const parentGroup = normalizeSessionGroup(source?.group || '');
+  const parentDescription = normalizeSessionDescription(source?.description || '');
+  const latestUserText = clipCompactionSection(lastUserMessage?.content || '', 5000);
+  const latestAssistantText = clipCompactionSection(lastAssistantMessage?.content || '', 7000);
+  const contextSummary = clipCompactionSection(contextHead?.summary || '', 7000);
+  const workingSummary = latestAssistantText || contextSummary;
+  const workingSummaryLabel = latestAssistantText
+    ? 'Latest parent result'
+    : 'Parent carried summary';
+
+  const lines = [
+    'You are a child RemoteLab session created to work in parallel with a parent session.',
+    'Do only the delegated task below. Treat the rest as bounded handoff context, not as a full transcript to replay.',
+    'If key context is missing, say exactly what is missing instead of reconstructing hidden implementation details.',
+    '',
+    '## Delegated task',
+    normalizedTask || '(no delegated task provided)',
+  ];
+
+  if (parentName || parentGroup || parentDescription) {
+    lines.push('', '## Parent session');
+    if (parentName) lines.push(`- Title: ${parentName}`);
+    if (parentGroup) lines.push(`- Group: ${parentGroup}`);
+    if (parentDescription) lines.push(`- Description: ${parentDescription}`);
+  }
+
+  if (latestUserText) {
+    lines.push('', '## Latest user request in parent', latestUserText);
+  }
+
+  if (workingSummary) {
+    lines.push('', `## ${workingSummaryLabel}`, workingSummary);
+  }
+
+  lines.push(
+    '',
+    '## Intentional omissions',
+    '- Earlier tool traces, command logs, and intermediate implementation details were intentionally left out of this child context.',
+    '- Continue from the delegated task using only the bounded context above unless you explicitly need more.',
+  );
+
+  return lines.join('\n');
 }
 
 function extractTaggedBlock(content, tagName) {
@@ -2550,8 +2640,11 @@ export async function createSession(folder, tool, name, extra = {}) {
     if (externalTriggerId) session.externalTriggerId = externalTriggerId;
     if (extra.forkedFromSessionId) session.forkedFromSessionId = extra.forkedFromSessionId;
     if (Number.isInteger(extra.forkedFromSeq)) session.forkedFromSeq = extra.forkedFromSeq;
+    if (extra.delegatedFromSessionId) session.delegatedFromSessionId = extra.delegatedFromSessionId;
+    if (Number.isInteger(extra.delegatedFromSeq)) session.delegatedFromSeq = extra.delegatedFromSeq;
     if (extra.rootSessionId) session.rootSessionId = extra.rootSessionId;
     if (extra.forkedAt) session.forkedAt = extra.forkedAt;
+    if (extra.delegatedAt) session.delegatedAt = extra.delegatedAt;
     if (completionTargets.length > 0) session.completionTargets = completionTargets;
 
     metas.push(session);
@@ -3308,6 +3401,62 @@ export async function forkSession(sessionId) {
 
   broadcastSessionsInvalidation();
   return getSession(child.id);
+}
+
+export async function delegateSession(sessionId, payload = {}) {
+  const source = await getSession(sessionId);
+  if (!source) return null;
+  if (source.visitorId) return null;
+  if (isSessionRunning(source)) return null;
+
+  const task = typeof payload?.task === 'string' ? payload.task.trim() : '';
+  if (!task) {
+    throw new Error('task is required');
+  }
+
+  const requestedName = typeof payload?.name === 'string' ? payload.name.trim() : '';
+  const [contextHead, lastTurnEvents] = await Promise.all([
+    getContextHead(sessionId),
+    readLastTurnEvents(sessionId, { includeBodies: true }),
+  ]);
+  const lastUserMessage = findLatestTurnMessage(lastTurnEvents, 'user');
+  const lastAssistantMessage = findLatestTurnMessage(lastTurnEvents, 'assistant');
+
+  const child = await createSession(source.folder, source.tool, requestedName || buildDelegatedSessionName(source, task), {
+    group: source.group || '',
+    description: source.description || '',
+    appId: source.appId || '',
+    appName: source.appName || '',
+    sourceId: source.sourceId || '',
+    sourceName: source.sourceName || '',
+    systemPrompt: source.systemPrompt || '',
+    userId: source.userId || '',
+    userName: source.userName || '',
+    delegatedFromSessionId: source.id,
+    delegatedFromSeq: source.latestSeq || 0,
+    rootSessionId: source.rootSessionId || source.id,
+    delegatedAt: nowIso(),
+  });
+  if (!child) return null;
+
+  const handoffText = buildDelegationHandoff({
+    source,
+    task,
+    lastUserMessage,
+    lastAssistantMessage,
+    contextHead,
+  });
+  const outcome = await submitHttpMessage(child.id, handoffText, [], {
+    requestId: createInternalRequestId('delegate'),
+  });
+
+  await appendEvent(source.id, statusEvent(buildDelegationStatusText(task, child)));
+  broadcastSessionInvalidation(source.id);
+
+  return {
+    session: outcome.session || await getSession(child.id) || child,
+    run: outcome.run || null,
+  };
 }
 
 export async function dropToolUse(sessionId) {

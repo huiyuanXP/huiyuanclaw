@@ -20,6 +20,7 @@ import {
   cancelActiveRun,
   compactSession,
   createSession,
+  delegateSession,
   dropToolUse,
   forkSession,
   getHistory,
@@ -852,6 +853,7 @@ function isOwnerOnlyRoute(pathname, method) {
   if (pathname === '/api/task-board/rebuild' && method === 'POST') return true;
   if (pathname.startsWith('/api/sessions/') && pathname.endsWith('/share') && method === 'POST') return true;
   if (pathname.startsWith('/api/sessions/') && pathname.endsWith('/fork') && method === 'POST') return true;
+  if (pathname.startsWith('/api/sessions/') && pathname.endsWith('/delegate') && method === 'POST') return true;
   if (pathname.startsWith('/api/sessions/') && method === 'PATCH') return true;
   if (pathname === '/api/models' && method === 'GET') return true;
   if (pathname === '/api/tools' && (method === 'GET' || method === 'POST')) return true;
@@ -1601,6 +1603,56 @@ export async function handleRequest(req, res) {
         return;
       }
       writeJson(res, 201, { session: stripBoardDataFromSession(session) });
+      return;
+    }
+
+    if (parts.length === 4 && parts[0] === 'api' && parts[1] === 'sessions' && sessionId && action === 'delegate') {
+      if (!requireSessionAccess(res, authSession, sessionId)) return;
+      const source = await getSessionForClient(sessionId);
+      if (!source) {
+        writeJson(res, 404, { error: 'Session not found' });
+        return;
+      }
+      if (source.visitorId) {
+        writeJson(res, 409, { error: 'Visitor sessions cannot be delegated' });
+        return;
+      }
+      if (source.activity?.run?.state === 'running') {
+        writeJson(res, 409, { error: 'Session is running' });
+        return;
+      }
+
+      let payload = {};
+      try {
+        const body = await readBody(req, 32768);
+        payload = body ? JSON.parse(body) : {};
+      } catch {
+        writeJson(res, 400, { error: 'Invalid request body' });
+        return;
+      }
+
+      const task = typeof payload?.task === 'string' ? payload.task.trim() : '';
+      if (!task) {
+        writeJson(res, 400, { error: 'task is required' });
+        return;
+      }
+
+      try {
+        const outcome = await delegateSession(sessionId, {
+          task,
+          name: typeof payload?.name === 'string' ? payload.name.trim() : '',
+        });
+        if (!outcome?.session) {
+          writeJson(res, 409, { error: 'Unable to delegate session' });
+          return;
+        }
+        writeJson(res, 201, {
+          session: stripBoardDataFromSession(outcome.session),
+          run: outcome.run || null,
+        });
+      } catch (error) {
+        writeJson(res, 400, { error: error.message || 'Failed to delegate session' });
+      }
       return;
     }
   }
