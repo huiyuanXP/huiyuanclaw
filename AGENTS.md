@@ -46,7 +46,7 @@
 - 这是 **RemoteLab 产品 workspace**，负责 RemoteLab 平台自身的开发与维护
 - 核心场景：手机远程操控 AI 编程工具（Claude Code、Codex 等）
 - **Red Lines:** 不外泄私人数据；`trash` > `rm`；发送到外部前先确认
-- **禁止自动执行 restart**：重启会终止所有运行中的 session，必须先确认
+- **禁止自动执行 restart**：重启会终止所有运行中的 session，必须先确认；重启方式统一使用 `mcp__remotelab__restart_server`，不再使用 `/restart` 命令（已废弃）
 
 ## Workspace 地图
 
