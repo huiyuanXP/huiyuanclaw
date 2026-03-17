@@ -36,6 +36,7 @@ import {
   setSessionPinned,
   submitHttpMessage,
   updateSessionLastReviewedAt,
+  updateSessionGrouping,
   updateSessionWorkflowClassification,
   updateSessionRuntimePreferences,
 } from './session-manager.mjs';
@@ -1353,6 +1354,8 @@ export async function handleRequest(req, res) {
     const hasModelPatch = Object.prototype.hasOwnProperty.call(patch || {}, 'model');
     const hasEffortPatch = Object.prototype.hasOwnProperty.call(patch || {}, 'effort');
     const hasThinkingPatch = Object.prototype.hasOwnProperty.call(patch || {}, 'thinking');
+    const hasGroupPatch = Object.prototype.hasOwnProperty.call(patch || {}, 'group');
+    const hasDescriptionPatch = Object.prototype.hasOwnProperty.call(patch || {}, 'description');
     const hasWorkflowStatePatch = Object.prototype.hasOwnProperty.call(patch || {}, 'workflowState');
     const hasWorkflowPriorityPatch = Object.prototype.hasOwnProperty.call(patch || {}, 'workflowPriority');
     const hasLastReviewedAtPatch = Object.prototype.hasOwnProperty.call(patch || {}, 'lastReviewedAt');
@@ -1378,6 +1381,14 @@ export async function handleRequest(req, res) {
     }
     if (hasThinkingPatch && typeof patch.thinking !== 'boolean') {
       writeJson(res, 400, { error: 'thinking must be a boolean' });
+      return;
+    }
+    if (hasGroupPatch && patch.group !== null && typeof patch.group !== 'string') {
+      writeJson(res, 400, { error: 'group must be a string or null' });
+      return;
+    }
+    if (hasDescriptionPatch && patch.description !== null && typeof patch.description !== 'string') {
+      writeJson(res, 400, { error: 'description must be a string or null' });
       return;
     }
     if (hasWorkflowStatePatch && patch.workflowState !== null && typeof patch.workflowState !== 'string') {
@@ -1428,6 +1439,12 @@ export async function handleRequest(req, res) {
     }
     if (hasPinnedPatch) {
       session = await setSessionPinned(sessionId, patch.pinned) || session;
+    }
+    if (hasGroupPatch || hasDescriptionPatch) {
+      session = await updateSessionGrouping(sessionId, {
+        ...(hasGroupPatch ? { group: patch.group ?? '' } : {}),
+        ...(hasDescriptionPatch ? { description: patch.description ?? '' } : {}),
+      }) || session;
     }
     if (hasWorkflowStatePatch || hasWorkflowPriorityPatch) {
       session = await updateSessionWorkflowClassification(sessionId, {
