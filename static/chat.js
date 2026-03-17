@@ -69,6 +69,7 @@
   let currentHistory = []; // raw events for current session (used by Recover)
   let sessionContextTotal = 0; // latest total context tokens (input + cache)
   let pendingSummary = new Set(); // sessionIds awaiting summary generation
+  let currentTaskDetailId = null; // currently viewed task in main content area
   let lastSidebarUpdatedAt = {}; // sessionId -> last known updatedAt
 
   let sessionLastMessage = {}; // sessionId -> last sent message text
@@ -1851,7 +1852,7 @@
         if (runAtLabel) summaryText = runAtLabel;
 
         const item = document.createElement("div");
-        item.className = "task-item" + (enabled ? "" : " disabled");
+        item.className = "task-item" + (enabled ? "" : " disabled") + (sched.id === currentTaskDetailId ? " active" : "");
 
         const disposableBadge = sched.disposable ? ' <span title="Disposable">\u{1F5D1}\uFE0F</span>' : "";
 
@@ -1911,8 +1912,11 @@
           setTimeout(() => { triggerBtn.textContent = "Run"; triggerBtn.disabled = false; }, 2000);
         });
 
-        // Click card → open detail panel
-        item.addEventListener("click", () => openTaskDetail(sched.id));
+        // Click card → show task detail in main content area
+        item.addEventListener("click", () => {
+          openTaskDetail(sched.id);
+          if (!isDesktop) closeSidebarFn();
+        });
 
         item.appendChild(headerRow);
         item.appendChild(summaryRow);
@@ -1923,23 +1927,22 @@
     }
   }
 
-  // ---- Task detail panel (slide-over) ----
-  const taskDetailOverlay = document.getElementById("taskDetailOverlay");
-  const taskDetailPanel = document.getElementById("taskDetailPanel");
-
-  function closeTaskDetail() {
-    taskDetailOverlay.classList.remove("open");
-    taskDetailPanel.innerHTML = "";
+  // ---- Task detail (main content area) ----
+  function showTaskDetailView() {
+    // Switch main content to show task detail (same pattern as workflowView)
+    currentSessionId = null;
+    messagesEl.style.display = "none";
+    document.getElementById("inputArea").style.display = "none";
+    workflowView.style.display = "";
+    resetHeaderContext();
+    renderSessionList();
   }
 
-  // Click overlay backdrop to close
-  taskDetailOverlay.addEventListener("click", (e) => {
-    if (e.target === taskDetailOverlay) closeTaskDetail();
-  });
-
   async function openTaskDetail(scheduleId) {
-    taskDetailOverlay.classList.add("open");
-    taskDetailPanel.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-muted)">Loading…</div>';
+    currentTaskDetailId = scheduleId;
+    showTaskDetailView();
+    headerTitle.textContent = scheduleId;
+    workflowView.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-muted)">Loading…</div>';
 
     try {
       const [schedulesRes, runsRes] = await Promise.all([
@@ -1951,29 +1954,32 @@
 
       const sched = schedules.find(s => s.id === scheduleId);
       if (!sched) {
-        taskDetailPanel.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-muted)">Task not found.</div>';
+        workflowView.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-muted)">Task not found.</div>';
         return;
       }
 
       let enabled = sched.enabled !== false;
-      taskDetailPanel.innerHTML = "";
+      workflowView.innerHTML = "";
+
+      const container = document.createElement("div");
+      container.className = "tdp-container";
 
       // ── Header ──
       const header = document.createElement("div");
       header.className = "tdp-header";
       header.innerHTML = `
         <span class="tdp-title">${escapeHtml(sched.id)}</span>
-        <button class="tdp-close" title="Close">&times;</button>
+        <span class="tdp-status-badge ${enabled ? "enabled" : "disabled"}">${enabled ? "Enabled" : "Disabled"}</span>
       `;
-      header.querySelector(".tdp-close").addEventListener("click", closeTaskDetail);
-      taskDetailPanel.appendChild(header);
+      container.appendChild(header);
 
-      // ── Body (scrollable) ──
+      // ── Body ──
       const body = document.createElement("div");
       body.className = "tdp-body";
 
       // ── Basic Info ──
       const infoSection = document.createElement("div");
+      infoSection.className = "tdp-section";
       const cronLabel = formatCron(sched.cron);
       const runAtLabel = formatRunAt(sched.runAt);
       const runCountDisplay = sched.maxRuns != null
@@ -1987,7 +1993,7 @@
           <span class="tdp-info-value">${escapeHtml(cronLabel)}</span>
           ${runAtLabel ? `<span class="tdp-info-label">Run At</span><span class="tdp-info-value">${escapeHtml(runAtLabel)}</span>` : ""}
           <span class="tdp-info-label">Disposable</span>
-          <span class="tdp-info-value">${sched.disposable ? "Yes \u{1F5D1}\uFE0F" : "No"}</span>
+          <span class="tdp-info-value">${sched.disposable ? "Yes" : "No"}</span>
           <span class="tdp-info-label">Runs</span>
           <span class="tdp-info-value">${escapeHtml(runCountDisplay)}</span>
         </div>
@@ -2009,12 +2015,15 @@
 
       const panelToggle = actionsSection.querySelector(".tdp-toggle input");
       const panelToggleLabel = actionsSection.querySelector(".tdp-toggle-label");
+      const statusBadge = header.querySelector(".tdp-status-badge");
       const panelRunBtn = actionsSection.querySelector(".tdp-run-btn");
 
       panelToggle.addEventListener("change", async () => {
         const newEnabled = panelToggle.checked;
         enabled = newEnabled;
         panelToggleLabel.textContent = newEnabled ? "Enabled" : "Disabled";
+        statusBadge.textContent = newEnabled ? "Enabled" : "Disabled";
+        statusBadge.className = "tdp-status-badge " + (newEnabled ? "enabled" : "disabled");
         try {
           const res = await fetch("/api/schedules/" + encodeURIComponent(sched.id), {
             method: "PATCH",
@@ -2022,13 +2031,14 @@
             body: JSON.stringify({ enabled: newEnabled }),
           });
           if (!res.ok) throw new Error("PATCH failed");
-          // Sync sidebar
           loadTaskSection();
         } catch (err) {
           console.error("Failed to toggle schedule:", err);
           enabled = !newEnabled;
           panelToggle.checked = !newEnabled;
           panelToggleLabel.textContent = !newEnabled ? "Enabled" : "Disabled";
+          statusBadge.textContent = !newEnabled ? "Enabled" : "Disabled";
+          statusBadge.className = "tdp-status-badge " + (!newEnabled ? "enabled" : "disabled");
         }
       });
 
@@ -2047,17 +2057,17 @@
       // ── Workflow Detail ──
       if (sched.workflow) {
         const wfSection = document.createElement("div");
+        wfSection.className = "tdp-section";
         wfSection.innerHTML = `<div class="tdp-section-title">Workflow Detail</div>
           <div style="font-size:11px;color:var(--text-muted)">Loading workflow…</div>`;
         body.appendChild(wfSection);
-
-        // Async load
         loadWorkflowIntoPanel(sched.workflow, wfSection);
       }
 
       // ── Run History ──
       const schedRuns = runs.filter(r => !sched.workflow || r.workflow === sched.workflow);
       const runSection = document.createElement("div");
+      runSection.className = "tdp-section";
       runSection.innerHTML = `<div class="tdp-section-title">Run History</div>`;
       if (schedRuns.length === 0) {
         runSection.innerHTML += '<div class="tdp-empty">No runs yet</div>';
@@ -2093,10 +2103,11 @@
       }
       body.appendChild(runSection);
 
-      taskDetailPanel.appendChild(body);
+      container.appendChild(body);
+      workflowView.appendChild(container);
     } catch (err) {
       console.error("Failed to open task detail:", err);
-      taskDetailPanel.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-muted)">Failed to load task details.</div>';
+      workflowView.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-muted)">Failed to load task details.</div>';
     }
   }
 
@@ -2307,10 +2318,11 @@
   }
 
   function attachSession(id, session) {
-    // Hide workflow view and restore normal chat layout
+    // Hide workflow/task-detail view and restore normal chat layout
     workflowView.style.display = "none";
     messagesEl.style.display = "";
     document.getElementById("inputArea").style.display = "";
+    currentTaskDetailId = null;
 
     currentSessionId = id;
     clearMessages();
