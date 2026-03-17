@@ -62,7 +62,7 @@ function loadSchedules() {
   }
 }
 
-function updateLastRun(scheduleId) {
+export function updateLastRun(scheduleId) {
   try {
     const data = loadSchedules();
     const s = data.schedules.find(s => s.id === scheduleId);

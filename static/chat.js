@@ -70,6 +70,7 @@
   let sessionContextTotal = 0; // latest total context tokens (input + cache)
   let pendingSummary = new Set(); // sessionIds awaiting summary generation
   let currentTaskDetailId = null; // currently viewed task in main content area
+  let taskDetailCountdownInterval = null; // interval for next-run countdown in task detail panel
   let lastSidebarUpdatedAt = {}; // sessionId -> last known updatedAt
 
   let sessionLastMessage = {}; // sessionId -> last sent message text
@@ -1803,13 +1804,49 @@
     if (parts.length < 5) return cron;
     const [min, hour, dom, mon, dow] = parts;
     const time = `${hour.padStart(2, "0")}:${min.padStart(2, "0")}`;
-    if (dom === "*" && mon === "*" && dow === "*") return `Daily at ${time}`;
+    if (dom === "*" && mon === "*" && dow === "*") return `Daily at ${time} (UTC)`;
     if (dom === "*" && mon === "*" && dow !== "*") {
       const days = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
       const dayLabel = /^\d$/.test(dow) ? (days[+dow] || dow) : dow;
-      return `${dayLabel} at ${time}`;
+      return `${dayLabel} at ${time} (UTC)`;
     }
-    return `${time} ${cron}`;
+    return `${time} (UTC) ${cron}`;
+  }
+
+  // Compute the next UTC trigger time for a cron expression (daily/weekly subset).
+  // Mirrors scheduler.mjs msUntilNextCron but works in the browser using UTC methods.
+  function nextCronUTC(cron) {
+    if (!cron) return null;
+    const parts = cron.split(/\s+/);
+    if (parts.length < 5) return null;
+    const [min, hour, , , dow] = parts;
+    const minute = parseInt(min, 10);
+    const hourVal = parseInt(hour, 10);
+    const now = new Date();
+    const next = new Date();
+    next.setUTCHours(hourVal, minute, 0, 0);
+    if (dow !== "*") {
+      const targetDay = parseInt(dow, 10);
+      const currentDay = now.getUTCDay();
+      let daysAhead = targetDay - currentDay;
+      if (daysAhead < 0) daysAhead += 7;
+      if (daysAhead === 0 && next <= now) daysAhead = 7;
+      next.setUTCDate(next.getUTCDate() + daysAhead);
+    } else {
+      if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
+    }
+    return next;
+  }
+
+  // Format milliseconds remaining as "Xh Ym" or "Ym" or "< 1m"
+  function formatCountdown(ms) {
+    if (ms <= 0) return "now";
+    const totalMin = Math.ceil(ms / 60_000);
+    if (totalMin < 1) return "< 1m";
+    if (totalMin < 60) return `${totalMin}m`;
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    return m > 0 ? `${h}h ${m}m` : `${h}h`;
   }
 
   function formatRunAt(runAt) {
@@ -1939,6 +1976,11 @@
   }
 
   async function openTaskDetail(scheduleId) {
+    // Clear any previous countdown interval before opening a new detail panel
+    if (taskDetailCountdownInterval) {
+      clearInterval(taskDetailCountdownInterval);
+      taskDetailCountdownInterval = null;
+    }
     currentTaskDetailId = scheduleId;
     showTaskDetailView();
     headerTitle.textContent = scheduleId;
@@ -1986,12 +2028,20 @@
         ? `${sched.runCount || 0} / ${sched.maxRuns}`
         : `${sched.runCount || 0} / \u221E`;
 
+      // Compute next run info for cron schedules
+      const nextRunDate = nextCronUTC(sched.cron);
+      const nextRunLocalStr = nextRunDate
+        ? nextRunDate.toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+        : null;
+
       infoSection.innerHTML = `
         <div class="tdp-section-title">Basic Info</div>
         <div class="tdp-info-grid">
           <span class="tdp-info-label">Schedule</span>
           <span class="tdp-info-value">${escapeHtml(cronLabel)}</span>
           ${runAtLabel ? `<span class="tdp-info-label">Run At</span><span class="tdp-info-value">${escapeHtml(runAtLabel)}</span>` : ""}
+          ${nextRunLocalStr ? `<span class="tdp-info-label">Next Run</span><span class="tdp-info-value">${escapeHtml(nextRunLocalStr)}</span>` : ""}
+          ${nextRunDate ? `<span class="tdp-info-label">Countdown</span><span class="tdp-info-value tdp-countdown"></span>` : ""}
           <span class="tdp-info-label">Disposable</span>
           <span class="tdp-info-value">${sched.disposable ? "Yes" : "No"}</span>
           <span class="tdp-info-label">Runs</span>
@@ -1999,6 +2049,16 @@
         </div>
       `;
       body.appendChild(infoSection);
+
+      // Countdown: update every minute
+      if (nextRunDate) {
+        const countdownEl = infoSection.querySelector(".tdp-countdown");
+        const updateCountdown = () => {
+          countdownEl.textContent = formatCountdown(nextRunDate.getTime() - Date.now());
+        };
+        updateCountdown();
+        taskDetailCountdownInterval = setInterval(updateCountdown, 60_000);
+      }
 
       // ── Actions (toggle + run) ──
       const actionsSection = document.createElement("div");
@@ -2323,6 +2383,10 @@
     messagesEl.style.display = "";
     document.getElementById("inputArea").style.display = "";
     currentTaskDetailId = null;
+    if (taskDetailCountdownInterval) {
+      clearInterval(taskDetailCountdownInterval);
+      taskDetailCountdownInterval = null;
+    }
 
     currentSessionId = id;
     clearMessages();

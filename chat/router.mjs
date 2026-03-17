@@ -12,7 +12,7 @@ import {
 import { getAvailableTools } from '../lib/tools.mjs';
 import { listSessions, getSession, createSession, deleteSession, sendMessage, getHistory, waitForIdle, receiveHookRequest, getLabels, addLabel, removeLabel, updateLabel, setSessionLabel, archiveSession, restartServer } from './session-manager.mjs';
 import { executeWorkflow, listWorkflowRuns } from './workflow-engine.mjs';
-import { reloadSchedule } from './scheduler.mjs';
+import { reloadSchedule, updateLastRun } from './scheduler.mjs';
 import { getSidebarState } from './summarizer.mjs';
 import { readBody, readBodyBinary } from '../lib/utils.mjs';
 import {
@@ -921,6 +921,8 @@ export async function handleRequest(req, res) {
         res.end(JSON.stringify({ error: 'Schedule not found' }));
         return;
       }
+      // Update lastRun immediately (same behavior as auto cron trigger)
+      updateLastRun(scheduleId);
       // Fire-and-forget; return run ID immediately
       const runPromise = executeWorkflow(schedule.workflow, {
         schedule,
