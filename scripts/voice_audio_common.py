@@ -3,12 +3,15 @@
 import contextlib
 import io
 import json
+import math
 import os
 import platform
 import re
 import subprocess
 import sys
 import tempfile
+import time
+from collections import deque
 from pathlib import Path
 
 try:
@@ -170,6 +173,113 @@ def record_audio(output_path, *, duration_seconds, backend=None, source=None):
     ]
     run_command(cmd, capture_output=False)
     return output_path
+
+
+def resolve_sounddevice_device(source=None):
+    normalized_source = trim(source)
+    if not normalized_source:
+        normalized_source = trim(default_input_source("sounddevice"))
+    if not normalized_source:
+        return None
+    try:
+        return int(normalized_source)
+    except ValueError:
+        return normalized_source
+
+
+def capture_until_silence(
+    output_path=None,
+    *,
+    timeout_ms=15000,
+    speech_start_timeout_ms=5000,
+    silence_ms=900,
+    frame_ms=100,
+    pre_roll_ms=250,
+    speech_threshold=0.0015,
+    sample_rate=16000,
+    backend="sounddevice",
+    source="",
+):
+    normalized_backend = trim(backend) or default_input_backend()
+    if normalized_backend != "sounddevice":
+        raise RuntimeError("capture_until_silence currently supports only the sounddevice backend")
+    if sd is None or sf is None or np is None:
+        raise RuntimeError("sounddevice, soundfile, and numpy are required")
+
+    resolved_output_path = str(Path(trim(output_path) or make_temp_wav("voice-capture-")).expanduser().resolve())
+    device = resolve_sounddevice_device(source)
+    frame_ms = max(20, int(frame_ms))
+    frame_count = max(1, int(round(sample_rate * frame_ms / 1000)))
+    pre_roll_blocks = max(1, int(math.ceil(max(0, pre_roll_ms) / frame_ms)))
+    silence_blocks_needed = max(1, int(math.ceil(max(1, silence_ms) / frame_ms)))
+    speech_deadline = time.monotonic() + max(1, speech_start_timeout_ms) / 1000.0
+    hard_deadline = time.monotonic() + max(1, timeout_ms) / 1000.0
+
+    pre_roll = deque(maxlen=pre_roll_blocks)
+    frames = []
+    started = False
+    silent_blocks = 0
+    peak_seen = 0.0
+
+    with sd.InputStream(
+        samplerate=sample_rate,
+        channels=1,
+        dtype="float32",
+        device=device,
+        blocksize=frame_count,
+    ) as stream:
+        while True:
+            now = time.monotonic()
+            if now >= hard_deadline:
+                break
+            chunk, _overflowed = stream.read(frame_count)
+            chunk = chunk.copy()
+            peak = float(np.max(np.abs(chunk))) if chunk.size else 0.0
+            peak_seen = max(peak_seen, peak)
+
+            if not started:
+                pre_roll.append(chunk)
+                if peak >= speech_threshold:
+                    started = True
+                    frames.extend(list(pre_roll))
+                    silent_blocks = 0
+                elif now >= speech_deadline:
+                    break
+                continue
+
+            frames.append(chunk)
+            if peak >= speech_threshold:
+                silent_blocks = 0
+            else:
+                silent_blocks += 1
+                if silent_blocks >= silence_blocks_needed:
+                    break
+
+    if not started or not frames:
+        return {
+            "audioPath": "",
+            "speechDetected": False,
+            "durationMs": 0,
+            "peak": peak_seen,
+            "sampleRate": sample_rate,
+        }
+
+    if silent_blocks > 0 and len(frames) > silent_blocks:
+        frames = frames[:-silent_blocks]
+    audio = np.concatenate(frames, axis=0)
+    sf.write(resolved_output_path, audio, sample_rate)
+    duration_ms = int(round(audio.shape[0] * 1000.0 / sample_rate))
+    if peak_seen <= 1e-8:
+        raise RuntimeError(
+            "Microphone capture returned silence; on macOS this usually means the process is not running inside a microphone-authorized app context such as Terminal.app"
+        )
+    return {
+        "audioPath": resolved_output_path,
+        "speechDetected": True,
+        "durationMs": duration_ms,
+        "peak": peak_seen,
+        "sampleRate": sample_rate,
+    }
 
 
 def transcribe_audio(audio_path, *, model=DEFAULT_MODEL, language="", initial_prompt=""):

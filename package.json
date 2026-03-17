@@ -64,6 +64,7 @@
     "feishu:connect:instance": "./scripts/feishu-connector-instance.sh start",
     "voice:connect": "node scripts/voice-connector.mjs",
     "voice:connect:instance": "./scripts/voice-connector-instance.sh start",
+    "voice:utterance:loop": "~/.tmp/asr-venv/bin/python scripts/voice-utterance-loop.py",
     "voice:wake:loop": "~/.tmp/asr-venv/bin/python scripts/voice-wake-loop.py",
     "voice:capture:silence": "~/.tmp/asr-venv/bin/python scripts/voice-capture-until-silence.py",
     "voice:record:once": "~/.tmp/asr-venv/bin/python scripts/voice-record-once.py",

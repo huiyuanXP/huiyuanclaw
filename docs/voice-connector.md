@@ -185,6 +185,7 @@ This one-stage setup is the simplest validation path:
 
 This repo now ships a generic Python wake path that keeps the core logic outside the main server and outside platform-specific app code:
 
+- `scripts/voice-utterance-loop.py` — passive always-on utterance listener; any detected full utterance becomes one RemoteLab message
 - `scripts/voice-wake-loop.py` — always-on wake listener using short microphone chunks plus local `mlx_whisper`
 - `scripts/voice-capture-until-silence.py` — one-shot follow-up capture that waits for speech and stops after trailing silence
 - `scripts/voice-record-once.py` — one-shot microphone capture helper using `sounddevice` when available, with `ffmpeg` fallback
@@ -192,6 +193,19 @@ This repo now ships a generic Python wake path that keeps the core logic outside
 - `scripts/voice-connector-instance.sh` — start/stop/status helper for the persistent connector process
 
 On macOS, microphone permissions are app-context-sensitive. A fully headless `nohup` process launched from a non-authorized host can look "alive" while actually recording zeros. The default instance helper therefore uses `Terminal.app` only as a short permission bootstrap on startup, then detaches the real connector into the background and closes the Terminal window.
+
+## Passive Speech Mode
+
+For the simplest demo, you do not need a wake phrase at all.
+
+In passive speech mode:
+
+- the connector continuously listens for any utterance
+- once speech starts, it keeps recording until trailing silence
+- the whole utterance is transcribed locally
+- that transcript is sent into a fresh RemoteLab session turn
+
+This mode is intentionally simple and good for evaluation, but it will also react to background human speech or other nearby voice audio. It is a demo path, not yet a production-grade wake-word filter.
 
 ## Optional macOS prototype helpers
 
