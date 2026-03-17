@@ -1,13 +1,22 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, renameSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { randomBytes } from 'crypto';
 import { homedir } from 'os';
-import { createAndRun } from './session-manager.mjs';
+import { createAndRun, archiveSession } from './session-manager.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WORKFLOWS_DIR = join(__dirname, '..', 'workflows');
 const RUNS_DIR = join(homedir(), '.config', 'claude-web', 'workflow-runs');
+const SCHEDULES_FILE = join(WORKFLOWS_DIR, 'schedules.json');
+
+// ---- Atomic write helper ----
+
+function atomicWriteJSON(filepath, data) {
+  const tmp = filepath + '.tmp.' + process.pid;
+  writeFileSync(tmp, JSON.stringify(data, null, 2));
+  renameSync(tmp, filepath);
+}
 
 // ---- Placeholder resolution ----
 
@@ -22,17 +31,68 @@ function resolvePlaceholders(prompt, results) {
 
 // ---- Single task runner ----
 
-async function runTask(task, runDir) {
+async function runTask(task, runDir, sessionIds) {
   console.log(`[Workflow] Running task "${task.id}" in ${task.workspace} (model: ${task.model})`);
-  const output = await createAndRun(task.workspace, task.model, task.prompt);
+  const { output, sessionId } = await createAndRun(task.workspace, task.model, task.prompt);
+  if (sessionId) sessionIds.push(sessionId);
   writeFileSync(join(runDir, `${task.id}.txt`), output, 'utf8');
   console.log(`[Workflow] Task "${task.id}" completed (${output.length} chars)`);
   return output;
 }
 
+// ---- Schedule post-run logic ----
+
+function loadSchedules() {
+  try {
+    return JSON.parse(readFileSync(SCHEDULES_FILE, 'utf8'));
+  } catch {
+    return { schedules: [] };
+  }
+}
+
+function handleDisposable(schedule, sessionIds, runDir) {
+  if (!schedule?.disposable) return;
+  console.log(`[Workflow] Disposable: archiving ${sessionIds.length} session(s) for schedule "${schedule.id}"`);
+  for (const sid of sessionIds) {
+    archiveSession(sid, true);
+  }
+  // Mark run meta as archived
+  try {
+    const metaPath = join(runDir, 'meta.json');
+    const meta = JSON.parse(readFileSync(metaPath, 'utf8'));
+    meta.archived = true;
+    writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+  } catch (err) {
+    console.error(`[Workflow] Failed to mark run as archived:`, err.message);
+  }
+}
+
+function handleRunCount(schedule) {
+  if (!schedule) return;
+  const data = loadSchedules();
+  const s = data.schedules.find(s => s.id === schedule.id);
+  if (!s) return;
+
+  s.runCount = (s.runCount || 0) + 1;
+  console.log(`[Workflow] Schedule "${schedule.id}" runCount=${s.runCount}/${s.maxRuns ?? '∞'}`);
+
+  if (s.maxRuns !== null && s.maxRuns !== undefined && s.runCount >= s.maxRuns) {
+    console.log(`[Workflow] Schedule "${schedule.id}" reached maxRuns=${s.maxRuns}, removing`);
+    data.schedules = data.schedules.filter(x => x.id !== schedule.id);
+    atomicWriteJSON(SCHEDULES_FILE, data);
+    // Notify scheduler to clear timer (via returned flag)
+    return 'removed';
+  }
+
+  atomicWriteJSON(SCHEDULES_FILE, data);
+  return 'updated';
+}
+
 // ---- Main export ----
 
-export async function executeWorkflow(workflowName) {
+export async function executeWorkflow(workflowName, options = {}) {
+  const { schedule } = options;
+
   const workflowPath = join(WORKFLOWS_DIR, `${workflowName}.json`);
   if (!existsSync(workflowPath)) {
     throw new Error(`Workflow definition not found: ${workflowPath}`);
@@ -52,9 +112,11 @@ export async function executeWorkflow(workflowName) {
     status: 'running',
     steps: {},
   };
+  if (schedule) meta.scheduleId = schedule.id;
   writeFileSync(join(runDir, 'meta.json'), JSON.stringify(meta, null, 2));
 
   const results = {}; // stepId → { taskId → output }
+  const sessionIds = []; // track all sessions created during this run
 
   try {
     for (const step of workflow.steps) {
@@ -66,10 +128,9 @@ export async function executeWorkflow(workflowName) {
       }));
 
       if (step.type === 'parallel') {
-        // Run all tasks concurrently; use allSettled so one failure doesn't abort the step
         const settled = await Promise.allSettled(
           resolvedTasks.map(async task => {
-            const output = await runTask(task, runDir);
+            const output = await runTask(task, runDir, sessionIds);
             return [task.id, output];
           })
         );
@@ -80,10 +141,9 @@ export async function executeWorkflow(workflowName) {
           ])
         );
       } else {
-        // sequential: run tasks one after another
         results[step.id] = {};
         for (const task of resolvedTasks) {
-          const output = await runTask(task, runDir);
+          const output = await runTask(task, runDir, sessionIds);
           results[step.id][task.id] = output;
         }
       }
@@ -102,6 +162,14 @@ export async function executeWorkflow(workflowName) {
   }
 
   writeFileSync(join(runDir, 'meta.json'), JSON.stringify(meta, null, 2));
+
+  // Post-run schedule lifecycle
+  if (schedule) {
+    handleDisposable(schedule, sessionIds, runDir);
+    const result = handleRunCount(schedule);
+    meta._scheduleRemoved = result === 'removed';
+  }
+
   return { runId, runDir, meta };
 }
 

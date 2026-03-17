@@ -1,4 +1,4 @@
-import { existsSync, statSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from 'fs';
+import { existsSync, statSync, readdirSync, readFileSync, mkdirSync, writeFileSync, renameSync } from 'fs';
 import { createHash } from 'crypto';
 import { homedir } from 'os';
 import { join, resolve, dirname, basename } from 'path';
@@ -12,6 +12,7 @@ import {
 import { getAvailableTools } from '../lib/tools.mjs';
 import { listSessions, getSession, createSession, deleteSession, sendMessage, getHistory, waitForIdle, receiveHookRequest, getLabels, addLabel, removeLabel, updateLabel, setSessionLabel, archiveSession, restartServer } from './session-manager.mjs';
 import { executeWorkflow, listWorkflowRuns } from './workflow-engine.mjs';
+import { reloadSchedule } from './scheduler.mjs';
 import { getSidebarState } from './summarizer.mjs';
 import { readBody, readBodyBinary } from '../lib/utils.mjs';
 import {
@@ -921,7 +922,7 @@ export async function handleRequest(req, res) {
         return;
       }
       // Fire-and-forget; return run ID immediately
-      const runPromise = executeWorkflow(schedule.workflow);
+      const runPromise = executeWorkflow(schedule.workflow, { schedule });
       runPromise
         .then(({ runId }) => console.log(`[router] Manual trigger run=${runId} completed`))
         .catch(err => console.error(`[router] Manual trigger failed: ${err.message}`));
@@ -930,6 +931,48 @@ export async function handleRequest(req, res) {
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // PATCH /api/schedules/:id — update schedule attributes
+  const schedulePatchMatch = pathname.match(/^\/api\/schedules\/([^/]+)$/);
+  if (schedulePatchMatch && req.method === 'PATCH') {
+    const scheduleId = schedulePatchMatch[1];
+    let body;
+    try { body = await readBody(req, 4096); } catch { body = '{}'; }
+    try {
+      const updates = JSON.parse(body);
+      const schedulesFile = join(__dirname, '..', 'workflows', 'schedules.json');
+      const data = existsSync(schedulesFile)
+        ? JSON.parse(readFileSync(schedulesFile, 'utf8'))
+        : { schedules: [] };
+      const schedule = data.schedules.find(s => s.id === scheduleId);
+      if (!schedule) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Schedule not found' }));
+        return;
+      }
+      // Allow updating only specific fields
+      const ALLOWED = ['enabled', 'maxRuns', 'disposable'];
+      for (const key of ALLOWED) {
+        if (updates[key] !== undefined) schedule[key] = updates[key];
+      }
+      // Atomic write
+      const tmp = schedulesFile + '.tmp.' + process.pid;
+      writeFileSync(tmp, JSON.stringify(data, null, 2));
+      renameSync(tmp, schedulesFile);
+
+      // If enabled changed, reload this schedule's timer
+      if (updates.enabled !== undefined) {
+        reloadSchedule(scheduleId);
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ schedule }));
+    } catch (err) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'Invalid request body' }));
     }
     return;
   }

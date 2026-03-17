@@ -48,9 +48,7 @@ server.listen(CHAT_PORT, '127.0.0.1', () => {
   setTimeout(recoverReportToWatchers, 3000);
 
   // Start workflow scheduler (fires once server is up so createAndRun can reach itself)
-  startScheduler((schedule) => {
-    executeWorkflow(schedule.workflow).catch(err => {
-      console.error(`[Scheduler] Workflow "${schedule.workflow}" error:`, err.message);
-    });
+  startScheduler(async (schedule) => {
+    return executeWorkflow(schedule.workflow, { schedule });
   });
 });

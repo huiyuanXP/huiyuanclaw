@@ -790,7 +790,8 @@ export async function createAndRun(folder, model, prompt) {
   // Extract last assistant message content from history
   const history = loadHistory(session.id);
   const lastMsg = [...history].reverse().find(e => e.type === 'message' && e.role === 'assistant');
-  return lastMsg?.content || '[no assistant output]';
+  const output = lastMsg?.content || '[no assistant output]';
+  return { output, sessionId: session.id };
 }
 
 // ---- Restart recovery ----
