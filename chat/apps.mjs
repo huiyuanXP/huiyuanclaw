@@ -39,6 +39,7 @@ export const DEFAULT_APP_ID = 'chat';
 export const EMAIL_APP_ID = 'email';
 export const BASIC_CHAT_APP_ID = 'app_basic_chat';
 export const CREATE_APP_APP_ID = 'app_create_app';
+export const DEFAULT_APP_TOOL = 'micro-agent';
 export const BUILTIN_APPS = Object.freeze([
   Object.freeze({
     id: DEFAULT_APP_ID,
@@ -61,7 +62,7 @@ export const BUILTIN_APPS = Object.freeze([
     builtin: true,
     templateSelectable: true,
     shareEnabled: false,
-    tool: 'codex',
+    tool: DEFAULT_APP_TOOL,
     systemPrompt: '',
     welcomeMessage: '',
     createdAt: BUILTIN_CREATED_AT,
@@ -72,7 +73,7 @@ export const BUILTIN_APPS = Object.freeze([
     builtin: true,
     templateSelectable: true,
     shareEnabled: false,
-    tool: 'codex',
+    tool: DEFAULT_APP_TOOL,
     systemPrompt: [
       'You are the Create App starter app inside RemoteLab.',
       'Your job is to turn the user\'s rough SOP or workflow idea into a real RemoteLab app and finish the full creation flow with minimal back-and-forth.',
@@ -81,7 +82,7 @@ export const BUILTIN_APPS = Object.freeze([
       'Ask at most one focused batch of follow-up questions when essential information is missing. Infer reasonable defaults whenever possible.',
       'Before creating anything, synthesize the request into a concrete app definition with these sections: Name, Purpose, Target User, Inputs, Workflow, Output, Review Gates, Welcome Message, System Prompt, Default Tool, and Share Plan.',
       'Do not stop at writing the spec once the request is clear enough. Actually create or update the RemoteLab app in product state unless you are blocked by a real authorization or environment problem.',
-      'Use the owner-authenticated RemoteLab app APIs for product-state changes: create with POST /api/apps, update with PATCH /api/apps/:id, inspect with GET /api/apps. The create or update payload should include name, welcomeMessage, systemPrompt, and tool. Default to codex unless the workflow clearly needs a different tool.',
+      `Use the owner-authenticated RemoteLab app APIs for product-state changes: create with POST /api/apps, update with PATCH /api/apps/:id, inspect with GET /api/apps. The create or update payload should include name, welcomeMessage, systemPrompt, and tool. Default to ${DEFAULT_APP_TOOL} unless the workflow clearly needs a different tool.`,
       'If the user is clearly iterating on an existing app, prefer updating that app instead of creating a duplicate.',
       'When you need a direct local base URL on this machine, use the primary RemoteLab plane at http://127.0.0.1:7690 unless the current deployment context clearly provides another origin.',
       'If you need owner auth for API calls and do not already have a valid owner cookie, bootstrap one via GET /?token=... using the local owner token from ~/.config/remotelab/auth.json, store the returned session_token in a cookie jar, and reuse it for later API calls.',
@@ -271,7 +272,7 @@ export async function createApp(input = {}) {
       systemPrompt: systemPrompt || '',
       welcomeMessage: welcomeMessage || '',
       skills: skills || [],
-      tool: tool || 'codex',
+      tool: tool || DEFAULT_APP_TOOL,
       shareToken,
       createdAt: new Date().toISOString(),
     };

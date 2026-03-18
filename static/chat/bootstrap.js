@@ -365,10 +365,28 @@ function withVisitorModeUrl(url) {
 
 let currentTokens = 0;
 
-let preferredTool =
-  localStorage.getItem("preferredTool") ||
-  localStorage.getItem("selectedTool") ||
-  null;
+const DEFAULT_TOOL_ID = "micro-agent";
+
+function normalizeStoredToolId(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function derivePreferredToolId(storedPreferredTool, storedLegacySelectedTool) {
+  const preferred = normalizeStoredToolId(storedPreferredTool);
+  const legacySelected = normalizeStoredToolId(storedLegacySelectedTool);
+  if (preferred && !(preferred === "codex" && !legacySelected)) {
+    return preferred;
+  }
+  if (legacySelected && legacySelected !== "codex") {
+    return legacySelected;
+  }
+  return null;
+}
+
+const storedPreferredTool = normalizeStoredToolId(localStorage.getItem("preferredTool"));
+const storedLegacySelectedTool = normalizeStoredToolId(localStorage.getItem("selectedTool"));
+
+let preferredTool = derivePreferredToolId(storedPreferredTool, storedLegacySelectedTool);
 let selectedTool = preferredTool;
 // Default thinking to enabled; only disable if explicitly set to 'false'
 let thinkingEnabled = localStorage.getItem("thinkingEnabled") !== "false";

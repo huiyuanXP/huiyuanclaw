@@ -90,6 +90,28 @@ function requestLayoutPass(reason = "layout") {
   return layoutPassHandle;
 }
 
+function prioritizeToolOptions(toolOptions = []) {
+  const tools = Array.isArray(toolOptions) ? [...toolOptions] : [];
+  const defaultIndex = tools.findIndex((tool) => tool?.id === DEFAULT_TOOL_ID);
+  if (defaultIndex > 0) {
+    const [defaultTool] = tools.splice(defaultIndex, 1);
+    tools.unshift(defaultTool);
+  }
+  return tools;
+}
+
+function resolvePreferredToolId(toolOptions = [], candidates = []) {
+  const tools = prioritizeToolOptions(toolOptions).filter((tool) => tool?.id);
+  const availableIds = new Set(tools.map((tool) => tool.id));
+  for (const candidate of candidates) {
+    const toolId = typeof candidate === "string" ? candidate.trim() : "";
+    if (toolId && availableIds.has(toolId)) {
+      return toolId;
+    }
+  }
+  return tools[0]?.id || "";
+}
+
 function subscribeLayoutPass(subscriber, { immediate = false } = {}) {
   if (typeof subscriber !== "function") {
     return () => {};
@@ -655,10 +677,8 @@ async function loadInlineTools({ skipModelLoad = false } = {}) {
   }
   try {
     const data = await fetchJsonOrRedirect("/api/tools");
-    toolsList = (data.tools || []).filter((t) => t.available);
-    const initialTool = [selectedTool, preferredTool, toolsList[0]?.id].find(
-      (toolId) => toolId && toolsList.some((t) => t.id === toolId),
-    );
+    toolsList = prioritizeToolOptions((data.tools || []).filter((t) => t.available));
+    const initialTool = resolvePreferredToolId(toolsList, [selectedTool, preferredTool]);
     renderInlineToolOptions(initialTool);
     if (initialTool) {
       selectedTool = initialTool;
@@ -689,7 +709,7 @@ async function loadInlineTools({ skipModelLoad = false } = {}) {
 inlineToolSelect.addEventListener("change", async () => {
   const nextTool = inlineToolSelect.value;
   if (nextTool === ADD_MORE_TOOL_VALUE) {
-    renderInlineToolOptions(selectedTool || preferredTool || toolsList[0]?.id || "");
+    renderInlineToolOptions(resolvePreferredToolId(toolsList, [selectedTool, preferredTool]));
     openAddToolModal();
     return;
   }

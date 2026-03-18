@@ -24,6 +24,8 @@ The installer writes one custom tool record into `~/.config/remotelab/tools.json
 
 So the UI treats it like a lightweight preset, while the actual runtime stays the normal Codex CLI.
 
+When `micro-agent` is installed and available, the chat UI now prefers it as the default agent for new sessions and app tool pickers. Explicit per-session or per-app tool choices still win.
+
 ## Why this is lighter
 
 The previous direction added a new control protocol so the micro-agent could ask RemoteLab to switch runtimes for the next turn.
