@@ -18,7 +18,7 @@ import {
   setForkContext,
   setContextHead,
 } from './history.mjs';
-import { messageEvent, statusEvent } from './normalizer.mjs';
+import { managerContextEvent, messageEvent, statusEvent } from './normalizer.mjs';
 import {
   triggerSessionLabelSuggestion,
   triggerSessionWorkflowStateSuggestion,
@@ -1790,6 +1790,19 @@ async function findLatestAssistantMessageForRun(sessionId, runId) {
 
 const MANAGER_TURN_POLICY_BLOCK = `Manager note: ${MANAGER_TURN_POLICY_REMINDER}`;
 
+function buildManagerTurnContextText(session) {
+  return [
+    MANAGER_TURN_POLICY_BLOCK,
+    buildSessionAgreementsPromptBlock(session?.activeAgreements || []),
+  ].filter(Boolean).join('\n\n');
+}
+
+function wrapPrivatePromptBlock(text) {
+  const normalized = typeof text === 'string' ? text.trim() : '';
+  if (!normalized) return '';
+  return ['<private>', normalized, '</private>'].join('\n');
+}
+
 export async function buildPrompt(sessionId, session, text, previousTool, effectiveTool, snapshot = null, options = {}) {
   const toolDefinition = await getToolDefinitionAsync(effectiveTool);
   const promptMode = toolDefinition?.promptMode === 'bare-user'
@@ -1819,17 +1832,19 @@ export async function buildPrompt(sessionId, session, text, previousTool, effect
 
   let actualText = text;
   if (promptMode === 'default') {
-    const turnPrefixBlocks = [
-      MANAGER_TURN_POLICY_BLOCK,
-      buildSessionAgreementsPromptBlock(session?.activeAgreements || []),
-    ].filter(Boolean);
-    const turnPrefix = turnPrefixBlocks.join('\n\n');
+    const turnPrefix = wrapPrivatePromptBlock(buildManagerTurnContextText(session));
+    const turnSections = [];
 
     if (continuationContext) {
-      actualText = `${continuationContext}\n\n---\n\n${turnPrefix}\n\n---\n\nCurrent user message:\n${text}`;
+      turnSections.push(continuationContext);
+      if (turnPrefix) turnSections.push(turnPrefix);
+      turnSections.push(`Current user message:\n${text}`);
     } else {
-      actualText = `${turnPrefix}\n\n---\n\n${hasResume ? 'Current user message' : 'User message'}:\n${text}`;
+      if (turnPrefix) turnSections.push(turnPrefix);
+      turnSections.push(`${hasResume ? 'Current user message' : 'User message'}:\n${text}`);
     }
+
+    actualText = turnSections.join('\n\n---\n\n');
 
     if (!hasResume) {
       const systemContext = await buildSystemContext({ sessionId });
@@ -2068,47 +2083,6 @@ async function applyCompactionWorkerResult(targetSessionId, run, manifest) {
   return true;
 }
 
-function findLatestUpgradeControl(events = []) {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    if (event?.type !== 'message' || event.role !== 'assistant') continue;
-    if (event.controlAction !== 'upgrade') continue;
-    const tool = typeof event.controlTool === 'string' ? event.controlTool.trim() : '';
-    if (!tool) continue;
-    return {
-      tool,
-      reason: typeof event.controlReason === 'string' ? event.controlReason.trim() : '',
-    };
-  }
-  return null;
-}
-
-async function maybeApplyRunUpgradeControl(sessionId, normalizedEvents = []) {
-  const control = findLatestUpgradeControl(normalizedEvents);
-  if (!control) return { historyChanged: false, sessionChanged: false };
-
-  const currentSession = await getSession(sessionId);
-  if (!currentSession || currentSession.tool === control.tool) {
-    return { historyChanged: false, sessionChanged: false };
-  }
-
-  const targetTool = await getToolDefinitionAsync(control.tool);
-  if (!targetTool) {
-    await appendEvent(sessionId, statusEvent(`Ignored upgrade request to unavailable tool "${control.tool}"`));
-    return { historyChanged: true, sessionChanged: false };
-  }
-
-  const cleared = await clearPersistedResumeIds(sessionId);
-  const updated = await updateSessionTool(sessionId, control.tool);
-  if (!updated) {
-    return { historyChanged: false, sessionChanged: cleared };
-  }
-
-  const reasonSuffix = control.reason ? ` — ${control.reason}` : '';
-  await appendEvent(sessionId, statusEvent(`Next turn will use ${targetTool.name || control.tool}${reasonSuffix}`));
-  return { historyChanged: true, sessionChanged: true };
-}
-
 async function finalizeDetachedRun(sessionId, run, manifest, normalizedEvents = []) {
   let historyChanged = false;
   let sessionChanged = false;
@@ -2229,13 +2203,6 @@ async function finalizeDetachedRun(sessionId, run, manifest, normalizedEvents = 
     broadcastSessionInvalidation(sessionId);
     return { historyChanged, sessionChanged };
   }
-
-  if (run.state === 'completed') {
-    const appliedUpgrade = await maybeApplyRunUpgradeControl(sessionId, normalizedEvents);
-    historyChanged = historyChanged || appliedUpgrade.historyChanged;
-    sessionChanged = sessionChanged || appliedUpgrade.sessionChanged;
-  }
-
   const latestSession = await getSession(sessionId);
   if (!latestSession) {
     return { historyChanged, sessionChanged };
@@ -3279,6 +3246,20 @@ export async function submitHttpMessage(sessionId, text, images, options = {}) {
       runId: run.id,
     });
     await appendEvent(sessionId, userEvent);
+
+    const toolDefinition = await getToolDefinitionAsync(effectiveTool);
+    const promptMode = toolDefinition?.promptMode === 'bare-user'
+      ? 'bare-user'
+      : 'default';
+    if (promptMode === 'default') {
+      const managerTurnContext = buildManagerTurnContextText(session);
+      if (managerTurnContext) {
+        await appendEvent(sessionId, managerContextEvent(managerTurnContext, {
+          requestId,
+          runId: run.id,
+        }));
+      }
+    }
   }
 
   if (!options.internalOperation && isFirstRecordedUserMessage && isSessionAutoRenamePending(session)) {

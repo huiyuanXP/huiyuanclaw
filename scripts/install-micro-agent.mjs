@@ -2,21 +2,17 @@
 
 import { mkdir, readFile, stat, writeFile } from 'fs/promises';
 import { homedir } from 'os';
-import { dirname, join, resolve } from 'path';
-import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 
 import { TOOLS_FILE } from '../lib/config.mjs';
 
 const HOME = homedir();
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(__dirname, '..');
-const DEFAULT_CONFIG_PATH = join(HOME, '.config', 'remotelab', 'micro-agent.json');
-const DOUBAO_FAST_CONFIG_PATH = join(HOME, '.config', 'remotelab', 'doubao-fast-agent.json');
 const DEFAULT_TOOL_ID = 'micro-agent';
 const DEFAULT_TOOL_NAME = 'Micro Agent';
-const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
-const DEFAULT_MODEL = 'gpt-4.1-mini';
-const COMMAND_PATH = join(REPO_ROOT, 'scripts', 'micro-agent.mjs');
+const DEFAULT_COMMAND = 'codex';
+const DEFAULT_MODEL = 'gpt-5.4';
+const PERSONAL_CODEX_CONFIG_PATH = join(HOME, '.codex', 'config.toml');
+const LEGACY_CONFIG_PATH = join(HOME, '.config', 'remotelab', 'micro-agent.json');
 
 function trimString(value) {
   return typeof value === 'string' ? value.trim() : '';
@@ -32,49 +28,35 @@ function printUsage(exitCode = 0, errorMessage = '') {
   node scripts/install-micro-agent.mjs [options]
 
 Options:
-  --api-key <key>          OpenAI-compatible API key
-  --base-url <url>         OpenAI-compatible base URL (default: ${DEFAULT_BASE_URL})
-  --model <id>             Model id (default: ${DEFAULT_MODEL})
-  --config <path>          Config output path (default: ${DEFAULT_CONFIG_PATH})
+  --model <id>             Codex / GPT model id (default: detected from ~/.codex/config.toml, else ${DEFAULT_MODEL})
+  --command <cmd>          Command used to launch the runtime (default: ${DEFAULT_COMMAND})
   --tool-id <id>           RemoteLab tool id (default: ${DEFAULT_TOOL_ID})
   --tool-name <name>       RemoteLab tool label (default: ${DEFAULT_TOOL_NAME})
   -h, --help               Show this help
 
-The installer looks for credentials in this order:
-  1. explicit flags
-  2. MICRO_AGENT_* env vars
-  3. OPENAI_* / DOUBAO_* / ARK_* env vars
-  4. existing ${DOUBAO_FAST_CONFIG_PATH}
+This installer no longer writes a separate micro-agent runtime config.
+It simply registers a thin Codex-backed tool preset in ~/.config/remotelab/tools.json.
 `);
   process.exit(exitCode);
 }
 
 function parseArgs(argv) {
   const result = {
-    apiKey: '',
-    baseUrl: '',
     model: '',
-    configPath: '',
+    command: DEFAULT_COMMAND,
     toolId: DEFAULT_TOOL_ID,
     toolName: DEFAULT_TOOL_NAME,
   };
+
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     switch (arg) {
-      case '--api-key':
-        result.apiKey = argv[index + 1] || '';
-        index += 1;
-        break;
-      case '--base-url':
-        result.baseUrl = argv[index + 1] || '';
-        index += 1;
-        break;
       case '--model':
         result.model = argv[index + 1] || '';
         index += 1;
         break;
-      case '--config':
-        result.configPath = argv[index + 1] || '';
+      case '--command':
+        result.command = argv[index + 1] || DEFAULT_COMMAND;
         index += 1;
         break;
       case '--tool-id':
@@ -93,6 +75,7 @@ function parseArgs(argv) {
         break;
     }
   }
+
   return result;
 }
 
@@ -105,122 +88,71 @@ async function pathExists(path) {
   }
 }
 
-async function loadJsonFile(path) {
+async function loadToolsFile() {
   try {
-    const raw = await readFile(path, 'utf8');
-    return JSON.parse(raw);
+    const raw = await readFile(TOOLS_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
   } catch (error) {
-    if (error?.code === 'ENOENT') return null;
+    if (error?.code === 'ENOENT') return [];
     throw error;
   }
 }
 
-function coalesce(...values) {
-  for (const value of values) {
-    const trimmed = trimString(value);
-    if (trimmed) return trimmed;
-  }
-  return '';
-}
-
-async function resolveSourceConfig(options) {
-  const doubaoFastConfig = await loadJsonFile(DOUBAO_FAST_CONFIG_PATH);
-  return {
-    apiKey: coalesce(
-      options.apiKey,
-      process.env.MICRO_AGENT_API_KEY,
-      process.env.OPENAI_API_KEY,
-      process.env.DOUBAO_API_KEY,
-      process.env.ARK_API_KEY,
-      doubaoFastConfig?.apiKey,
-    ),
-    baseUrl: coalesce(
-      options.baseUrl,
-      process.env.MICRO_AGENT_BASE_URL,
-      process.env.OPENAI_API_BASE,
-      process.env.DOUBAO_API_BASE,
-      process.env.ARK_API_BASE,
-      doubaoFastConfig?.baseUrl,
-      DEFAULT_BASE_URL,
-    ),
-    model: coalesce(
-      options.model,
-      process.env.MICRO_AGENT_MODEL,
-      process.env.OPENAI_MODEL,
-      process.env.DOUBAO_MODEL,
-      process.env.ARK_MODEL,
-      doubaoFastConfig?.model,
-      DEFAULT_MODEL,
-    ),
-  };
-}
-
-async function loadTools() {
-  const existing = await loadJsonFile(TOOLS_FILE);
-  return Array.isArray(existing) ? existing : [];
-}
-
-async function saveTools(tools) {
+async function saveToolsFile(tools) {
   await mkdir(dirname(TOOLS_FILE), { recursive: true });
-  await writeFile(TOOLS_FILE, JSON.stringify(tools, null, 2), 'utf8');
+  await writeFile(TOOLS_FILE, `${JSON.stringify(tools, null, 2)}\n`, 'utf8');
+}
+
+async function detectCodexModel() {
+  if (!(await pathExists(PERSONAL_CODEX_CONFIG_PATH))) return '';
+  const raw = await readFile(PERSONAL_CODEX_CONFIG_PATH, 'utf8');
+  const match = raw.match(/^\s*model\s*=\s*["']([^"']+)["']/m);
+  return trimString(match?.[1] || '');
 }
 
 async function main() {
-  const options = parseArgs(process.argv.slice(2));
-  const configPath = resolve(trimString(options.configPath) || DEFAULT_CONFIG_PATH);
-  const source = await resolveSourceConfig(options);
-
-  if (!source.apiKey) {
-    printUsage(1, 'Unable to resolve an API key for Micro Agent.');
-  }
-
-  if (!(await pathExists(COMMAND_PATH))) {
-    throw new Error(`Micro agent command not found: ${COMMAND_PATH}`);
-  }
-
-  const config = {
-    apiKey: source.apiKey,
-    baseUrl: source.baseUrl,
-    model: source.model,
-    maxIterations: 4,
-    requestTimeoutMs: 20000,
-    bashTimeoutMs: 12000,
-    maxToolOutputChars: 12000,
-    maxDirectoryEntries: 200,
-    maxToolCallsPerTurn: 3,
-    maxWriteChars: 200000,
-    tools: {
-      bash: true,
-      list_dir: true,
-      read_file: true,
-      write_file: true,
-      request_upgrade: true,
+  const args = parseArgs(process.argv.slice(2));
+  const model = trimString(args.model)
+    || trimString(process.env.CODEX_MODEL)
+    || await detectCodexModel()
+    || DEFAULT_MODEL;
+  const record = {
+    id: trimString(args.toolId) || DEFAULT_TOOL_ID,
+    name: trimString(args.toolName) || DEFAULT_TOOL_NAME,
+    command: trimString(args.command) || DEFAULT_COMMAND,
+    runtimeFamily: 'codex-json',
+    promptMode: 'bare-user',
+    flattenPrompt: true,
+    models: [
+      {
+        id: model,
+        label: model,
+      },
+    ],
+    reasoning: {
+      kind: 'none',
+      label: 'Thinking',
     },
   };
 
-  await mkdir(dirname(configPath), { recursive: true });
-  await writeFile(configPath, JSON.stringify(config, null, 2), 'utf8');
+  const tools = await loadToolsFile();
+  const existingIndex = tools.findIndex((tool) => tool?.id === record.id);
+  if (existingIndex >= 0) {
+    tools[existingIndex] = record;
+  } else {
+    tools.push(record);
+  }
+  await saveToolsFile(tools);
 
-  const tools = await loadTools();
-  const filtered = tools.filter((tool) => tool?.id !== options.toolId);
-  filtered.push({
-    id: options.toolId,
-    name: trimString(options.toolName) || DEFAULT_TOOL_NAME,
-    command: COMMAND_PATH,
-    runtimeFamily: 'claude-stream-json',
-    promptMode: 'bare-user',
-    flattenPrompt: true,
-    models: [{ id: source.model, label: source.model }],
-    reasoning: { kind: 'none', label: 'Thinking' },
-  });
-  await saveTools(filtered);
-
-  console.log(`Installed Micro Agent:`);
-  console.log(`- config: ${configPath}`);
-  console.log(`- tool id: ${options.toolId}`);
-  console.log(`- command: ${COMMAND_PATH}`);
-  console.log(`- model: ${source.model}`);
-  console.log(`- base URL: ${source.baseUrl}`);
+  console.log('Installed Micro Agent.');
+  console.log(`- Tool id: ${record.id}`);
+  console.log(`- Command: ${record.command}`);
+  console.log(`- Runtime: ${record.runtimeFamily}`);
+  console.log(`- Model: ${model}`);
+  if (await pathExists(LEGACY_CONFIG_PATH)) {
+    console.log(`- Note: legacy config still exists at ${LEGACY_CONFIG_PATH} but is no longer used.`);
+  }
 }
 
 await main();

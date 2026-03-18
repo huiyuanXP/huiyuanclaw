@@ -1,97 +1,104 @@
 # Micro Agent
 
-## What it is
+`Micro Agent` is now a very thin `codex`-backed preset inside RemoteLab.
 
-`Micro Agent` is a very small local executor for RemoteLab.
+The key shift is intentional: instead of maintaining a separate mini runtime, custom handoff protocol, and upgrade rules, we reuse the primitives RemoteLab already has.
 
-It is intentionally **not** a full coding-agent shell like CodeX or Claude Code. It exists for the default case where the model mostly needs:
+That means:
 
-1. a compact prompt
-2. a short local tool loop
-3. direct OpenAI-compatible API access
-4. a clean way to hand off to a heavier executor when the task grows
+- GPT model via `codex`
+- no extra `request_upgrade` protocol
+- no extra routing rules inside the executor
+- no separate OpenAI-compatible API wrapper runtime to maintain
+- delegation and orchestration happen through ordinary RemoteLab APIs / CLI calls
 
-The design goal is simple: make the default path light, and make upgrading explicit and cheap.
+## What gets installed
 
-## Architecture
+The installer writes one custom tool record into `~/.config/remotelab/tools.json`:
 
-```text
-RemoteLab session
-  -> custom tool entry (`micro-agent`)
-    -> `scripts/micro-agent.mjs`
-      -> OpenAI-compatible `/chat/completions`
-      -> local tool executor (`bash`, `list_dir`, `read_file`, `write_file`)
-      -> optional upgrade request back to RemoteLab (`codex` by default)
-      -> Claude-compatible JSON event stream back to RemoteLab
-```
-
-This keeps RemoteLab compatible with the existing `claude-stream-json` runtime without rebuilding the whole provider stack first.
-
-## Core behavior
-
+- `command: codex`
+- `runtimeFamily: codex-json`
 - `promptMode: bare-user`
 - `flattenPrompt: true`
-- no user-facing thinking toggle; the agent decides depth internally
-- short tool loop by default (`maxIterations: 4`)
-- explicit small tool surface
-- clean handoff path when the task stops fitting the micro-agent
+- `reasoning.kind: none`
 
-The micro-agent is meant to be the default lightweight executor, not the executor that slowly re-implements a heavy coding shell.
+So the UI treats it like a lightweight preset, while the actual runtime stays the normal Codex CLI.
 
-## Built-in tools
+## Why this is lighter
 
-- `bash` — short shell commands in the current working directory
-- `list_dir` — directory listing
-- `read_file` — small text file reads
-- `write_file` — focused text-file writes or appends
-- `request_upgrade` — ask RemoteLab to switch the next turn to a heavier executor
+The previous direction added a new control protocol so the micro-agent could ask RemoteLab to switch runtimes for the next turn.
 
-The expected split is:
+That works technically, but it also adds a second control plane on top of capabilities RemoteLab already has:
 
-- small local actions stay here
-- broad repo editing and longer repair loops move to `codex`
+- opening another session
+- choosing another tool/model
+- sending messages through HTTP
 
-## Upgrade model
+This version removes that extra layer. If the model wants to branch work, it can just call the existing local CLI or API wrapper directly.
 
-The micro-agent can request a handoff itself.
+## The local API CLI
 
-Current version supports a thin upgrade protocol:
+RemoteLab now exposes a small authenticated CLI wrapper around its own HTTP surface:
 
-- the model may call `request_upgrade`
-- RemoteLab records the handoff reason
-- RemoteLab switches the session's default tool for the next turn
+```bash
+node cli.js api GET /api/tools
+node cli.js api POST /api/sessions --body '{"folder":"~/code/remotelab","tool":"micro-agent","name":"scratch"}'
+node cli.js api POST /api/sessions/<session-id>/messages --body '{"text":"hello"}' --wait-run
+```
 
-If the micro-agent hits its own loop limit before reaching a clean answer, it auto-hands off to `codex` instead of pretending to be a heavier shell.
+If `remotelab` is installed on your `PATH`, the same commands work as:
+
+```bash
+remotelab api GET /api/tools
+```
+
+For focused delegation there is still a higher-level shortcut:
+
+```bash
+remotelab session-spawn --task "<focused task>" --wait
+```
 
 ## Install
 
 ```bash
-node scripts/install-micro-agent.mjs --api-key <key> --base-url <openai-compatible-base-url> --model <model-id>
+node scripts/install-micro-agent.mjs
 ```
 
-The installer:
+Optional overrides:
 
-- writes config to `~/.config/remotelab/micro-agent.json`
-- registers a RemoteLab custom tool in `~/.config/remotelab/tools.json`
-- hides manual thinking controls in the UI by setting `reasoning.kind` to `none`
-- reuses an existing `doubao-fast-agent` config when available
+```bash
+node scripts/install-micro-agent.mjs --model gpt-5.4 --tool-id micro-agent --tool-name "Micro Agent"
+```
 
-## Use in RemoteLab
+Model selection order:
 
-After installation, choose tool `micro-agent` when creating a session.
+1. `--model`
+2. `CODEX_MODEL`
+3. `~/.codex/config.toml`
+4. fallback `gpt-5.4`
 
-This is the intended default when you want:
+## Practical behavior
 
-- low latency
-- a small local tool surface
-- direct model API execution
-- automatic escalation only when the task genuinely stops fitting
+This setup does **not** turn Codex into a pure raw-completion API; Codex CLI is still the runtime.
 
-## Current limits
+But in practice it is close to the lightweight mode we want because:
 
-- no repo map
-- no large edit protocol
-- no long-running detached job orchestration inside the agent itself
-- no attempt to imitate a full coding IDE shell
+- it can answer directly without tool use when the task is simple
+- it can still use shell when the task genuinely needs it
+- it can call `remotelab api` or `remotelab session-spawn` explicitly instead of relying on hidden product-specific control messages
+- the user no longer has to hand-write auth / cookies / HTTP boilerplate
 
-That is intentional. The point of this module is to keep the base executor small, then pay for heavier behavior only when the task earns it.
+## Validation ideas
+
+Minimal text-only check:
+
+```bash
+codex exec --json --skip-git-repo-check --sandbox read-only -C "$(mktemp -d)" 'Reply exactly micro-ok. Do not run shell commands. Do not inspect files. Do not explain.'
+```
+
+RemoteLab integration check:
+
+```bash
+node cli.js api POST /api/sessions --body '{"folder":"~/code/remotelab","tool":"micro-agent","name":"micro smoke"}'
+node cli.js api POST /api/sessions/<session-id>/messages --body '{"text":"只回复 micro-ok，不要运行任何命令。"}' --wait-run
+```

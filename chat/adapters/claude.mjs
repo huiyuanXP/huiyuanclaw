@@ -42,20 +42,6 @@ export function createClaudeAdapter() {
             : `System: ${obj.subtype || 'unknown'}`));
           break;
 
-        case 'remotelab_control': {
-          if (obj.action === 'upgrade') {
-            const message = typeof obj.message === 'string' && obj.message.trim()
-              ? obj.message
-              : `Requesting upgrade to ${obj.tool || 'another tool'}`;
-            events.push(messageEvent('assistant', message, undefined, {
-              controlAction: 'upgrade',
-              controlTool: typeof obj.tool === 'string' ? obj.tool : '',
-              controlReason: typeof obj.reason === 'string' ? obj.reason : '',
-            }));
-          }
-          break;
-        }
-
         case 'assistant': {
           // Complete assistant message — the authoritative source for text & tool_use
           const content = obj.message?.content;
