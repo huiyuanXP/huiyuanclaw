@@ -49,9 +49,45 @@ Useful options:
 - `--model <id>` / `--effort <level>` / `--thinking` tune the spawned repair session
 - `--state-file <path>` and `--snapshot-dir <path>` relocate persistent monitor data
 
+## Resident mode on this machine
+
+This repo now ships a small helper that installs a macOS `LaunchAgent` for scheduled polling:
+
+- helper: `scripts/github-ci-auto-repair-instance.sh`
+- runner: `scripts/github-ci-auto-repair-runner.mjs`
+- config: `~/.config/remotelab/github-ci-auto-repair/config.json`
+- launch agent: `~/Library/LaunchAgents/com.remotelab.github-ci-auto-repair.plist`
+
+Install and start it:
+
+```bash
+./scripts/github-ci-auto-repair-instance.sh install
+```
+
+Useful operations:
+
+```bash
+./scripts/github-ci-auto-repair-instance.sh status
+./scripts/github-ci-auto-repair-instance.sh run-now
+./scripts/github-ci-auto-repair-instance.sh logs
+./scripts/github-ci-auto-repair-instance.sh restart
+./scripts/github-ci-auto-repair-instance.sh stop
+```
+
+Default behavior on this machine:
+
+- polls every `300` seconds
+- watches `Ninglo/remotelab`
+- watches branches `main` and `master`
+- watches workflow `CI`
+- does **not** start model work during healthy polls
+- only starts a RemoteLab repair session once the latest matching branch CI run is actually red
+
+Edit `~/.config/remotelab/github-ci-auto-repair/config.json` if you want to change the poll interval, branches, workflows, or session runtime.
+
 ## Recommended operation pattern
 
-For continuous monitoring, schedule the script every few minutes with `launchd`, `cron`, or another local scheduler instead of keeping an always-open webhook path.
+For continuous monitoring, prefer the shipped `launchd` helper on macOS instead of keeping an always-open webhook path.
 
 Recommended policy:
 

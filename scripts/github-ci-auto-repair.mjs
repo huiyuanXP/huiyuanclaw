@@ -311,7 +311,8 @@ function ghEnv() {
 }
 
 function runGh(args, { allowFailure = false } = {}) {
-  const result = spawnSync('gh', args, {
+  const ghBin = trimString(process.env.GH_BIN) || 'gh';
+  const result = spawnSync(ghBin, args, {
     encoding: 'utf8',
     env: ghEnv(),
     maxBuffer: 20 * 1024 * 1024,
