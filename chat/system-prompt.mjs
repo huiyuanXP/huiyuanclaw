@@ -2,6 +2,7 @@ import { homedir } from 'os';
 import { CHAT_PORT, MEMORY_DIR, SYSTEM_MEMORY_DIR } from '../lib/config.mjs';
 import { join } from 'path';
 import { pathExists } from './fs-utils.mjs';
+import { MANAGER_RUNTIME_BOUNDARY_SECTION } from './runtime-policy.mjs';
 
 const BOOTSTRAP_MD = join(MEMORY_DIR, 'bootstrap.md');
 const GLOBAL_MD = join(MEMORY_DIR, 'global.md');
@@ -45,6 +46,8 @@ At the START of every session, load only the minimum context needed to orient yo
 3. Ask a focused clarifying question only when the scope is genuinely ambiguous.
 4. Once the task scope is clear, load only the matching project/task notes, skills, and supporting docs.
 5. After the task, write back only durable lessons worth reusing.
+
+${MANAGER_RUNTIME_BOUNDARY_SECTION}
 
 ## Template-Session-First Routing
 

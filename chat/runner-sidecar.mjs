@@ -17,6 +17,7 @@ import {
   writeRunResult,
 } from './runs.mjs';
 import { buildToolProcessEnv } from '../lib/user-shell-env.mjs';
+import { applyManagedRuntimeEnv } from './runtime-policy.mjs';
 
 const runId = process.argv[2];
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -26,7 +27,7 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function cleanEnv(manifest = {}) {
+async function cleanEnv(toolId, manifest = {}) {
   const env = buildToolProcessEnv();
   delete env.CLAUDECODE;
   delete env.CLAUDE_CODE_ENTRYPOINT;
@@ -38,7 +39,7 @@ function cleanEnv(manifest = {}) {
   if (runId) {
     env.REMOTELAB_RUN_ID = runId;
   }
-  return env;
+  return applyManagedRuntimeEnv(toolId, env);
 }
 
 function captureResume(run, parsed) {
@@ -109,7 +110,7 @@ async function main() {
   const proc = spawn(await resolveCommand(command), args, {
     cwd: resolveCwd(manifest.folder),
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: cleanEnv(manifest),
+    env: await cleanEnv(manifest.tool, manifest),
   });
 
   await updateRun(runId, (current) => ({

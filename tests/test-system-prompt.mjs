@@ -11,6 +11,9 @@ const { buildSystemContext } = await import('../chat/system-prompt.mjs');
 const context = await buildSystemContext({ sessionId: 'session-test-123' });
 
 assert.match(context, /Template-Session-First Routing/);
+assert.match(context, /Manager Policy Boundary/);
+assert.match(context, /Treat provider runtimes such as Codex or Claude as execution engines/);
+assert.match(context, /For normal conversation and conceptual discussion, default to natural connected prose/);
 assert.match(context, /reusable template\/base session likely exists/);
 assert.match(context, /clean, comprehensive project-task context/);
 assert.match(context, /improve it or derive a better template\/base/);

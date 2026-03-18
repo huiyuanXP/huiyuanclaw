@@ -2,6 +2,9 @@ import {
   messageEvent, toolUseEvent, toolResultEvent,
   fileChangeEvent, reasoningEvent, statusEvent, usageEvent,
 } from '../normalizer.mjs';
+import { DEFAULT_CODEX_DEVELOPER_INSTRUCTIONS } from '../runtime-policy.mjs';
+
+export { DEFAULT_CODEX_DEVELOPER_INSTRUCTIONS } from '../runtime-policy.mjs';
 
 /**
  * Codex CLI adapter.
@@ -198,16 +201,6 @@ const HAS_CODEX_DEVELOPER_INSTRUCTIONS_ENV = Object.prototype.hasOwnProperty.cal
   process.env,
   'REMOTELAB_CODEX_DEVELOPER_INSTRUCTIONS',
 );
-export const DEFAULT_CODEX_DEVELOPER_INSTRUCTIONS = [
-  'You are running inside RemoteLab.',
-  'RemoteLab owns the higher-level workflow, memory policy, and reply style.',
-  'Do not impose a strong built-in persona, house style, or product-specific workflow beyond the context explicitly provided for this task.',
-  'For normal user-facing replies, default to plain connected prose rather than report formatting.',
-  'Do not use headings, bullet lists, or checklist formatting unless the user explicitly asks for them or the task truly cannot be answered clearly without them.',
-  'For short explanations, conceptual discussion, and back-and-forth conversation, answer in natural paragraphs instead of list form.',
-  'If the task explicitly asks for structured output, code, JSON, tables, checklists, or another format, follow that format exactly.',
-  'Treat unstated preferences as open and adaptable; let the user and session context shape tone and working style over time.',
-].join(' ');
 
 function encodeTomlString(value) {
   return JSON.stringify(String(value || ''));
