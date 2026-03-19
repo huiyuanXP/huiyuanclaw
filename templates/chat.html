@@ -119,7 +119,6 @@
             <button class="thinking-toggle" id="thinkingToggle" disabled>Thinking</button>
             <select class="effort-select" id="effortSelect" disabled style="display:none"></select>
             <button class="img-btn" id="imgBtn" disabled title="Attach media" aria-label="Attach media" data-icon="attach">&#128247;</button>
-            <button class="img-btn voice-btn" id="voiceInputBtn" disabled title="Voice input" aria-label="Voice input" data-icon="mic"></button>
           </div>
           <div class="input-config-group right">
             <span id="contextTokens" style="display:none"></span>
@@ -131,10 +130,12 @@
           <input type="file" id="imgFileInput" accept="image/*,video/*" multiple hidden>
           <input type="file" id="voiceFileInput" accept="audio/*,video/*" capture hidden>
           <textarea id="msgInput" placeholder="Message..." disabled></textarea>
+          <button class="img-btn voice-btn composer-voice-btn" id="voiceInputBtn" disabled title="Voice input" aria-label="Voice input" data-icon="mic"></button>
           <button class="send-btn" id="sendBtn" disabled title="Send" aria-label="Send" data-icon="send">&#9654;</button>
           <button class="cancel-btn" id="cancelBtn" title="Stop" aria-label="Stop" data-icon="debug-stop" style="display:none">&#9632;</button>
         </div>
         <div class="composer-pending-state" id="composerPendingState" aria-live="polite"></div>
+        <div class="voice-live-preview" id="voiceLivePreview" aria-live="polite"></div>
         <div class="voice-input-status" id="voiceInputStatus" aria-live="polite"></div>
       </div>
       <div class="input-footer">

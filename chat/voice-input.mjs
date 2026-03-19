@@ -10,6 +10,7 @@ import { createSerialTaskQueue, readJson, writeJsonAtomic } from './fs-utils.mjs
 
 const DEFAULT_VOICE_PROVIDER = 'volcengine';
 const DEFAULT_VOLCENGINE_ENDPOINT = 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream';
+const DEFAULT_VOLCENGINE_STREAM_ENDPOINT = 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel';
 const DEFAULT_VOLCENGINE_RESOURCE_ID = 'volc.seedasr.sauc.duration';
 const DEFAULT_VOLCENGINE_MODEL_LABEL = '豆包流式语音识别模型 2.0';
 const DEFAULT_VOICE_INPUT_LANGUAGE = 'zh-CN';
@@ -38,10 +39,16 @@ function trimString(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function normalizeWsEndpoint(value) {
+function normalizeWsEndpoint(value, fallback = DEFAULT_VOLCENGINE_ENDPOINT) {
+  const normalized = trimString(value);
+  if (!normalized) return fallback;
+  return /^wss?:\/\//i.test(normalized) ? normalized : fallback;
+}
+
+function deriveVolcengineStreamEndpoint(value = '') {
   const normalized = trimString(value);
   if (!normalized) return DEFAULT_VOLCENGINE_ENDPOINT;
-  return /^wss?:\/\//i.test(normalized) ? normalized : DEFAULT_VOLCENGINE_ENDPOINT;
+  return normalizeWsEndpoint(normalized, DEFAULT_VOLCENGINE_ENDPOINT);
 }
 
 function normalizeVoiceProvider(value) {
@@ -59,6 +66,10 @@ function normalizeVoiceInputConfig(value = {}) {
       appId: trimString(rawVolcengine.appId),
       accessKey: trimString(rawVolcengine.accessKey),
       endpoint: normalizeWsEndpoint(rawVolcengine.endpoint),
+      streamEndpoint: normalizeWsEndpoint(
+        rawVolcengine.streamEndpoint,
+        deriveVolcengineStreamEndpoint(rawVolcengine.endpoint),
+      ),
       resourceId: trimString(rawVolcengine.resourceId) || DEFAULT_VOLCENGINE_RESOURCE_ID,
       language: trimString(rawVolcengine.language) || DEFAULT_VOICE_INPUT_LANGUAGE,
       modelLabel: trimString(rawVolcengine.modelLabel) || DEFAULT_VOLCENGINE_MODEL_LABEL,
@@ -85,6 +96,12 @@ function mergeVoiceInputConfig(current, patch = {}) {
     }
     if (Object.prototype.hasOwnProperty.call(volcenginePatch, 'endpoint')) {
       currentVolcengine.endpoint = normalizeWsEndpoint(volcenginePatch.endpoint);
+    }
+    if (Object.prototype.hasOwnProperty.call(volcenginePatch, 'streamEndpoint')) {
+      currentVolcengine.streamEndpoint = normalizeWsEndpoint(
+        volcenginePatch.streamEndpoint,
+        deriveVolcengineStreamEndpoint(currentVolcengine.endpoint),
+      );
     }
     if (Object.prototype.hasOwnProperty.call(volcenginePatch, 'resourceId')) {
       currentVolcengine.resourceId = trimString(volcenginePatch.resourceId) || DEFAULT_VOLCENGINE_RESOURCE_ID;
@@ -284,6 +301,30 @@ function createVolcengineAuthHeaders(options) {
   };
 }
 
+function buildVolcengineRequestPayload(audioConfig = {}, options = {}) {
+  const language = trimString(options.language) || DEFAULT_VOICE_INPUT_LANGUAGE;
+  return {
+    user: {
+      uid: randomUUID(),
+    },
+    audio: {
+      format: audioConfig.format || 'wav',
+      codec: audioConfig.codec || 'raw',
+      rate: Number(audioConfig.rate) || 16000,
+      bits: Number(audioConfig.bits) || 16,
+      channel: Number(audioConfig.channel) || 1,
+      ...(language ? { language } : {}),
+    },
+    request: {
+      model_name: 'bigmodel',
+      enable_itn: true,
+      enable_punc: true,
+      show_utterances: true,
+      result_type: 'full',
+    },
+  };
+}
+
 async function transcodeAudioToWav(inputBuffer, options = {}) {
   const tempDir = await mkdtemp(join(tmpdir(), 'remotelab-voice-input-'));
   const inputExtension = resolveFileExtension(options.originalName || '', options.mimeType || '');
@@ -382,26 +423,12 @@ async function prepareAudioForTranscription(audio) {
 async function transcribeWithVolcengine(audio, config, options = {}) {
   const connectId = randomUUID();
   const language = trimString(options.language) || config.language || DEFAULT_VOICE_INPUT_LANGUAGE;
-  const requestPayload = {
-    user: {
-      uid: randomUUID(),
-    },
-    audio: {
-      format: audio.audioConfig.format,
-      codec: audio.audioConfig.codec,
-      rate: 16000,
-      bits: 16,
-      channel: 1,
-      ...(language ? { language } : {}),
-    },
-    request: {
-      model_name: 'bigmodel',
-      enable_itn: true,
-      enable_punc: true,
-      show_utterances: true,
-      result_type: 'full',
-    },
-  };
+  const requestPayload = buildVolcengineRequestPayload({
+    ...audio.audioConfig,
+    rate: 16000,
+    bits: 16,
+    channel: 1,
+  }, { language });
   return await new Promise((resolve, reject) => {
     let settled = false;
     let sequence = 1;
@@ -492,6 +519,187 @@ async function transcribeWithVolcengine(audio, config, options = {}) {
   });
 }
 
+export async function openVoiceInputLiveTranscription(options = {}) {
+  const config = await readVoiceInputConfig();
+  if (!isVoiceInputConfigured(config)) {
+    throw createVoiceInputError(
+      'VOICE_INPUT_NOT_CONFIGURED',
+      'Voice input is not configured yet. Add the provider details in Settings first.',
+      503,
+    );
+  }
+
+  const language = trimString(options.language) || config.volcengine.language || DEFAULT_VOICE_INPUT_LANGUAGE;
+  const connectId = randomUUID();
+  const requestPayload = buildVolcengineRequestPayload({
+    format: 'pcm',
+    codec: 'raw',
+    rate: 16000,
+    bits: 16,
+    channel: 1,
+  }, { language });
+
+  let settled = false;
+  let finalRequested = false;
+  let finalText = '';
+  let finalDurationMs = 0;
+  let finalLogId = '';
+  let sequence = 1;
+  let pendingChunk = null;
+  let settleResolve = null;
+  let settleReject = null;
+
+  const ws = new WebSocket(config.volcengine.streamEndpoint, {
+    headers: createVolcengineAuthHeaders({
+      appId: config.volcengine.appId,
+      accessKey: config.volcengine.accessKey,
+      resourceId: config.volcengine.resourceId,
+      connectId,
+    }),
+  });
+
+  const timeoutId = setTimeout(() => {
+    if (settled) return;
+    settled = true;
+    try { ws.close(); } catch {}
+    settleReject?.(createVoiceInputError('VOICE_INPUT_TIMEOUT', 'Voice input transcription timed out.', 504));
+  }, VOICE_INPUT_TIMEOUT_MS);
+
+  const finalizePromise = new Promise((resolve, reject) => {
+    settleResolve = resolve;
+    settleReject = reject;
+  });
+
+  function finishWithError(error) {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timeoutId);
+    settleReject?.(error);
+  }
+
+  function finishWithResult() {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timeoutId);
+    settleResolve?.({
+      text: finalText,
+      durationMs: finalDurationMs,
+      logId: finalLogId,
+    });
+  }
+
+  ws.on('open', () => {
+    ws.send(buildVolcengineFullClientRequestFrame(requestPayload, sequence));
+    sequence += 1;
+    if (typeof options.onReady === 'function') {
+      try { options.onReady(); } catch {}
+    }
+  });
+
+  ws.on('message', (rawData) => {
+    const data = Buffer.isBuffer(rawData) ? rawData : Buffer.from(rawData);
+    const packet = parseVolcengineServerPacket(data);
+    if (packet.type === 'error') {
+      try { ws.close(); } catch {}
+      finishWithError(createVoiceInputError(
+        'VOICE_INPUT_PROVIDER_ERROR',
+        packet.message || `Voice input provider error (${packet.code || 'unknown'}).`,
+        502,
+      ));
+      return;
+    }
+    if (packet.type !== 'response') return;
+    const transcript = extractVolcengineTranscript(packet.data);
+    if (transcript) {
+      finalText = transcript;
+    }
+    finalDurationMs = Number(packet.data?.audio_info?.duration || finalDurationMs || 0);
+    finalLogId = trimString(packet.data?.result?.additions?.log_id) || finalLogId;
+    if (transcript && typeof options.onPartial === 'function') {
+      try {
+        options.onPartial({
+          transcript,
+          durationMs: finalDurationMs,
+          logId: finalLogId,
+          isFinal: packet.isFinal,
+        });
+      } catch {}
+    }
+    if (packet.isFinal) {
+      try { ws.close(); } catch {}
+      finishWithResult();
+    }
+  });
+
+  ws.on('error', (error) => {
+    finishWithError(createVoiceInputError(
+      'VOICE_INPUT_PROVIDER_ERROR',
+      trimString(error?.message) || 'Voice input provider websocket error.',
+      502,
+    ));
+  });
+
+  ws.on('close', () => {
+    if (settled) return;
+    if (finalRequested && finalText) {
+      finishWithResult();
+      return;
+    }
+    finishWithError(createVoiceInputError(
+      'VOICE_INPUT_PROVIDER_ERROR',
+      'Voice input provider closed the transcription stream unexpectedly.',
+      502,
+    ));
+  });
+
+  return {
+    sendPcmChunk(chunk) {
+      if (settled || finalRequested || ws.readyState !== WebSocket.OPEN) return;
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk || []);
+      if (!buffer.length) return;
+      if (pendingChunk?.length) {
+        ws.send(buildVolcengineAudioRequestFrame(pendingChunk, sequence, false));
+        sequence += 1;
+      }
+      pendingChunk = buffer;
+    },
+    async finish() {
+      if (settled) return finalizePromise;
+      if (!finalRequested && ws.readyState === WebSocket.OPEN) {
+        finalRequested = true;
+        ws.send(buildVolcengineAudioRequestFrame(pendingChunk || Buffer.alloc(0), sequence, true));
+        sequence += 1;
+        pendingChunk = null;
+      }
+      return finalizePromise;
+    },
+    close() {
+      if (settled) return;
+      finalRequested = true;
+      try { ws.close(); } catch {}
+    },
+    waitForReady() {
+      if (ws.readyState === WebSocket.OPEN) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        const handleOpen = () => {
+          cleanup();
+          resolve();
+        };
+        const handleError = (error) => {
+          cleanup();
+          reject(error);
+        };
+        const cleanup = () => {
+          ws.off('open', handleOpen);
+          ws.off('error', handleError);
+        };
+        ws.on('open', handleOpen);
+        ws.on('error', handleError);
+      });
+    },
+  };
+}
+
 export async function readVoiceInputConfig() {
   const stored = await readJson(VOICE_INPUT_CONFIG_FILE, null);
   return normalizeVoiceInputConfig(stored || {});
@@ -525,6 +733,7 @@ export function buildVoiceInputConfigSummary(config, authSession = null) {
     modelLabel: normalized.volcengine.modelLabel,
     language: normalized.volcengine.language,
     endpoint: normalized.volcengine.endpoint,
+    streamEndpoint: normalized.volcengine.streamEndpoint,
     resourceId: normalized.volcengine.resourceId,
   };
   if (authSession?.role === 'owner') {

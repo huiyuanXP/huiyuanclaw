@@ -1,10 +1,10 @@
 import { spawn } from 'child_process';
 import { randomBytes } from 'crypto';
 import { watch } from 'fs';
-import { writeFile } from 'fs/promises';
+import { readFile, writeFile } from 'fs/promises';
 import { extname, join } from 'path';
 import { createInterface } from 'readline';
-import { CHAT_IMAGES_DIR } from '../lib/config.mjs';
+import { CHAT_IMAGES_DIR, MEMORY_DIR } from '../lib/config.mjs';
 import { getToolDefinitionAsync } from '../lib/tools.mjs';
 import { buildToolProcessEnv } from '../lib/user-shell-env.mjs';
 import { createToolInvocation, resolveCommand, resolveCwd } from './process-runner.mjs';
@@ -132,6 +132,8 @@ const REPLY_SELF_REPAIR_INTERNAL_OPERATION = 'reply_self_repair';
 const REPLY_SELF_CHECK_REVIEWING_STATUS = 'Assistant self-check: reviewing the latest reply for early stop…';
 const REPLY_SELF_CHECK_ACCEPT_STATUS = 'Assistant self-check: kept the latest reply as-is.';
 const REPLY_SELF_CHECK_DEFAULT_REASON = 'the latest reply left avoidable unfinished work';
+const VOICE_TRANSCRIPT_REWRITE_BOOTSTRAP_FILE = join(MEMORY_DIR, 'bootstrap.md');
+const VOICE_TRANSCRIPT_REWRITE_PROJECTS_FILE = join(MEMORY_DIR, 'projects.md');
 const VOICE_TRANSCRIPT_REWRITE_DEVELOPER_INSTRUCTIONS = [
   'You are a hidden transcript cleanup worker inside RemoteLab.',
   'Do not use tools, do not ask follow-up questions, and do not mention internal process.',
@@ -1656,57 +1658,40 @@ function clipVoiceTranscriptRewriteText(value, maxChars = 1200) {
   return `${text.slice(0, headChars).trimEnd()}\n[… clipped …]\n${text.slice(-tailChars).trimStart()}`;
 }
 
-function buildVoiceTranscriptRewriteContext(events, options = {}) {
-  const maxMessages = Number.isInteger(options.maxMessages) && options.maxMessages > 0
-    ? options.maxMessages
-    : 8;
-  const maxChars = Number.isInteger(options.maxChars) && options.maxChars > 0
-    ? options.maxChars
-    : 5000;
-  const messages = [];
+async function loadVoiceTranscriptRewriteMemoryContext() {
+  const entries = [
+    { label: 'Collaboration bootstrap', path: VOICE_TRANSCRIPT_REWRITE_BOOTSTRAP_FILE, maxChars: 2600 },
+    { label: 'Project pointers', path: VOICE_TRANSCRIPT_REWRITE_PROJECTS_FILE, maxChars: 2200 },
+  ];
+  const parts = [];
 
-  for (const event of events || []) {
-    if (event?.type !== 'message') continue;
-    if (event.role !== 'user' && event.role !== 'assistant') continue;
-    const content = clipVoiceTranscriptRewriteText(event.content || '', 1200);
-    if (!content) continue;
-    messages.push(`${event.role === 'assistant' ? 'Assistant' : 'User'}: ${content}`);
+  for (const entry of entries) {
+    try {
+      const text = clipVoiceTranscriptRewriteText(await readFile(entry.path, 'utf8'), entry.maxChars);
+      if (text) {
+        parts.push(`${entry.label}:\n${text}`);
+      }
+    } catch {}
   }
 
-  if (messages.length === 0) return '';
-
-  const selected = [];
-  let totalChars = 0;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    const nextChars = message.length + (selected.length > 0 ? 2 : 0);
-    if (selected.length > 0 && (selected.length >= maxMessages || totalChars + nextChars > maxChars)) {
-      break;
-    }
-    selected.unshift(message);
-    totalChars += nextChars;
-  }
-  return selected.join('\n\n');
+  return parts.join('\n\n');
 }
 
-function buildVoiceTranscriptRewritePrompt(sessionMeta, transcript, contextText, options = {}) {
+function buildVoiceTranscriptRewritePrompt(sessionMeta, transcript, memoryContext, options = {}) {
   return [
     'You are cleaning up automatic speech recognition text for a RemoteLab chat composer.',
-    'Rewrite the raw transcript into the message the speaker most likely intended, using the session context only to disambiguate names, terms, and obvious ASR mistakes.',
+    'Rewrite the raw transcript into the message the speaker most likely intended, using only the persistent collaboration memory and stable project context to disambiguate names, terms, and obvious ASR mistakes.',
     'Keep the same meaning, tone, and request.',
-    'Do not add any new facts, steps, or conclusions that are not already supported by the raw transcript or the session context.',
+    'Do not add any new facts, steps, or conclusions that are not already supported by the raw transcript or the memory context.',
     'If something is uncertain, stay close to the raw transcript instead of guessing.',
     'Keep the result concise and chat-ready.',
     'Return only the final rewritten transcript.',
     '',
     options.language ? `Language hint: ${options.language}` : '',
-    sessionMeta?.name ? `Session name: ${sessionMeta.name}` : '',
-    sessionMeta?.group ? `Session group: ${sessionMeta.group}` : '',
-    sessionMeta?.description ? `Session description: ${sessionMeta.description}` : '',
     sessionMeta?.appName ? `Session app: ${sessionMeta.appName}` : '',
     sessionMeta?.sourceName ? `Session source: ${sessionMeta.sourceName}` : '',
     sessionMeta?.folder ? `Working folder: ${sessionMeta.folder}` : '',
-    contextText ? `Recent session context:\n${contextText}` : 'Recent session context: [none]',
+    memoryContext ? `Persistent collaboration memory:\n${memoryContext}` : 'Persistent collaboration memory: [none]',
     '',
     'Raw ASR transcript:',
     transcript,
@@ -1749,16 +1734,12 @@ export async function rewriteVoiceTranscriptForSession(sessionId, transcript, op
     };
   }
 
-  const history = await loadHistory(sessionId, { includeBodies: true });
-  const contextText = buildVoiceTranscriptRewriteContext(history, {
-    maxMessages: 8,
-    maxChars: 5000,
-  });
+  const memoryContext = await loadVoiceTranscriptRewriteMemoryContext();
   const rewritten = normalizeVoiceTranscriptRewriteOutput(await runDetachedAssistantPrompt({
     ...sessionMeta,
     effort: 'low',
     thinking: false,
-  }, buildVoiceTranscriptRewritePrompt(sessionMeta, rawTranscript, contextText, options), {
+  }, buildVoiceTranscriptRewritePrompt(sessionMeta, rawTranscript, memoryContext, options), {
     developerInstructions: VOICE_TRANSCRIPT_REWRITE_DEVELOPER_INSTRUCTIONS,
     systemPrefix: '',
   }));

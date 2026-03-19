@@ -2,6 +2,7 @@
 
 const voiceInputBtn = document.getElementById("voiceInputBtn");
 const voiceFileInput = document.getElementById("voiceFileInput");
+const voiceLivePreview = document.getElementById("voiceLivePreview");
 const voiceInputStatus = document.getElementById("voiceInputStatus");
 const voiceSettingsMount = document.getElementById("voiceSettingsMount");
 
@@ -23,6 +24,7 @@ const voiceState = {
   startedAt: 0,
   timerId: 0,
   statusTimerId: 0,
+  live: null,
 };
 
 const scheduleTimeout =
@@ -75,6 +77,66 @@ function setVoiceInputStatus(message, { error = false, persist = false } = {}) {
       }
     }, error ? 5000 : 3200);
   }
+}
+
+function setVoiceLivePreview(message, { empty = false } = {}) {
+  if (!voiceLivePreview) return;
+  const text = typeof message === "string" ? message.trim() : "";
+  voiceLivePreview.textContent = text;
+  voiceLivePreview.classList.toggle("visible", !!text);
+  voiceLivePreview.classList.toggle("is-empty", !!text && !!empty);
+}
+
+function clearVoiceLivePreview() {
+  setVoiceLivePreview("");
+}
+
+function resolveVoiceInputWsUrl(sessionId) {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const encodedSessionId = encodeURIComponent(typeof sessionId === "string" ? sessionId : "");
+  return `${protocol}//${window.location.host}/ws/voice-input?sessionId=${encodedSessionId}`;
+}
+
+function convertFloatToInt16(sample) {
+  const clamped = Math.max(-1, Math.min(1, Number(sample) || 0));
+  return clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
+}
+
+function downsampleVoiceBuffer(input, inputSampleRate, outputSampleRate = 16000) {
+  if (!input || input.length === 0) {
+    return new Int16Array(0);
+  }
+  if (!inputSampleRate || inputSampleRate <= outputSampleRate) {
+    const direct = new Int16Array(input.length);
+    for (let index = 0; index < input.length; index += 1) {
+      direct[index] = convertFloatToInt16(input[index]);
+    }
+    return direct;
+  }
+  const ratio = inputSampleRate / outputSampleRate;
+  const outputLength = Math.max(1, Math.round(input.length / ratio));
+  const output = new Int16Array(outputLength);
+  let offsetBuffer = 0;
+  for (let index = 0; index < outputLength; index += 1) {
+    const nextOffsetBuffer = Math.min(input.length, Math.round((index + 1) * ratio));
+    let sum = 0;
+    let count = 0;
+    for (let sampleIndex = offsetBuffer; sampleIndex < nextOffsetBuffer; sampleIndex += 1) {
+      sum += input[sampleIndex];
+      count += 1;
+    }
+    const averaged = count > 0
+      ? sum / count
+      : input[Math.min(offsetBuffer, input.length - 1)] || 0;
+    output[index] = convertFloatToInt16(averaged);
+    offsetBuffer = nextOffsetBuffer;
+  }
+  return output;
+}
+
+function cloneArrayBuffer(view) {
+  const array = view instanceof Int16Array ? view : new Int16Array(view || []);
+  return array.buffer.slice(array.byteOffset, array.byteOffset + array.byteLength);
 }
 
 function formatRecordingDuration(ms) {
@@ -159,6 +221,7 @@ function resetVoiceRecorderState() {
   voiceState.recorder = null;
   voiceState.chunks = [];
   voiceState.startedAt = 0;
+  clearVoiceLivePreview();
   syncVoiceInputButton();
 }
 
@@ -229,7 +292,193 @@ function queueVoiceAttachment(attachment) {
   return true;
 }
 
-async function submitVoiceAudio(file) {
+function disconnectLiveVoiceAudio(live) {
+  if (!live || live.audioDisconnected) return;
+  live.audioDisconnected = true;
+  try { live.processorNode && (live.processorNode.onaudioprocess = null); } catch {}
+  try { live.sourceNode?.disconnect(); } catch {}
+  try { live.processorNode?.disconnect(); } catch {}
+  try { live.gainNode?.disconnect(); } catch {}
+}
+
+async function cleanupLiveVoicePreview() {
+  const live = voiceState.live;
+  voiceState.live = null;
+  if (!live) return;
+  disconnectLiveVoiceAudio(live);
+  try {
+    if (live.audioContext && live.audioContext.state !== "closed") {
+      await live.audioContext.close();
+    }
+  } catch {}
+  try {
+    if (live.socket && live.socket.readyState === WebSocket.OPEN) {
+      live.socket.close();
+    }
+  } catch {}
+}
+
+async function startLiveVoicePreview(stream) {
+  if (!stream || !currentSessionId || typeof WebSocket === "undefined") {
+    return null;
+  }
+  const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+  if (typeof AudioContextCtor !== "function") {
+    return null;
+  }
+
+  const live = {
+    socket: null,
+    audioContext: null,
+    sourceNode: null,
+    processorNode: null,
+    gainNode: null,
+    canSendAudio: false,
+    pendingChunks: [],
+    latestTranscript: "",
+    finalized: false,
+    stopRequested: false,
+    audioDisconnected: false,
+    finalPromise: null,
+    resolveFinal: null,
+  };
+  live.finalPromise = new Promise((resolve) => {
+    live.resolveFinal = resolve;
+  });
+
+  const audioContext = new AudioContextCtor();
+  voiceState.live = live;
+  live.audioContext = audioContext;
+  if (audioContext.state === "suspended") {
+    try {
+      await audioContext.resume();
+    } catch {}
+  }
+
+  const sourceNode = audioContext.createMediaStreamSource(stream);
+  const processorNode = audioContext.createScriptProcessor(4096, 1, 1);
+  const gainNode = audioContext.createGain();
+  gainNode.gain.value = 0;
+  live.sourceNode = sourceNode;
+  live.processorNode = processorNode;
+  live.gainNode = gainNode;
+  sourceNode.connect(processorNode);
+  processorNode.connect(gainNode);
+  gainNode.connect(audioContext.destination);
+
+  const socket = new WebSocket(resolveVoiceInputWsUrl(currentSessionId));
+  live.socket = socket;
+  setVoiceLivePreview("实时字幕准备中…", { empty: true });
+
+  const flushPendingChunks = () => {
+    if (!live.canSendAudio || !live.socket || live.socket.readyState !== WebSocket.OPEN) return;
+    while (live.pendingChunks.length > 0) {
+      live.socket.send(live.pendingChunks.shift());
+    }
+  };
+
+  processorNode.onaudioprocess = (event) => {
+    if (!voiceState.recording || live.stopRequested) return;
+    const channelData = event?.inputBuffer?.getChannelData?.(0);
+    if (!channelData?.length) return;
+    const pcmChunk = downsampleVoiceBuffer(channelData, audioContext.sampleRate, 16000);
+    if (!pcmChunk.length) return;
+    const payload = cloneArrayBuffer(pcmChunk);
+    if (!live.canSendAudio || !live.socket || live.socket.readyState !== WebSocket.OPEN) {
+      if (live.pendingChunks.length < 24) {
+        live.pendingChunks.push(payload);
+      }
+      return;
+    }
+    live.socket.send(payload);
+  };
+
+  socket.addEventListener("open", () => {
+    socket.send(JSON.stringify({
+      type: "start",
+      sessionId: currentSessionId,
+      language: voiceState.config?.language || "",
+    }));
+  });
+
+  socket.addEventListener("message", (event) => {
+    let payload = null;
+    try {
+      payload = JSON.parse(String(event?.data || ""));
+    } catch {
+      return;
+    }
+    if (payload?.type === "started") {
+      live.canSendAudio = true;
+      flushPendingChunks();
+      setVoiceLivePreview("实时字幕已连接，开始说话吧。", { empty: true });
+      return;
+    }
+    if (payload?.type === "partial") {
+      live.latestTranscript = typeof payload.transcript === "string" ? payload.transcript.trim() : live.latestTranscript;
+      setVoiceLivePreview(live.latestTranscript || "实时字幕已连接，开始说话吧。", { empty: !live.latestTranscript });
+      return;
+    }
+    if (payload?.type === "final") {
+      const transcript = typeof payload.transcript === "string" ? payload.transcript.trim() : live.latestTranscript;
+      live.latestTranscript = transcript || live.latestTranscript;
+      live.finalized = true;
+      setVoiceLivePreview(live.latestTranscript || "", { empty: !live.latestTranscript });
+      live.resolveFinal({ transcript: live.latestTranscript || "", streamFailed: false });
+      return;
+    }
+    if (payload?.type === "error") {
+      live.canSendAudio = false;
+      live.stopRequested = true;
+      disconnectLiveVoiceAudio(live);
+      setVoiceInputStatus(payload.error || "实时字幕暂时不可用，结束后会回退到普通转写。", { error: true });
+      live.resolveFinal({ transcript: live.latestTranscript || "", streamFailed: true, error: payload.error || "" });
+    }
+  });
+
+  socket.addEventListener("close", () => {
+    if (live.finalized) return;
+    live.resolveFinal({ transcript: live.latestTranscript || "", streamFailed: true });
+  });
+
+  socket.addEventListener("error", () => {
+    if (live.finalized) return;
+    live.resolveFinal({ transcript: live.latestTranscript || "", streamFailed: true, error: "实时字幕连接失败。" });
+  });
+
+  return live;
+}
+
+function requestLiveVoicePreviewStop() {
+  const live = voiceState.live;
+  if (!live) return;
+  live.stopRequested = true;
+  disconnectLiveVoiceAudio(live);
+  if (live.socket && live.socket.readyState === WebSocket.OPEN) {
+    live.socket.send(JSON.stringify({ type: "stop" }));
+  }
+}
+
+async function waitForLiveVoicePreviewResult(timeoutMs = 3200) {
+  const live = voiceState.live;
+  if (!live?.finalPromise) {
+    return { transcript: "", streamFailed: true, skipped: "not_started" };
+  }
+  try {
+    return await Promise.race([
+      live.finalPromise,
+      new Promise((resolve) => {
+        scheduleTimeout?.(() => {
+          resolve({ transcript: live.latestTranscript || "", streamFailed: true, timedOut: true });
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    await cleanupLiveVoicePreview();
+  }
+}
+
+async function submitVoiceAudio(file, options = {}) {
   if (!currentSessionId) {
     setVoiceInputStatus("先打开一个会话，再发语音。", { error: true });
     return;
@@ -241,13 +490,16 @@ async function submitVoiceAudio(file) {
   const prefs = readVoiceInputPrefs();
   voiceState.busy = true;
   syncVoiceInputButton();
-  setVoiceInputStatus("正在转写语音…", { persist: true });
+  setVoiceInputStatus(options?.providedTranscript ? "正在整理语音…" : "正在转写语音…", { persist: true });
   try {
     const formData = new FormData();
     formData.set("audio", file, file?.name || "voice-input");
     if (voiceState.config?.language) formData.set("language", voiceState.config.language);
     formData.set("persistAudio", prefs.attachOriginalAudio ? "true" : "false");
     formData.set("rewriteWithContext", prefs.rewriteWithContext ? "true" : "false");
+    if (typeof options?.providedTranscript === "string" && options.providedTranscript.trim()) {
+      formData.set("providedTranscript", options.providedTranscript.trim());
+    }
     const data = await fetchJsonOrRedirect(`/api/sessions/${encodeURIComponent(currentSessionId)}/voice-transcriptions`, {
       method: "POST",
       body: formData,
@@ -257,7 +509,7 @@ async function submitVoiceAudio(file) {
     }
     const insertedIntoEmptyComposer = await insertVoiceTranscriptIntoComposer(data?.transcript || "");
     if (prefs.autoSend && insertedIntoEmptyComposer && typeof data?.transcript === "string" && data.transcript.trim() && typeof sendMessage === "function") {
-      setVoiceInputStatus(data?.rewriteApplied ? "已结合当前会话纠偏，正在发送…" : "已转写，正在发送…", { persist: true });
+      setVoiceInputStatus(data?.rewriteApplied ? "已结合基础记忆清洗，正在发送…" : "已转写，正在发送…", { persist: true });
       sendMessage();
       return;
     }
@@ -265,8 +517,8 @@ async function submitVoiceAudio(file) {
       setVoiceInputStatus(
         data?.rewriteApplied
           ? (prefs.attachOriginalAudio && data?.attachment
-            ? "已结合当前会话纠偏并附上原音频，可直接发送或先改字。"
-            : "已结合当前会话纠偏后放进输入框，可直接发送或先改字。")
+            ? "已结合基础记忆清洗并附上原音频，可直接发送或先改字。"
+            : "已结合基础记忆清洗后放进输入框，可直接发送或先改字。")
           : (prefs.attachOriginalAudio && data?.attachment
             ? "已转写并附上原音频，可直接发送或先改字。"
             : "已转写到输入框，可直接发送或先改字。"),
@@ -291,6 +543,7 @@ async function submitVoiceAudio(file) {
 
 async function stopVoiceRecording() {
   if (!voiceState.recorder || voiceState.recorder.state === "inactive") return;
+  requestLiveVoicePreviewStop();
   setVoiceInputStatus("正在结束录音…", { persist: true });
   voiceState.recorder.stop();
 }
@@ -328,19 +581,28 @@ async function startVoiceRecording() {
     recorder.addEventListener("stop", async () => {
       const chunks = voiceState.chunks.slice();
       const resolvedType = recorder.mimeType || mimeType || "audio/webm";
+      const liveResult = await waitForLiveVoicePreviewResult();
       resetVoiceRecorderState();
       if (chunks.length === 0) {
         setVoiceInputStatus("没有录到有效音频，再试一次。", { error: true });
         return;
       }
       const blob = new Blob(chunks, { type: resolvedType });
-      await submitVoiceAudio(buildRecordedAudioFile(blob));
+      await submitVoiceAudio(buildRecordedAudioFile(blob), {
+        providedTranscript: typeof liveResult?.transcript === "string" ? liveResult.transcript : "",
+      });
     }, { once: true });
     recorder.start();
     voiceState.recording = true;
     syncVoiceInputButton();
     startVoiceInputClock();
+    try {
+      await startLiveVoicePreview(stream);
+    } catch {
+      setVoiceInputStatus("实时字幕暂时不可用，结束后会回退到普通转写。", { error: true });
+    }
   } catch (error) {
+    await cleanupLiveVoicePreview();
     resetVoiceRecorderState();
     setVoiceInputStatus("麦克风不可用，改用系统文件选择。", { error: true });
     voiceFileInput?.click();
@@ -403,7 +665,7 @@ function renderVoiceInputSettings() {
 
   const note = document.createElement("div");
   note.className = "settings-section-note";
-  note.textContent = "Record on phone or desktop, transcribe on the server, optionally clean up the transcript with current session context, and keep the original audio when needed.";
+  note.textContent = "Record on phone or desktop, show live captions while speaking, clean the transcript with persistent collaboration memory, and keep the original audio when needed.";
 
   const form = document.createElement("div");
   form.className = "settings-inline-form";
@@ -413,7 +675,7 @@ function renderVoiceInputSettings() {
   const enabledControl = createVoiceSettingsCheckbox("Enable voice input", config.enabled !== false);
   const attachControl = createVoiceSettingsCheckbox("Attach original audio by default", prefs.attachOriginalAudio !== false);
   const autoSendControl = createVoiceSettingsCheckbox("Auto-send when transcript lands in an empty composer", prefs.autoSend === true);
-  const rewriteControl = createVoiceSettingsCheckbox("Use current session context to clean up the transcript", prefs.rewriteWithContext !== false);
+  const rewriteControl = createVoiceSettingsCheckbox("Use persistent collaboration memory to clean up the transcript", prefs.rewriteWithContext !== false);
   enableRow.appendChild(enabledControl.chip);
   enableRow.appendChild(attachControl.chip);
   enableRow.appendChild(autoSendControl.chip);
@@ -441,6 +703,12 @@ function renderVoiceInputSettings() {
   endpointInput.type = "text";
   endpointInput.placeholder = "Voice websocket endpoint";
   endpointInput.value = config.endpoint || "";
+
+  const streamEndpointInput = document.createElement("input");
+  streamEndpointInput.className = "settings-inline-input";
+  streamEndpointInput.type = "text";
+  streamEndpointInput.placeholder = "Live caption websocket endpoint";
+  streamEndpointInput.value = config.streamEndpoint || "";
 
   const languageInput = document.createElement("input");
   languageInput.className = "settings-inline-input";
@@ -481,6 +749,7 @@ function renderVoiceInputSettings() {
         enabled: enabledControl.input.checked,
         appId: appIdInput.value.trim(),
         endpoint: endpointInput.value.trim(),
+        streamEndpoint: streamEndpointInput.value.trim(),
         resourceId: resourceIdInput.value.trim(),
         language: languageInput.value.trim(),
         modelLabel: modelLabelInput.value.trim(),
@@ -497,8 +766,8 @@ function renderVoiceInputSettings() {
       accessKeyInput.value = "";
       status.textContent = nextPrefs.rewriteWithContext
         ? (nextPrefs.attachOriginalAudio
-          ? "Saved. New recordings use session context to clean up the transcript and keep the original audio attached by default."
-          : "Saved. New recordings use session context to clean up the transcript before inserting text.")
+          ? "Saved. New recordings use persistent collaboration memory to clean up the transcript and keep the original audio attached by default."
+          : "Saved. New recordings use persistent collaboration memory to clean up the transcript before inserting text.")
         : (nextPrefs.attachOriginalAudio
           ? "Saved. New recordings keep the original audio attached by default."
           : "Saved. New recordings only insert transcript text by default.");
@@ -517,6 +786,7 @@ function renderVoiceInputSettings() {
   form.appendChild(accessKeyInput);
   form.appendChild(resourceIdInput);
   form.appendChild(endpointInput);
+  form.appendChild(streamEndpointInput);
   form.appendChild(languageInput);
   form.appendChild(modelLabelInput);
   form.appendChild(actionRow);
@@ -541,6 +811,7 @@ voiceFileInput?.addEventListener("change", () => {
 window.addEventListener("beforeunload", () => {
   stopVoiceInputClock();
   stopVoiceTracks();
+  void cleanupLiveVoicePreview();
 });
 
 scheduleInterval?.(() => {

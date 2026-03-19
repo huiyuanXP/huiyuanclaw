@@ -225,6 +225,7 @@ async function main() {
     assert.match(page.text, /id="voiceSettingsMount"/);
     assert.match(page.text, /id="voiceInputBtn"/);
     assert.match(page.text, /id="voiceFileInput"/);
+    assert.match(page.text, /id="voiceLivePreview"/);
     assert.match(page.text, /id="voiceInputStatus"/);
     assert.match(page.text, /id="tabSettings"/);
     assert.doesNotMatch(page.text, /id="collapseBtn"/, 'desktop sidebar should no longer expose a collapse control');
@@ -527,6 +528,7 @@ async function main() {
     assert.match(voiceInputAsset.text, /voice-transcriptions/);
     assert.match(voiceInputAsset.text, /voiceInputBtn/);
     assert.match(voiceInputAsset.text, /rewriteWithContext/);
+    assert.match(voiceInputAsset.text, /ws\/voice-input/);
 
     const initAsset = await request(port, 'GET', '/chat/init.js');
     assert.equal(initAsset.status, 200, 'init asset should load');

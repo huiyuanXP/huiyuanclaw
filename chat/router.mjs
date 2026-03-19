@@ -290,6 +290,7 @@ async function readVoiceInputPayload(req, pathname) {
       language: typeof payload?.language === 'string' ? payload.language.trim() : '',
       persistAudio: payload?.persistAudio !== false,
       rewriteWithContext: payload?.rewriteWithContext === true,
+      providedTranscript: typeof payload?.providedTranscript === 'string' ? payload.providedTranscript.trim() : '',
     };
   }
 
@@ -320,6 +321,7 @@ async function readVoiceInputPayload(req, pathname) {
     language: parseFormString(formData.get('language')),
     persistAudio: parseFormString(formData.get('persistAudio')) !== 'false',
     rewriteWithContext: parseFormString(formData.get('rewriteWithContext')) === 'true',
+    providedTranscript: parseFormString(formData.get('providedTranscript')),
   };
 }
 
@@ -1191,6 +1193,7 @@ export async function handleRequest(req, res) {
         ...(Object.prototype.hasOwnProperty.call(payload || {}, 'appId') ? { appId: typeof payload.appId === 'string' ? payload.appId : '' } : {}),
         ...(Object.prototype.hasOwnProperty.call(payload || {}, 'accessKey') ? { accessKey: typeof payload.accessKey === 'string' ? payload.accessKey : '' } : {}),
         ...(Object.prototype.hasOwnProperty.call(payload || {}, 'endpoint') ? { endpoint: typeof payload.endpoint === 'string' ? payload.endpoint : '' } : {}),
+        ...(Object.prototype.hasOwnProperty.call(payload || {}, 'streamEndpoint') ? { streamEndpoint: typeof payload.streamEndpoint === 'string' ? payload.streamEndpoint : '' } : {}),
         ...(Object.prototype.hasOwnProperty.call(payload || {}, 'resourceId') ? { resourceId: typeof payload.resourceId === 'string' ? payload.resourceId : '' } : {}),
         ...(Object.prototype.hasOwnProperty.call(payload || {}, 'language') ? { language: typeof payload.language === 'string' ? payload.language : '' } : {}),
         ...(Object.prototype.hasOwnProperty.call(payload || {}, 'modelLabel') ? { modelLabel: typeof payload.modelLabel === 'string' ? payload.modelLabel : '' } : {}),
@@ -1553,9 +1556,19 @@ export async function handleRequest(req, res) {
       }
 
       try {
-        const transcription = await transcribeVoiceInputAudio(payload.audio, {
-          language: payload.language,
-        });
+        const providedTranscript = typeof payload.providedTranscript === 'string'
+          ? payload.providedTranscript.trim()
+          : '';
+        const transcription = providedTranscript
+          ? {
+              transcript: providedTranscript,
+              durationMs: 0,
+              language: payload.language || (await readVoiceInputConfig()).volcengine.language,
+              modelLabel: (await readVoiceInputConfig()).volcengine.modelLabel,
+            }
+          : await transcribeVoiceInputAudio(payload.audio, {
+              language: payload.language,
+            });
         let transcript = transcription.transcript;
         let rewriteApplied = false;
         if (payload.rewriteWithContext && transcript) {

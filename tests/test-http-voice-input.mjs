@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 import http from 'http';
 import { spawn } from 'child_process';
 import { gzipSync } from 'zlib';
-import { WebSocketServer } from 'ws';
+import WebSocket, { WebSocketServer } from 'ws';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = dirname(__dirname);
@@ -168,10 +168,10 @@ async function stopServer(child) {
   await waitFor(() => child.exitCode !== null, 'server shutdown');
 }
 
-function buildVoiceProviderResponseFrame(payloadObject, sequence = 2) {
+function buildVoiceProviderResponseFrame(payloadObject, sequence = 2, isFinal = true) {
   const header = Buffer.alloc(4);
   header.writeUInt8((0x1 << 4) | 0x1, 0);
-  header.writeUInt8((0x9 << 4) | 0x3, 1);
+  header.writeUInt8((0x9 << 4) | (isFinal ? 0x3 : 0x1), 1);
   header.writeUInt8((0x1 << 4) | 0x1, 2);
   header.writeUInt8(0x00, 3);
 
@@ -184,13 +184,37 @@ function buildVoiceProviderResponseFrame(payloadObject, sequence = 2) {
   return Buffer.concat([header, sequenceBuffer, payloadSize, payload]);
 }
 
+function isFinalAudioFrame(data) {
+  const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
+  if (buffer.length < 2) return false;
+  const messageType = buffer.readUInt8(1) >> 4;
+  const flags = buffer.readUInt8(1) & 0x0f;
+  return messageType === 0x2 && (flags === 0x2 || flags === 0x3);
+}
+
 function startMockVoiceProvider(port) {
   const server = new WebSocketServer({ port });
   server.on('connection', (socket) => {
-    let messageCount = 0;
-    socket.on('message', () => {
-      messageCount += 1;
-      if (messageCount < 2) return;
+    let sentPartial = false;
+    socket.on('message', (data) => {
+      const finalAudio = isFinalAudioFrame(data);
+      if (!sentPartial && !finalAudio) {
+        sentPartial = true;
+        socket.send(buildVoiceProviderResponseFrame({
+          audio_info: { duration: 460 },
+          result: {
+            additions: { log_id: 'mock-log-id' },
+            text: '请帮我把那个服务重起一下',
+            utterances: [
+              {
+                definite: false,
+                text: '请帮我把那个服务重起一下',
+              },
+            ],
+          },
+        }, 2, false));
+      }
+      if (!finalAudio) return;
       socket.send(buildVoiceProviderResponseFrame({
         audio_info: { duration: 920 },
         result: {
@@ -203,10 +227,52 @@ function startMockVoiceProvider(port) {
             },
           ],
         },
-      }));
+      }, 3, true));
     });
   });
   return server;
+}
+
+async function runLiveVoiceStream(chatPort, sessionId) {
+  return new Promise((resolve, reject) => {
+    const client = new WebSocket(`ws://127.0.0.1:${chatPort}/ws/voice-input?sessionId=${sessionId}`, {
+      headers: { Cookie: cookie },
+    });
+    const state = { partial: '' };
+
+    client.on('open', () => {
+      client.send(JSON.stringify({ type: 'start', sessionId, language: 'zh-CN' }));
+    });
+
+    client.on('message', (raw) => {
+      let payload = null;
+      try {
+        payload = JSON.parse(String(raw || ''));
+      } catch {
+        reject(new Error(`Unexpected websocket payload: ${String(raw || '')}`));
+        return;
+      }
+      if (payload.type === 'started') {
+        client.send(Buffer.from('fake-pcm-chunk'));
+        return;
+      }
+      if (payload.type === 'partial') {
+        state.partial = payload.transcript || '';
+        client.send(JSON.stringify({ type: 'stop' }));
+        return;
+      }
+      if (payload.type === 'final') {
+        resolve({ partial: state.partial, final: payload.transcript || '' });
+        client.close();
+        return;
+      }
+      if (payload.type === 'error') {
+        reject(new Error(payload.error || 'voice stream failed'));
+      }
+    });
+
+    client.on('error', reject);
+  });
 }
 
 async function createSession(port) {
@@ -273,6 +339,24 @@ try {
   assert.equal(rewrittenRes.json.rawTranscript, '请帮我把那个服务重起一下');
   assert.equal(rewrittenRes.json.rewriteApplied, true, 'rewrite flag should be reported when the transcript changes');
   assert.equal(rewrittenRes.json.attachment, null, 'rewrite-only request should skip attachment persistence when disabled');
+
+  const providedTranscriptRes = await request(chatPort, 'POST', `/api/sessions/${session.id}/voice-transcriptions`, {
+    audio: {
+      data: Buffer.from('fake-wave-audio').toString('base64'),
+      mimeType: 'audio/wav',
+      originalName: 'voice.wav',
+    },
+    persistAudio: false,
+    rewriteWithContext: true,
+    providedTranscript: '请帮我把那个服务重起一下',
+  });
+  assert.equal(providedTranscriptRes.status, 200, 'provided transcript request should succeed');
+  assert.equal(providedTranscriptRes.json.transcript, '请帮我把 RemoteLab 服务重启一下');
+  assert.equal(providedTranscriptRes.json.rawTranscript, '请帮我把那个服务重起一下');
+
+  const liveStreamRes = await runLiveVoiceStream(chatPort, session.id);
+  assert.equal(liveStreamRes.partial, '请帮我把那个服务重起一下');
+  assert.equal(liveStreamRes.final, '请帮我把那个服务重起一下');
 
   const messageRes = await request(chatPort, 'POST', `/api/sessions/${session.id}/messages`, {
     text: transcriptionRes.json.transcript,

@@ -104,12 +104,12 @@
   background: transparent; color: var(--text-muted); font-size: 14px;
   cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
 }
-.input-config-row .voice-btn.is-recording {
+.voice-btn.is-recording {
   border-color: var(--error);
   color: var(--error);
   background: var(--bg-secondary);
 }
-.input-config-row .voice-btn.is-busy {
+.voice-btn.is-busy {
   border-color: var(--border-strong);
   color: var(--text-secondary);
 }
@@ -162,6 +162,41 @@
 }
 .voice-input-status.is-error {
   color: var(--error);
+}
+.voice-live-preview {
+  display: none;
+  padding: 0 14px 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+.voice-live-preview.visible {
+  display: block;
+}
+.voice-live-preview.is-empty {
+  color: var(--text-muted);
+}
+.composer-voice-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.composer-voice-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.composer-voice-btn:active {
+  background: var(--bg-tertiary);
 }
 .input-footer {
   display: flex;
