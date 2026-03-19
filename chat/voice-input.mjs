@@ -282,13 +282,43 @@ function parseVolcengineServerPacket(data) {
   };
 }
 
-function extractVolcengineTranscript(payload) {
+function resolveVoiceTranscriptSeparator(previousText, nextText) {
+  const prevTail = previousText.slice(-1);
+  const nextHead = nextText.slice(0, 1);
+  if (!prevTail || !nextHead) return '';
+  if (/[A-Za-z0-9]$/.test(prevTail) && /^[A-Za-z0-9]/.test(nextHead)) {
+    return ' ';
+  }
+  return '';
+}
+
+function mergeVoiceTranscripts(previousText, nextText) {
+  const previous = trimString(previousText);
+  const next = trimString(nextText);
+  if (!previous) return next;
+  if (!next) return previous;
+  if (next === previous || next.includes(previous)) return next;
+  if (previous.includes(next)) return previous;
+
+  const maxOverlap = Math.min(previous.length, next.length);
+  for (let size = maxOverlap; size > 0; size -= 1) {
+    if (previous.slice(-size) === next.slice(0, size)) {
+      return `${previous}${next.slice(size)}`.trim();
+    }
+  }
+
+  return `${previous}${resolveVoiceTranscriptSeparator(previous, next)}${next}`.trim();
+}
+
+function extractVolcengineTranscript(payload, previousText = '') {
   const utterances = Array.isArray(payload?.result?.utterances) ? payload.result.utterances : [];
   const utteranceText = utterances.map((item) => trimString(item?.text)).filter(Boolean).join(' ').trim();
-  if (utteranceText) return utteranceText;
   const nestedText = trimString(payload?.result?.text);
-  if (nestedText) return nestedText;
-  return trimString(payload?.text);
+  const directText = trimString(payload?.text);
+  const nextText = [nestedText, utteranceText, directText]
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length)[0] || '';
+  return mergeVoiceTranscripts(previousText, nextText);
 }
 
 function createVolcengineAuthHeaders(options) {
@@ -433,6 +463,8 @@ async function transcribeWithVolcengine(audio, config, options = {}) {
     let settled = false;
     let sequence = 1;
     let finalText = '';
+    let finalDurationMs = 0;
+    let finalLogId = '';
     const ws = new WebSocket(config.endpoint, {
       headers: createVolcengineAuthHeaders({
         appId: config.appId,
@@ -477,21 +509,21 @@ async function transcribeWithVolcengine(audio, config, options = {}) {
         return;
       }
       if (packet.type !== 'response') return;
-      const text = extractVolcengineTranscript(packet.data);
+      const text = extractVolcengineTranscript(packet.data, finalText);
       if (text) {
         finalText = text;
       }
-      const hasDefiniteUtterance = Array.isArray(packet.data?.result?.utterances)
-        && packet.data.result.utterances.some((item) => item?.definite === true);
-      if (!packet.isFinal && !hasDefiniteUtterance) {
+      finalDurationMs = Number(packet.data?.audio_info?.duration || finalDurationMs || 0);
+      finalLogId = trimString(packet.data?.result?.additions?.log_id) || finalLogId;
+      if (!packet.isFinal) {
         return;
       }
       settle(() => {
         ws.close();
         resolve({
           text: finalText,
-          durationMs: Number(packet.data?.audio_info?.duration || 0),
-          logId: trimString(packet.data?.result?.additions?.log_id),
+          durationMs: finalDurationMs,
+          logId: finalLogId,
         });
       });
     });
@@ -509,6 +541,14 @@ async function transcribeWithVolcengine(audio, config, options = {}) {
     ws.on('close', () => {
       if (settled) return;
       settle(() => {
+        if (finalText) {
+          resolve({
+            text: finalText,
+            durationMs: finalDurationMs,
+            logId: finalLogId,
+          });
+          return;
+        }
         reject(createVoiceInputError(
           'VOICE_INPUT_PROVIDER_ERROR',
           'Voice input provider closed the transcription stream unexpectedly.',
@@ -609,7 +649,7 @@ export async function openVoiceInputLiveTranscription(options = {}) {
       return;
     }
     if (packet.type !== 'response') return;
-    const transcript = extractVolcengineTranscript(packet.data);
+    const transcript = extractVolcengineTranscript(packet.data, finalText);
     if (transcript) {
       finalText = transcript;
     }
@@ -621,11 +661,11 @@ export async function openVoiceInputLiveTranscription(options = {}) {
           transcript,
           durationMs: finalDurationMs,
           logId: finalLogId,
-          isFinal: packet.isFinal,
+          isFinal: packet.isFinal && finalRequested,
         });
       } catch {}
     }
-    if (packet.isFinal) {
+    if (packet.isFinal && finalRequested) {
       try { ws.close(); } catch {}
       finishWithResult();
     }

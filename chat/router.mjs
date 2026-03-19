@@ -1550,21 +1550,29 @@ export async function handleRequest(req, res) {
         return;
       }
 
-      if (!payload?.audio || !Buffer.isBuffer(payload.audio.buffer) || payload.audio.buffer.length === 0) {
+      const providedTranscript = typeof payload?.providedTranscript === 'string'
+        ? payload.providedTranscript.trim()
+        : '';
+      const hasAudio = !!payload?.audio && Buffer.isBuffer(payload.audio.buffer) && payload.audio.buffer.length > 0;
+
+      if (!hasAudio && !providedTranscript) {
         writeJson(res, 400, { error: 'audio is required' });
         return;
       }
 
+      if (!hasAudio && payload.persistAudio !== false) {
+        writeJson(res, 400, { error: 'audio is required when persistAudio is true' });
+        return;
+      }
+
       try {
-        const providedTranscript = typeof payload.providedTranscript === 'string'
-          ? payload.providedTranscript.trim()
-          : '';
+        const voiceConfig = await readVoiceInputConfig();
         const transcription = providedTranscript
           ? {
               transcript: providedTranscript,
               durationMs: 0,
-              language: payload.language || (await readVoiceInputConfig()).volcengine.language,
-              modelLabel: (await readVoiceInputConfig()).volcengine.modelLabel,
+              language: payload.language || voiceConfig.volcengine.language,
+              modelLabel: voiceConfig.volcengine.modelLabel,
             }
           : await transcribeVoiceInputAudio(payload.audio, {
               language: payload.language,
@@ -1584,7 +1592,7 @@ export async function handleRequest(req, res) {
             console.warn(`[voice-input] transcript rewrite failed for ${sessionId.slice(0, 8)}: ${error?.message || error}`);
           }
         }
-        const savedAttachment = payload.persistAudio === false
+        const savedAttachment = payload.persistAudio === false || !hasAudio
           ? null
           : (await saveAttachments([payload.audio]))[0] || null;
         writeJson(res, 200, {
@@ -1601,7 +1609,7 @@ export async function handleRequest(req, res) {
                 mimeType: savedAttachment.mimeType,
               }
             : null,
-          config: buildVoiceInputConfigSummary(await readVoiceInputConfig(), authSession),
+          config: buildVoiceInputConfigSummary(voiceConfig, authSession),
         });
       } catch (error) {
         writeJson(res, error?.statusCode || 502, { error: error?.message || 'Voice input transcription failed' });

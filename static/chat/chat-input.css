@@ -128,6 +128,12 @@
   max-height: calc(1.55em * 10);
   overflow-y: auto;
 }
+.input-row textarea.is-voice-live {
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 1.4px;
+}
 .input-row textarea::placeholder { color: var(--text-muted); }
 .composer-pending-state {
   display: none;
@@ -162,20 +168,6 @@
 }
 .voice-input-status.is-error {
   color: var(--error);
-}
-.voice-live-preview {
-  display: none;
-  padding: 0 14px 10px;
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-}
-.voice-live-preview.visible {
-  display: block;
-}
-.voice-live-preview.is-empty {
-  color: var(--text-muted);
 }
 .composer-voice-btn {
   width: 34px;

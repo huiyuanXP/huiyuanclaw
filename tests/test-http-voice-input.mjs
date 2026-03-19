@@ -196,9 +196,11 @@ function startMockVoiceProvider(port) {
   const server = new WebSocketServer({ port });
   server.on('connection', (socket) => {
     let sentPartial = false;
+    let sawStreamingChunk = false;
     socket.on('message', (data) => {
       const finalAudio = isFinalAudioFrame(data);
       if (!sentPartial && !finalAudio) {
+        sawStreamingChunk = true;
         sentPartial = true;
         socket.send(buildVoiceProviderResponseFrame({
           audio_info: { duration: 460 },
@@ -207,27 +209,30 @@ function startMockVoiceProvider(port) {
             text: '请帮我把那个服务重起一下',
             utterances: [
               {
-                definite: false,
+                definite: true,
                 text: '请帮我把那个服务重起一下',
               },
             ],
           },
-        }, 2, false));
+        }, 2, true));
       }
       if (!finalAudio) return;
+      const transcript = sawStreamingChunk
+        ? '请帮我把那个服务重起一下，然后顺便刷新一下页面'
+        : '请帮我把那个服务重起一下';
       socket.send(buildVoiceProviderResponseFrame({
-        audio_info: { duration: 920 },
+        audio_info: { duration: sawStreamingChunk ? 1840 : 920 },
         result: {
           additions: { log_id: 'mock-log-id' },
-          text: '请帮我把那个服务重起一下',
+          text: transcript,
           utterances: [
             {
               definite: true,
-              text: '请帮我把那个服务重起一下',
+              text: transcript,
             },
           ],
         },
-      }, 3, true));
+      }, sawStreamingChunk ? 3 : 2, true));
     });
   });
   return server;
@@ -341,11 +346,6 @@ try {
   assert.equal(rewrittenRes.json.attachment, null, 'rewrite-only request should skip attachment persistence when disabled');
 
   const providedTranscriptRes = await request(chatPort, 'POST', `/api/sessions/${session.id}/voice-transcriptions`, {
-    audio: {
-      data: Buffer.from('fake-wave-audio').toString('base64'),
-      mimeType: 'audio/wav',
-      originalName: 'voice.wav',
-    },
     persistAudio: false,
     rewriteWithContext: true,
     providedTranscript: '请帮我把那个服务重起一下',
@@ -353,10 +353,11 @@ try {
   assert.equal(providedTranscriptRes.status, 200, 'provided transcript request should succeed');
   assert.equal(providedTranscriptRes.json.transcript, '请帮我把 RemoteLab 服务重启一下');
   assert.equal(providedTranscriptRes.json.rawTranscript, '请帮我把那个服务重起一下');
+  assert.equal(providedTranscriptRes.json.attachment, null, 'transcript-only request should not create an attachment');
 
   const liveStreamRes = await runLiveVoiceStream(chatPort, session.id);
-  assert.equal(liveStreamRes.partial, '请帮我把那个服务重起一下');
-  assert.equal(liveStreamRes.final, '请帮我把那个服务重起一下');
+  assert.match(liveStreamRes.partial, /请帮我把那个服务重起一下/);
+  assert.equal(liveStreamRes.final, '请帮我把那个服务重起一下，然后顺便刷新一下页面');
 
   const messageRes = await request(chatPort, 'POST', `/api/sessions/${session.id}/messages`, {
     text: transcriptionRes.json.transcript,
