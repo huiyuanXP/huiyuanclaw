@@ -10,10 +10,11 @@ import {
   parseCookies, setCookie, clearCookie,
 } from '../lib/auth.mjs';
 import { getAvailableTools } from '../lib/tools.mjs';
-import { listSessions, getSession, createSession, deleteSession, sendMessage, getHistory, waitForIdle, receiveHookRequest, getLabels, addLabel, removeLabel, updateLabel, setSessionLabel, archiveSession, restartServer } from './session-manager.mjs';
+import { listSessions, getSession, createSession, deleteSession, sendMessage, getHistory, waitForIdle, receiveHookRequest, getLabels, addLabel, removeLabel, updateLabel, setSessionLabel, archiveSession, restartServer, broadcastReportNew } from './session-manager.mjs';
 import { executeWorkflow, listWorkflowRuns } from './workflow-engine.mjs';
 import { reloadSchedule, updateLastRun } from './scheduler.mjs';
 import { getSidebarState } from './summarizer.mjs';
+import { listReports, getReport, getReportHtml, createReport, markAsRead, deleteReport } from './reports.mjs';
 import { readBody, readBodyBinary } from '../lib/utils.mjs';
 import {
   getClientIp, isRateLimited, recordFailedAttempt, clearFailedAttempts,
@@ -300,6 +301,56 @@ export async function handleRequest(req, res) {
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(hookResponse));
+    return;
+  }
+
+  // ---- Internal report submission endpoint (called by MCP server) ----
+  // No auth required: only reachable from 127.0.0.1
+  if (pathname === '/api/internal/report' && req.method === 'POST') {
+    let body;
+    try { body = await readBody(req, 65536); } catch { body = '{}'; }
+    let data;
+    try { data = JSON.parse(body); } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    const { title, file_path: filePath, session_id: sessionId, source } = data;
+    // Permission check: only whitelisted folders
+    const REPORT_WHITELIST = ['/home/nanoclaw/RLOrchestrator', '/home/nanoclaw/DailyNews'];
+    if (sessionId) {
+      const session = getSession(sessionId);
+      if (!session) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Session not found' }));
+        return;
+      }
+      if (!REPORT_WHITELIST.some(w => session.folder === w || session.folder.startsWith(w + '/'))) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Permission denied: workspace "${session.folder}" not authorized for report submission. Allowed: ${REPORT_WHITELIST.join(', ')}` }));
+        return;
+      }
+    }
+
+    try {
+      const session = sessionId ? getSession(sessionId) : null;
+      const report = createReport({
+        title,
+        filePath,
+        sessionId,
+        sessionFolder: session?.folder || null,
+        source: source || 'unknown',
+      });
+      // Broadcast to all connected WebSocket clients
+      broadcastReportNew(report);
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, reportId: report.id, report }));
+    } catch (err) {
+      console.warn(`[router] report submission failed: ${err.message}`);
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
     return;
   }
 
@@ -624,6 +675,74 @@ export async function handleRequest(req, res) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(getSidebarState()));
     return;
+  }
+
+  // ---- Reports API ----
+
+  if (pathname === '/api/reports' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(listReports()));
+    return;
+  }
+
+  // Report sub-routes: /api/reports/{id}, /api/reports/{id}/html, /api/reports/{id}/read
+  const reportMatch = pathname.match(/^\/api\/reports\/([a-f0-9]+)(\/(\w+))?$/);
+  if (reportMatch) {
+    const id = reportMatch[1];
+    const sub = reportMatch[3];
+
+    if (!sub && req.method === 'GET') {
+      const report = getReport(id);
+      if (!report) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Report not found' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(report));
+      return;
+    }
+
+    if (sub === 'html' && req.method === 'GET') {
+      const html = getReportHtml(id);
+      if (html === null) {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('Report not found');
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': 'text/html',
+        'Cache-Control': 'no-store',
+        'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data: blob:"
+      });
+      const injected = html.replace(/(<head\b[^>]*>)/i, '$1<base target="_blank">');
+      res.end(injected);
+      return;
+    }
+
+    if (sub === 'read' && req.method === 'PATCH') {
+      const updated = markAsRead(id);
+      if (!updated) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Report not found' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(updated));
+      return;
+    }
+
+    if (!sub && req.method === 'DELETE') {
+      const ok = deleteReport(id);
+      if (!ok) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Report not found' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
   }
 
   // Quick replies per folder

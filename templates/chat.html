@@ -90,13 +90,23 @@ body {
 }
 .header-left {
   display: flex; align-items: center; gap: 8px;
-  flex: 1; min-width: 0;
+  flex: 0 1 50%; max-width: 50%;
+  min-width: 0; overflow: hidden;
 }
 .header-right {
   display: flex; align-items: center; gap: 4px;
   flex-shrink: 0;
 }
-.header h1 { font-size: 15px; font-weight: 600; color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.header h1 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+}
 
 /* ---- Header context bar ---- */
 .header-ctx {
@@ -195,7 +205,7 @@ body {
 /* ---- Header mobile responsive ---- */
 @media (max-width: 480px) {
   .header { gap: 4px; padding: 0 8px; padding-top: var(--safe-top); }
-  .header-left { flex-shrink: 1; max-width: 30%; }
+  .header-left { flex: 0 1 0 !important; max-width: 30%; }
   .header h1 { font-size: 13px; }
   #statusText { display: none; }
   .header-ctx-detail { display: none; }
@@ -1589,7 +1599,7 @@ body {
     <button class="report-goto-btn" id="reportGotoSession">Go to Session</button>
     <button class="header-btn" id="reportDetailClose">&times;</button>
   </div>
-  <iframe id="reportIframe" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" class="report-iframe"></iframe>
+  <iframe id="reportIframe" sandbox="allow-same-origin allow-scripts allow-popups allow-popups-to-escape-sandbox" class="report-iframe"></iframe>
 </div>
 
 <!-- Floating status logo -->

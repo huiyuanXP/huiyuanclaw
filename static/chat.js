@@ -863,8 +863,9 @@
     }
     headerCtxClear.classList.add("visible");
 
-    // Shrink the left section to give space to the context bar
-    headerLeft.style.flex = "0 1 auto";
+    // Shrink the left section to its content width, but never collapse to 0
+    headerLeft.style.flex = "0 0 auto";
+    headerTitle.style.flex = "";  // clear any stale inline style on h1
     headerCtx.classList.add("visible");
   }
 

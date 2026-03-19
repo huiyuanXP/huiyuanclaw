@@ -6,6 +6,7 @@ import {
   renameSession, resolveHookRequest, compactSession,
   subscribeGlobal, unsubscribeGlobal, setSessionLabel, archiveSession,
 } from './session-manager.mjs';
+import { markAsRead } from './reports.mjs';
 
 /**
  * Attach WebSocket handling to an HTTP server.
@@ -223,6 +224,18 @@ function handleMessage(ws, msg, ctx) {
       const updated = archiveSession(msg.sessionId, !!msg.archived);
       if (!updated) {
         wsSend(ws, { type: 'error', message: 'Session not found' });
+      }
+      break;
+    }
+
+    case 'mark-report-read': {
+      if (!msg.reportId) {
+        wsSend(ws, { type: 'error', message: 'reportId is required' });
+        return;
+      }
+      const report = markAsRead(msg.reportId);
+      if (!report) {
+        wsSend(ws, { type: 'error', message: 'Report not found' });
       }
       break;
     }

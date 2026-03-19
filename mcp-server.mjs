@@ -327,6 +327,20 @@ const TOOLS = [
     },
   },
   {
+    name: 'submit_report',
+    description: 'Submit a report (HTML file) to the Report notification system. The HTML file will be validated (structure, content length, tag balance) before acceptance — if validation fails, detailed errors are returned so you can fix and retry. Only available to authorized workspaces (RLOrchestrator, DailyNews).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Report title (e.g., "惠远早报 — 2026-03-18")' },
+        file_path: { type: 'string', description: 'Absolute path to the HTML file to submit' },
+        session_id: { type: 'string', description: 'Session ID of the submitting agent (for permission check and linking)' },
+        source: { type: 'string', description: 'Source agent name (e.g., "DailyNews", "RLOrchestrator")' },
+      },
+      required: ['title', 'file_path', 'session_id', 'source'],
+    },
+  },
+  {
     name: 'schedule_message',
     description: 'Schedule a message to be sent to a session. Supports one-shot (delay_ms or run_at) and recurring (interval_ms) modes. For one-shot: provide delay_ms or run_at (not both). For recurring: provide interval_ms (fires repeatedly at this interval).',
     inputSchema: {
@@ -408,7 +422,7 @@ async function executeTool(name, args) {
       if (args.tool) body.tool = args.tool;
       if (args.thinking) body.thinking = true;
       if (args.model) body.model = args.model;
-      const effectiveReportTo = args.report_to || MY_SESSION_ID;
+      const effectiveReportTo = (!args.report_to || args.report_to === 'current') ? MY_SESSION_ID : args.report_to;
       if (effectiveReportTo) body.report_to = effectiveReportTo;
 
       const res = await apiRequest('POST', `/api/sessions/${args.session_id}/messages`, body);
@@ -416,7 +430,7 @@ async function executeTool(name, args) {
 
       if (!wait) {
         // Async: start background watcher, return immediately
-        watchSession(args.session_id, eventCountBefore, sessionName, args.report_to || MY_SESSION_ID);
+        watchSession(args.session_id, eventCountBefore, sessionName, effectiveReportTo);
         return { content: [{ type: 'text', text: `Message dispatched to session "${sessionName || args.session_id.slice(0, 8)}". You will receive a notification when it completes.` }] };
       }
 
@@ -528,6 +542,19 @@ async function executeTool(name, args) {
       } catch {}
 
       return { content: [{ type: 'text', text: log.join('\n') }] };
+    }
+
+    case 'submit_report': {
+      const res = await apiRequest('POST', '/api/internal/report', {
+        title: args.title,
+        file_path: args.file_path,
+        session_id: args.session_id,
+        source: args.source,
+      });
+      if (res.status === 201) {
+        return { content: [{ type: 'text', text: `Report submitted successfully.\nReport ID: ${res.data.reportId}\nTitle: ${args.title}` }] };
+      }
+      return { isError: true, content: [{ type: 'text', text: `Report submission failed (${res.status}): ${res.data?.error || JSON.stringify(res.data)}` }] };
     }
 
     case 'schedule_message': {

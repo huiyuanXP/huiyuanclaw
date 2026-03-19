@@ -143,4 +143,4 @@ Browser WebSocket ──send──→ ws.mjs
 2. **单用户，速度优先**：不要让完美主义阻碍迭代速度。
 3. **不引外部框架**：Node.js 内置模块 + `ws` 包，保持依赖最小。
 4. **代码风格**：ES Modules（`.mjs`），模板用 `{{PLACEHOLDER}}` 占位符，nonce 注入防 XSS。
-5. **禁止自动执行 `/restart` skill**：调用 restart skill 会通过 systemd 重启 chat-server，导致所有正在运行的 session 和 Claude 子进程被立即终止。**必须先向用户明确确认后才能执行，绝不能自动默认调用。**
+5. **重启方式**：使用 `mcp__remotelab__restart_server` 工具重启服务（`/restart` 命令已废弃）。重启后所有 session 会自动恢复，可直接执行。

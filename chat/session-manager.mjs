@@ -50,6 +50,13 @@ function broadcastGlobal(msg) {
   }
 }
 
+/**
+ * Broadcast a report:new event to all connected WebSocket clients.
+ */
+export function broadcastReportNew(report) {
+  broadcastGlobal({ type: 'report:new', report });
+}
+
 // Maps Claude's internal session_id → RemoteLab sessionId (for hook routing)
 const claudeSessionMap = new Map();
 

@@ -1,0 +1,18 @@
+{
+  "name": "DailyNews 智能早报",
+  "description": "每天 UTC 02:10（北京 10:10）拉取橘鸦AI早报 RSS，智能分层筛选后生成 HTML 报告并通过 Report 系统推送",
+  "steps": [
+    {
+      "id": "generate-report",
+      "type": "sequential",
+      "tasks": [
+        {
+          "id": "smart-report",
+          "workspace": "/home/nanoclaw/DailyNews",
+          "model": "opus",
+          "prompt": "你是 DailyNews 智能新闻策展 agent。现在执行每日早报任务。\n\n## 第一步：拉取 RSS 原始数据\n\n运行 `python3 /home/nanoclaw/DailyNews/fetch_news.py`，生成 today.md 和原始 HTML。\n\n## 第二步：读取兴趣上下文\n\n读取以下文件：\n- `~/.huiyuanclaw/MEMORY.md`（关注「当前 Focus 项目详情」和「核心洞察」）\n- `/home/nanoclaw/DailyNews/memory/interest_model.md`\n- `/home/nanoclaw/DailyNews/SOUL.md`\n\n## 第三步：读取今日原始早报\n\n读 `/home/nanoclaw/DailyNews/today.md`\n\n## 第四步：智能分层筛选\n\n- 高兴趣（详细汇报）：能增强 Remote Lab 的技术（记忆管理、多 agent 协作、交付格式、MCP）、agent 编排架构新突破、与 Remote Lab 对标的项目\n- 低兴趣（两句话概述）：纯产品发布、融资新闻、无关技术进展\n\n## 第五步：生成分层 HTML 早报\n\n保存到 `/home/nanoclaw/DailyNews/reports/[今日日期].html`：\n- 完整 HTML 结构，`<head>` 里加 `<base target=\"_blank\">`\n- 深蓝主题 #1a1a2e，紫色强调 #a78bfa\n- 重点关注区：紫色左边框卡片，含「关联/详情/建议」三段分析\n- 其他动态区：紧凑列表，每条两句话\n- 所有 `<a>` 标签加 `target=\"_blank\"`\n- 中文字体 PingFang SC, Microsoft YaHei\n\n## 第六步：提交 Report\n\n用 `mcp__remotelab__submit_report` 提交（title: 「惠远早报 — [今日日期]」, source: 「DailyNews」）。\n如果 HTML 校验失败，根据错误修复后重试。\n\n## 第七步：完成后\n\n打 `done` 标签。"
+        }
+      ]
+    }
+  ]
+}
