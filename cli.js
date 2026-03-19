@@ -33,6 +33,7 @@ Usage:
   remotelab restart [service]        Restart services (chat|tunnel|all)
   remotelab chat                     Run chat server in foreground
   remotelab api                      Call the local RemoteLab HTTP API with owner auth
+  remotelab usage-summary            Summarize local Codex token usage
   remotelab session-spawn            Spawn a focused parallel session from a source session
   remotelab generate-token           Generate a new access token
   remotelab set-password             Set username & password for login
@@ -71,6 +72,17 @@ switch (command) {
     const { runRemoteLabApiCommand } = await import(scriptPath('lib/remotelab-api-command.mjs'));
     try {
       process.exitCode = await runRemoteLabApiCommand(args);
+    } catch (error) {
+      console.error(error.message || String(error));
+      process.exit(1);
+    }
+    break;
+  }
+
+  case 'usage-summary': {
+    const { runUsageSummaryCommand } = await import(scriptPath('lib/usage-summary-command.mjs'));
+    try {
+      process.exitCode = await runUsageSummaryCommand(args);
     } catch (error) {
       console.error(error.message || String(error));
       process.exit(1);
