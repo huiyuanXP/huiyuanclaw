@@ -27,8 +27,13 @@ credentials.txt
 *.swp
 *~
 
-# Claude Code session plan dumps
+# Claude Code (local config, memory, skills — all personal/machine-specific)
+.claude/
 [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.txt
+
+# Runtime state (auto-updated by scheduler/server, not source code)
+workflows/schedules.json
+status.json
 
 # Node
 node_modules/
