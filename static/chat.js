@@ -376,6 +376,9 @@
           } else if (prevSessionIdx >= 0 && targetArr === sessions) {
             // Re-insert at original position to prevent reordering on update
             sessions.splice(prevSessionIdx, 0, msg.session);
+          } else if (targetArr === archivedSessions) {
+            // Newest archived first — prepend so recently archived sessions appear at top
+            targetArr.unshift(msg.session);
           } else {
             targetArr.push(msg.session);
           }
@@ -1781,7 +1784,9 @@
     if (showArchived) {
       const container = document.createElement("div");
       container.className = "archived-items";
-      for (const s of archivedSessions) {
+      // Newest first — recently archived sessions are more likely to be needed
+      const sorted = [...archivedSessions].sort((a, b) => (b.created || "").localeCompare(a.created || ""));
+      for (const s of sorted) {
         const div = document.createElement("div");
         div.className = "session-item archived" + (s.id === currentSessionId ? " active" : "");
         const displayName = s.name || s.tool || "session";
@@ -3521,7 +3526,12 @@
       const entry = state.sessions[sess.id] || { folder: sess.folder || "", name: sess.name || "" };
       return { id: sess.id, entry, isRunning: false, isSummarizing: false, label: sess.label || null };
     });
-    archivedEnriched.sort((a, b) => (b.entry.updatedAt || 0) - (a.entry.updatedAt || 0));
+    // Newest first — recently archived sessions are more likely to be needed
+    archivedEnriched.sort((a, b) => {
+      const ca = archivedSessions.find(s => s.id === a.id)?.created || "";
+      const cb = archivedSessions.find(s => s.id === b.id)?.created || "";
+      return cb.localeCompare(ca);
+    });
 
     if (enriched.length === 0 && archivedSessions.length === 0) {
       const empty = document.createElement("div");
