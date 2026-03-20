@@ -252,4 +252,21 @@ await regularContext.fetchSessionEvents(regularContext.currentSessionId, { runSt
 assert.equal(regularContext.__metrics.scrollNodeToTopCalls, 1, 'regular sessions should keep focusing the latest user turn');
 assert.equal(regularContext.messagesEl.scrollTop, 680, 'regular sessions should not be forced back to the top');
 
+await regularContext.fetchSessionEvents(regularContext.currentSessionId, { runState: 'idle' });
+
+assert.equal(
+  regularContext.__metrics.scrollNodeToTopCalls,
+  1,
+  'regular sessions should only focus the latest user turn once while that session stays open',
+);
+
+regularContext.currentSessionId = 'session_other';
+await regularContext.fetchSessionEvents(regularContext.currentSessionId, { runState: 'idle' });
+
+assert.equal(
+  regularContext.__metrics.scrollNodeToTopCalls,
+  2,
+  'switching to another session should allow the one-time latest-turn focus again',
+);
+
 console.log('test-session-http-share-snapshot-scroll: ok');

@@ -185,6 +185,28 @@ function scrollCurrentSessionViewportToTop() {
   messagesEl.scrollTop = 0;
 }
 
+function getSessionEntryViewportState() {
+  if (!(globalThis.__sessionEntryViewportState && typeof globalThis.__sessionEntryViewportState === "object")) {
+    globalThis.__sessionEntryViewportState = {
+      latestTurnFocusSessionId: null,
+      latestTurnFocusConsumed: false,
+    };
+  }
+  return globalThis.__sessionEntryViewportState;
+}
+
+function shouldFocusLatestTurnStartOnSessionEntry(sessionId, node) {
+  if (!shouldFocusLatestTurnStart(node)) return false;
+  const state = getSessionEntryViewportState();
+  if (state.latestTurnFocusSessionId !== sessionId) {
+    state.latestTurnFocusSessionId = sessionId;
+    state.latestTurnFocusConsumed = false;
+  }
+  if (state.latestTurnFocusConsumed) return false;
+  state.latestTurnFocusConsumed = true;
+  return true;
+}
+
 function hasShareSnapshotPayload() {
   const payload = getActiveShareSnapshotPayload();
   return !!(payload && typeof payload === "object");

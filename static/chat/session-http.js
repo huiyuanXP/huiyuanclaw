@@ -558,7 +558,7 @@ async function fetchSessionEvents(sessionId, { runState = "idle" } = {}) {
     const latestTurnStart = applyFinishedTurnCollapseState();
     if (shouldOpenCurrentSessionFromTop()) {
       scrollCurrentSessionViewportToTop();
-    } else if (shouldFocusLatestTurnStart(latestTurnStart)) {
+    } else if (shouldFocusLatestTurnStartOnSessionEntry(sessionId, latestTurnStart)) {
       scrollNodeToTop(latestTurnStart);
     } else if (events.length > 0 && shouldStickToBottom) {
       scrollToBottom();
@@ -575,7 +575,7 @@ async function fetchSessionEvents(sessionId, { runState = "idle" } = {}) {
     const latestTurnStart = applyFinishedTurnCollapseState();
     if (shouldOpenCurrentSessionFromTop()) {
       scrollCurrentSessionViewportToTop();
-    } else if (shouldFocusLatestTurnStart(latestTurnStart)) {
+    } else if (shouldFocusLatestTurnStartOnSessionEntry(sessionId, latestTurnStart)) {
       scrollNodeToTop(latestTurnStart);
     } else if (renderPlan.events.length > 0 && shouldStickToBottom) {
       scrollToBottom();
@@ -587,7 +587,7 @@ async function fetchSessionEvents(sessionId, { runState = "idle" } = {}) {
   const latestTurnStart = applyFinishedTurnCollapseState();
   if (shouldOpenCurrentSessionFromTop()) {
     scrollCurrentSessionViewportToTop();
-  } else if (shouldFocusLatestTurnStart(latestTurnStart)) {
+  } else if (shouldFocusLatestTurnStartOnSessionEntry(sessionId, latestTurnStart)) {
     scrollNodeToTop(latestTurnStart);
   }
   return events;
