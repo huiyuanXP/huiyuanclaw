@@ -1,4 +1,6 @@
 import { existsSync, statSync, readdirSync, readFileSync, mkdirSync, writeFileSync, renameSync } from 'fs';
+import { spawn } from 'child_process';
+import { readdir, stat } from 'fs/promises';
 import { createHash, randomBytes } from 'crypto';
 import { homedir } from 'os';
 import { join, resolve, dirname, basename } from 'path';
@@ -98,6 +100,7 @@ export function recoverReportToWatchers() {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const chatTemplatePath = join(__dirname, '..', 'templates', 'chat.html');
 const loginTemplatePath = join(__dirname, '..', 'templates', 'login.html');
+const reportsTemplatePath = join(__dirname, '..', 'templates', 'reports.html');
 const staticDir = join(__dirname, '..', 'static');
 
 const staticMimeTypes = {
@@ -106,7 +109,31 @@ const staticMimeTypes = {
   'apple-touch-icon.png': 'image/png',
   'chat.js': 'application/javascript',
   'marked.min.js': 'application/javascript',
+  'highlight.min.js': 'application/javascript',
+  'hljs-github-dark.css': 'text/css',
 };
+
+// ---- Git helper ----
+
+function runGit(args, cwd, { maxOutput = 512 * 1024, timeout = 0 } = {}) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('git', args, { cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+    let stdout = '', stderr = '', killed = false;
+    let timer;
+    if (timeout > 0) {
+      timer = setTimeout(() => { killed = true; proc.kill('SIGTERM'); }, timeout);
+    }
+    proc.stdout.on('data', d => { if (stdout.length < maxOutput) stdout += d; });
+    proc.stderr.on('data', d => { stderr += d; });
+    proc.on('close', code => {
+      if (timer) clearTimeout(timer);
+      if (killed) reject(new Error('Git operation timed out'));
+      else if (code !== 0) reject(new Error(stderr.trim() || `git exited with code ${code}`));
+      else resolve(stdout);
+    });
+    proc.on('error', err => { if (timer) clearTimeout(timer); reject(err); });
+  });
+}
 
 export async function handleRequest(req, res) {
   const parsedUrl = parseUrl(req.url, true);
@@ -634,6 +661,359 @@ export async function handleRequest(req, res) {
     return;
   }
 
+  // GET /api/folders/:folder/files — recursive file tree
+  const filesMatch = pathname.match(/^\/api\/folders\/([^/]+)\/files$/);
+  if (filesMatch && req.method === 'GET') {
+    const folderPath = decodeURIComponent(filesMatch[1]);
+    if (!existsSync(folderPath) || !statSync(folderPath).isDirectory()) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Folder not found' }));
+      return;
+    }
+
+    const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', '.next', '__pycache__', '.cache', 'build', 'coverage', 'out']);
+    const SKIP_FILES = new Set(['.DS_Store']);
+    const MAX_DEPTH = 10;
+    const MAX_FILE_SIZE = 5 * 1024 * 1024;
+
+    async function buildTree(dir, depth) {
+      if (depth > MAX_DEPTH) return [];
+      const entries = await readdir(dir, { withFileTypes: true });
+      const results = [];
+      for (const entry of entries) {
+        const name = entry.name;
+        if (entry.isDirectory()) {
+          if (SKIP_DIRS.has(name)) continue;
+          const children = await buildTree(join(dir, name), depth + 1);
+          results.push({ name, type: 'dir', children });
+        } else if (entry.isFile()) {
+          if (SKIP_FILES.has(name) || name.endsWith('.lock')) continue;
+          try {
+            const st = await stat(join(dir, name));
+            if (st.size > MAX_FILE_SIZE) continue;
+            results.push({ name, type: 'file', size: st.size });
+          } catch { continue; }
+        }
+      }
+      results.sort((a, b) => {
+        if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+      return results;
+    }
+
+    try {
+      const tree = await buildTree(folderPath, 0);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ tree }));
+    } catch (err) {
+      console.error(`[router] file tree error: ${err.message}`);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to read file tree' }));
+    }
+    return;
+  }
+
+  // GET /api/folders/:folder/file?path=<relative> — read single file
+  const fileMatch = pathname.match(/^\/api\/folders\/([^/]+)\/file$/);
+  if (fileMatch && req.method === 'GET') {
+    const folderPath = decodeURIComponent(fileMatch[1]);
+    const relPath = parsedUrl.query.path || '';
+
+    if (!relPath || relPath.startsWith('/') || relPath.includes('..')) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid path' }));
+      return;
+    }
+
+    const fullPath = resolve(folderPath, relPath);
+    if (!fullPath.startsWith(folderPath)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Path traversal denied' }));
+      return;
+    }
+
+    try {
+      if (!existsSync(fullPath)) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'File not found' }));
+        return;
+      }
+      const st = statSync(fullPath);
+      if (st.size > 1024 * 1024) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'File too large', size: st.size }));
+        return;
+      }
+      const content = readFileSync(fullPath, 'utf8');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ content, size: st.size }));
+    } catch (err) {
+      console.error(`[router] file read error: ${err.message}`);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to read file' }));
+    }
+    return;
+  }
+
+  // PUT /api/folders/:folder/file — write file
+  const filePutMatch = pathname.match(/^\/api\/folders\/([^/]+)\/file$/);
+  if (filePutMatch && req.method === 'PUT') {
+    const folderPath = decodeURIComponent(filePutMatch[1]);
+    let body;
+    try { body = JSON.parse(await readBody(req, 1.5 * 1024 * 1024)); } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    const relPath = body.path || '';
+    const content = body.content;
+
+    if (!relPath || relPath.startsWith('/') || relPath.includes('..')) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid path' }));
+      return;
+    }
+
+    if (typeof content !== 'string' || Buffer.byteLength(content) > 1024 * 1024) {
+      res.writeHead(413, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Content too large (max 1MB)' }));
+      return;
+    }
+
+    const fullPath = resolve(folderPath, relPath);
+    if (!fullPath.startsWith(folderPath)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Path traversal denied' }));
+      return;
+    }
+
+    try {
+      mkdirSync(dirname(fullPath), { recursive: true });
+      writeFileSync(fullPath, content, 'utf8');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (err) {
+      console.error(`[router] file write error: ${err.message}`);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to write file' }));
+    }
+    return;
+  }
+
+  // ---- Git API ----
+
+  const gitMatch = pathname.match(/^\/api\/folders\/([^/]+)\/git\/(\w+)$/);
+  if (gitMatch) {
+    const folderPath = decodeURIComponent(gitMatch[1]);
+    const action = gitMatch[2];
+
+    if (!existsSync(folderPath) || !statSync(folderPath).isDirectory()) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Folder not found' }));
+      return;
+    }
+
+    const jsonReply = (code, data) => {
+      res.writeHead(code, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(data));
+    };
+
+    const BRANCH_RE = /^[a-zA-Z0-9._\/-]+$/;
+    const REF_RE = /^[a-zA-Z0-9^~._\/-]+$/;
+
+    function validateFilePath(folderPath, relPath) {
+      if (!relPath || relPath.includes('..')) return null;
+      const full = resolve(folderPath, relPath);
+      if (!full.startsWith(folderPath)) return null;
+      return full;
+    }
+
+    try {
+      // GET /git/status
+      if (action === 'status' && req.method === 'GET') {
+        const [porcelain, branchRaw] = await Promise.all([
+          runGit(['status', '--porcelain=v1'], folderPath),
+          runGit(['rev-parse', '--abbrev-ref', 'HEAD'], folderPath),
+        ]);
+        const branch = branchRaw.trim();
+        const files = [];
+        for (const line of porcelain.split('\n').filter(Boolean)) {
+          const x = line[0]; // index (staging area) status
+          const y = line[1]; // worktree status
+          const path = line.slice(3);
+          // A file can appear in both staged and unstaged if it has changes in both areas (e.g. "MM")
+          if (x !== ' ' && x !== '?') {
+            files.push({ status: x, path, staged: true });
+          }
+          if (y !== ' ' && x === '?') {
+            // Untracked file (??)
+            files.push({ status: '?', path, staged: false });
+          } else if (y !== ' ') {
+            // Unstaged working tree changes
+            files.push({ status: y, path, staged: false });
+          } else if (x !== ' ' && x !== '?' && y === ' ') {
+            // Only staged, no unstaged counterpart — already added above
+          }
+        }
+        jsonReply(200, { files, branch, clean: files.length === 0 });
+        return;
+      }
+
+      // GET /git/diff?file=<path>&staged=true
+      if (action === 'diff' && req.method === 'GET') {
+        const file = parsedUrl.query.file || '';
+        const staged = parsedUrl.query.staged === 'true';
+        const args = ['diff'];
+        if (staged) args.push('--cached');
+        if (file) {
+          if (!validateFilePath(folderPath, file)) {
+            jsonReply(403, { error: 'Invalid file path' });
+            return;
+          }
+          args.push('--', file);
+        }
+        const diff = await runGit(args, folderPath);
+        jsonReply(200, { diff });
+        return;
+      }
+
+      // POST /git/stage
+      if (action === 'stage' && req.method === 'POST') {
+        const body = JSON.parse(await readBody(req));
+        if (body.all) {
+          await runGit(['add', '-A'], folderPath);
+        } else if (Array.isArray(body.files) && body.files.length > 0) {
+          for (const f of body.files) {
+            if (!validateFilePath(folderPath, f)) {
+              jsonReply(403, { error: `Invalid file path: ${f}` });
+              return;
+            }
+          }
+          await runGit(['add', '--', ...body.files], folderPath);
+        } else {
+          jsonReply(400, { error: 'Provide files array or all:true' });
+          return;
+        }
+        jsonReply(200, { ok: true });
+        return;
+      }
+
+      // POST /git/unstage
+      if (action === 'unstage' && req.method === 'POST') {
+        const body = JSON.parse(await readBody(req));
+        if (!Array.isArray(body.files) || body.files.length === 0) {
+          jsonReply(400, { error: 'Provide files array' });
+          return;
+        }
+        for (const f of body.files) {
+          if (!validateFilePath(folderPath, f)) {
+            jsonReply(403, { error: `Invalid file path: ${f}` });
+            return;
+          }
+        }
+        await runGit(['reset', 'HEAD', '--', ...body.files], folderPath);
+        jsonReply(200, { ok: true });
+        return;
+      }
+
+      // POST /git/commit
+      if (action === 'commit' && req.method === 'POST') {
+        const body = JSON.parse(await readBody(req));
+        const msg = (body.message || '').trim();
+        if (!msg || msg.length > 1000) {
+          jsonReply(400, { error: 'Message required (max 1000 chars)' });
+          return;
+        }
+        const out = await runGit(['commit', '-m', msg], folderPath);
+        const hashMatch = out.match(/\[[\w\-/.]+ ([a-f0-9]+)\]/);
+        jsonReply(200, { ok: true, hash: hashMatch ? hashMatch[1] : null });
+        return;
+      }
+
+      // GET /git/log?limit=20
+      if (action === 'log' && req.method === 'GET') {
+        let limit = parseInt(parsedUrl.query.limit, 10) || 20;
+        if (limit < 1) limit = 1;
+        if (limit > 100) limit = 100;
+        const out = await runGit(['log', `--format=%H|%h|%an|%ae|%at|%s`, `-n`, String(limit)], folderPath);
+        const commits = out.split('\n').filter(Boolean).map(line => {
+          const [hash, short, author, email, date, ...rest] = line.split('|');
+          return { hash, short, author, email, date: parseInt(date, 10), message: rest.join('|') };
+        });
+        jsonReply(200, { commits });
+        return;
+      }
+
+      // GET /git/branches
+      if (action === 'branches' && req.method === 'GET') {
+        const out = await runGit(['branch', '-a', '--format=%(refname:short)|%(objectname:short)|%(HEAD)'], folderPath);
+        const branches = out.split('\n').filter(Boolean).map(line => {
+          const [name, short, head] = line.split('|');
+          return { name, short, current: head.trim() === '*' };
+        });
+        const current = branches.find(b => b.current)?.name || '';
+        jsonReply(200, { current, branches });
+        return;
+      }
+
+      // POST /git/checkout
+      if (action === 'checkout' && req.method === 'POST') {
+        const body = JSON.parse(await readBody(req));
+        const branch = (body.branch || '').trim();
+        if (!branch || !BRANCH_RE.test(branch)) {
+          jsonReply(400, { error: 'Invalid branch name' });
+          return;
+        }
+        await runGit(['checkout', branch], folderPath);
+        jsonReply(200, { ok: true });
+        return;
+      }
+
+      // POST /git/pull
+      if (action === 'pull' && req.method === 'POST') {
+        const body = JSON.parse(await readBody(req).catch(() => '{}'));
+        const args = ['pull'];
+        if (body.rebase) args.push('--rebase');
+        else args.push('--no-rebase');
+        const output = await runGit(args, folderPath, { timeout: 30000 });
+        jsonReply(200, { ok: true, output: output.trim() });
+        return;
+      }
+
+      // POST /git/push
+      if (action === 'push' && req.method === 'POST') {
+        const body = JSON.parse(await readBody(req).catch(() => '{}'));
+        const args = ['push'];
+        if (body.force) args.push('--force-with-lease');
+        const output = await runGit(args, folderPath, { timeout: 30000 });
+        jsonReply(200, { ok: true, output: output.trim() });
+        return;
+      }
+
+      // GET /git/remote
+      if (action === 'remote' && req.method === 'GET') {
+        const output = await runGit(['remote', '-v'], folderPath);
+        const seen = new Set();
+        const remotes = output.split('\n').filter(Boolean).reduce((acc, line) => {
+          const parts = line.split(/\s+/);
+          const key = parts[0];
+          if (!seen.has(key)) { seen.add(key); acc.push({ name: parts[0], url: parts[1] }); }
+          return acc;
+        }, []);
+        jsonReply(200, { remotes });
+        return;
+      }
+
+      jsonReply(404, { error: `Unknown git action: ${action}` });
+    } catch (err) {
+      console.error(`[router] git ${action} error:`, err.message);
+      jsonReply(500, { error: err.message });
+    }
+    return;
+  }
+
   if (pathname === '/api/tools' && req.method === 'GET') {
     const tools = getAvailableTools();
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -936,6 +1316,54 @@ export async function handleRequest(req, res) {
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ path: resolvedTarget, filename: safeName }));
+    return;
+  }
+
+  // Reports list page
+  if (pathname === '/reports') {
+    try {
+      let reportsPage = readFileSync(reportsTemplatePath, 'utf8');
+      reportsPage = reportsPage.replace(/\{\{NONCE\}\}/g, nonce);
+      res.writeHead(200, {
+        'Content-Type': 'text/html',
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+      });
+      res.end(reportsPage);
+    } catch {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('Failed to load reports page');
+    }
+    return;
+  }
+
+  // Single report page — serve full HTML with injected nav bar
+  const reportPageMatch = pathname.match(/^\/reports\/([a-f0-9]+)$/);
+  if (reportPageMatch) {
+    const id = reportPageMatch[1];
+    const report = getReport(id);
+    if (!report) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Report not found');
+      return;
+    }
+    let html = getReportHtml(id);
+    if (!html) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Report file not found');
+      return;
+    }
+    // Mark as read
+    markAsRead(id);
+    // Inject sticky nav bar after <body>
+    const title = report.title.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const navHtml = `<div id="report-nav" style="position:sticky;top:0;z-index:9999;background:#ffffff;border-bottom:1px solid #dfe6e9;padding:10px 20px;display:flex;align-items:center;gap:16px;font-family:'PingFang SC','Microsoft YaHei',sans-serif;font-size:14px;color:#2d3436;"><a href="/reports" style="color:#002fa7;text-decoration:none;font-weight:500;">← Reports</a><span style="color:#636e72;">|</span><span style="color:#636e72;">${title}</span></div>`;
+    html = html.replace(/(<body\b[^>]*>)/i, `$1${navHtml}`);
+    res.writeHead(200, {
+      'Content-Type': 'text/html',
+      'Cache-Control': 'no-store',
+      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data: blob:",
+    });
+    res.end(html);
     return;
   }
 

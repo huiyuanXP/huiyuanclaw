@@ -96,6 +96,27 @@
   let currentThinkingBlock = null; // { el, body, tools: Set }
   let inThinkingBlock = false;
 
+  // ---- Files tab state & elements ----
+  const sessionTabs = document.getElementById("sessionTabs");
+  const sessionTabChat = document.getElementById("sessionTabChat");
+  const sessionTabFiles = document.getElementById("sessionTabFiles");
+  const filesView = document.getElementById("filesView");
+  const filesTree = document.getElementById("filesTree");
+  const filesContent = document.getElementById("filesContent");
+  let activeSessionTab = "chat"; // "chat" | "files" | "git"
+  let fileTreeCache = {}; // folder -> tree data
+  let selectedFilePath = null;
+  let isFileEditing = false;
+  let rawFileContent = null; // original content for edit mode
+
+  // ---- Git tab state & elements ----
+  const sessionTabGit = document.getElementById("sessionTabGit");
+  const gitView = document.getElementById("gitView");
+  const gitChanges = document.getElementById("gitChanges");
+  const gitHistory = document.getElementById("gitHistory");
+  const gitBranches = document.getElementById("gitBranches");
+  let activeGitSubTab = "changes"; // "changes" | "history" | "branches"
+
   // ---- Browser Notifications ----
   if ("Notification" in window && Notification.permission === "default") {
     Notification.requestPermission();
@@ -1820,14 +1841,28 @@
     const parts = cron.split(/\s+/);
     if (parts.length < 5) return cron;
     const [min, hour, dom, mon, dow] = parts;
-    const time = `${hour.padStart(2, "0")}:${min.padStart(2, "0")}`;
-    if (dom === "*" && mon === "*" && dow === "*") return `Daily at ${time} (UTC)`;
+    // Convert UTC cron time to user's local timezone
+    const d = new Date();
+    d.setUTCHours(parseInt(hour, 10), parseInt(min, 10), 0, 0);
+    const localTime = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "local";
+    const tzShort = tz.split("/").pop().replace(/_/g, " ");
+    if (dom === "*" && mon === "*" && dow === "*") return `Daily at ${localTime} (${tzShort})`;
     if (dom === "*" && mon === "*" && dow !== "*") {
       const days = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
-      const dayLabel = /^\d$/.test(dow) ? (days[+dow] || dow) : dow;
-      return `${dayLabel} at ${time} (UTC)`;
+      // UTC dow might differ from local dow after timezone conversion
+      if (/^\d$/.test(dow)) {
+        d.setUTCHours(parseInt(hour, 10), parseInt(min, 10), 0, 0);
+        // Set to a known date for that UTC dow, then read local dow
+        const today = new Date();
+        const diff = (parseInt(dow, 10) - today.getUTCDay() + 7) % 7;
+        d.setUTCDate(today.getUTCDate() + diff);
+        const localDay = days[d.getDay()];
+        return `${localDay} at ${localTime} (${tzShort})`;
+      }
+      return `${dow} at ${localTime} (${tzShort})`;
     }
-    return `${time} (UTC) ${cron}`;
+    return `${localTime} (${tzShort}) ${cron}`;
   }
 
   // Compute the next UTC trigger time for a cron expression (daily/weekly subset).
@@ -1999,6 +2034,8 @@
     currentSessionId = null;
     messagesEl.style.display = "none";
     document.getElementById("inputArea").style.display = "none";
+    filesView.classList.remove("visible");
+    sessionTabs.classList.remove("visible");
     workflowView.style.display = "";
     resetHeaderContext();
     renderSessionList();
@@ -2422,11 +2459,490 @@
     }, 0);
   }
 
+  // ---- Files tab: tree & content viewer ----
+
+  function switchSessionTab(tab) {
+    if (tab !== "files" && !checkUnsavedEdits()) return;
+    activeSessionTab = tab;
+    sessionTabChat.classList.toggle("active", tab === "chat");
+    sessionTabFiles.classList.toggle("active", tab === "files");
+    sessionTabGit.classList.toggle("active", tab === "git");
+    messagesEl.style.display = tab === "chat" ? "" : "none";
+    document.getElementById("inputArea").style.display = tab === "chat" ? "" : "none";
+    filesView.classList.toggle("visible", tab === "files");
+    gitView.classList.toggle("visible", tab === "git");
+    if (tab === "files" && currentSessionId) {
+      const s = [...sessions, ...workflowSessions, ...archivedSessions].find(x => x.id === currentSessionId);
+      if (s?.folder) loadFileTree(s.folder);
+    }
+    if (tab === "git" && currentSessionId) {
+      const s = [...sessions, ...workflowSessions, ...archivedSessions].find(x => x.id === currentSessionId);
+      if (s?.folder) loadGitSubTab(s.folder, activeGitSubTab);
+    }
+  }
+
+  sessionTabChat.addEventListener("click", () => switchSessionTab("chat"));
+  sessionTabFiles.addEventListener("click", () => switchSessionTab("files"));
+  sessionTabGit.addEventListener("click", () => switchSessionTab("git"));
+
+  async function loadFileTree(folder) {
+    if (fileTreeCache[folder]) {
+      renderFileTree(folder, fileTreeCache[folder]);
+      return;
+    }
+    filesTree.innerHTML = '<div class="files-loading">Loading...</div>';
+    try {
+      const res = await fetch(`/api/folders/${encodeURIComponent(folder)}/files`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const tree = data.tree || data; // API returns { tree: [...] }
+      fileTreeCache[folder] = tree;
+      renderFileTree(folder, tree);
+    } catch (err) {
+      filesTree.innerHTML = `<div class="files-error">Failed to load files: ${err.message}</div>`;
+    }
+  }
+
+  function renderFileTree(folder, nodes) {
+    filesTree.innerHTML = "";
+    const container = document.createDocumentFragment();
+    buildTreeNodes(container, nodes, folder, "", 0);
+    filesTree.appendChild(container);
+  }
+
+  function buildTreeNodes(parent, nodes, folder, pathPrefix, depth) {
+    for (const node of nodes) {
+      const fullPath = pathPrefix ? pathPrefix + "/" + node.name : node.name;
+      if (node.type === "dir") {
+        const dirEl = document.createElement("div");
+        dirEl.className = "files-tree-dir";
+        const item = document.createElement("div");
+        item.className = "files-tree-item";
+        item.style.paddingLeft = (12 + depth * 16) + "px";
+        item.innerHTML = `<span class="files-tree-icon">&#9654;</span><span class="files-tree-name">${esc(node.name)}</span>`;
+        item.addEventListener("click", () => {
+          dirEl.classList.toggle("open");
+          const icon = item.querySelector(".files-tree-icon");
+          icon.innerHTML = dirEl.classList.contains("open") ? "&#9660;" : "&#9654;";
+        });
+        dirEl.appendChild(item);
+        if (node.children && node.children.length > 0) {
+          const childrenEl = document.createElement("div");
+          childrenEl.className = "files-tree-children";
+          buildTreeNodes(childrenEl, node.children, folder, fullPath, depth + 1);
+          dirEl.appendChild(childrenEl);
+        }
+        parent.appendChild(dirEl);
+      } else {
+        const item = document.createElement("div");
+        item.className = "files-tree-item";
+        item.style.paddingLeft = (12 + depth * 16) + "px";
+        item.dataset.path = fullPath;
+        item.innerHTML = `<span class="files-tree-icon" style="color:var(--text-muted);font-size:11px">&#128196;</span><span class="files-tree-name">${esc(node.name)}</span>`;
+        item.addEventListener("click", () => {
+          if (!checkUnsavedEdits()) return;
+          const prev = filesTree.querySelector(".files-tree-item.selected");
+          if (prev) prev.classList.remove("selected");
+          item.classList.add("selected");
+          selectedFilePath = fullPath;
+          loadFileContent(folder, fullPath);
+        });
+        parent.appendChild(item);
+      }
+    }
+  }
+
+  function extToLang(filename) {
+    const ext = filename.split(".").pop().toLowerCase();
+    const map = { js: "javascript", mjs: "javascript", ts: "typescript", tsx: "tsx", jsx: "jsx", py: "python", rb: "ruby", rs: "rust", go: "go", java: "java", c: "c", cpp: "cpp", h: "c", hpp: "cpp", cs: "csharp", sh: "bash", bash: "bash", zsh: "bash", json: "json", yaml: "yaml", yml: "yaml", toml: "toml", md: "markdown", html: "xml", htm: "xml", xml: "xml", css: "css", scss: "scss", sql: "sql", swift: "swift", kt: "kotlin", lua: "lua", r: "r", php: "php", vue: "xml", svelte: "xml" };
+    return map[ext] || "";
+  }
+
+  function checkUnsavedEdits() {
+    if (isFileEditing) {
+      const ta = filesContent.querySelector(".files-editor");
+      if (ta && ta.value !== rawFileContent) {
+        if (!confirm("Unsaved changes will be lost. Continue?")) return false;
+      }
+    }
+    isFileEditing = false;
+    rawFileContent = null;
+    return true;
+  }
+
+  function renderFileReadonly(path, content) {
+    const lang = extToLang(path);
+    filesContent.innerHTML =
+      `<div class="files-content-header-row"><span>${esc(path)}</span><div class="files-edit-actions"><button class="file-edit-btn">Edit</button><button class="file-save-btn" disabled>Save</button></div></div>` +
+      `<pre><code class="${lang ? "language-" + lang : ""}">${esc(content)}</code></pre>`;
+    if (typeof hljs !== "undefined") {
+      const codeEl = filesContent.querySelector("code");
+      if (codeEl) hljs.highlightElement(codeEl);
+    }
+    filesContent.querySelector(".file-edit-btn").addEventListener("click", () => enterEditMode());
+    filesContent.querySelector(".file-save-btn").addEventListener("click", () => saveFile());
+  }
+
+  function enterEditMode() {
+    isFileEditing = true;
+    const pre = filesContent.querySelector("pre");
+    if (pre) pre.style.display = "none";
+    const existing = filesContent.querySelector(".files-editor");
+    if (existing) { existing.style.display = ""; existing.focus(); }
+    else {
+      const ta = document.createElement("textarea");
+      ta.className = "files-editor";
+      ta.value = rawFileContent;
+      ta.spellcheck = false;
+      filesContent.appendChild(ta);
+      ta.focus();
+    }
+    const editBtn = filesContent.querySelector(".file-edit-btn");
+    const saveBtn = filesContent.querySelector(".file-save-btn");
+    if (editBtn) editBtn.disabled = true;
+    if (saveBtn) saveBtn.disabled = false;
+  }
+
+  async function saveFile() {
+    const ta = filesContent.querySelector(".files-editor");
+    if (!ta || !selectedFilePath) return;
+    const s = [...sessions, ...workflowSessions, ...archivedSessions].find(x => x.id === currentSessionId);
+    if (!s?.folder) return;
+    const saveBtn = filesContent.querySelector(".file-save-btn");
+    if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = "Saving..."; }
+    try {
+      const res = await fetch(`/api/folders/${encodeURIComponent(s.folder)}/file`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: selectedFilePath, content: ta.value })
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || `HTTP ${res.status}`);
+      }
+      rawFileContent = ta.value;
+      isFileEditing = false;
+      renderFileReadonly(selectedFilePath, rawFileContent);
+      // Brief "Saved!" flash
+      const actions = filesContent.querySelector(".files-edit-actions");
+      if (actions) {
+        const ok = document.createElement("span");
+        ok.className = "save-ok";
+        ok.textContent = "Saved!";
+        actions.appendChild(ok);
+        setTimeout(() => ok.remove(), 2000);
+      }
+    } catch (err) {
+      alert("Save failed: " + err.message);
+      if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = "Save"; }
+    }
+  }
+
+  async function loadFileContent(folder, path) {
+    filesContent.innerHTML = '<div class="files-loading">Loading...</div>';
+    try {
+      const res = await fetch(`/api/folders/${encodeURIComponent(folder)}/file?path=${encodeURIComponent(path)}`);
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      rawFileContent = data.content;
+      isFileEditing = false;
+      renderFileReadonly(path, data.content);
+    } catch (err) {
+      filesContent.innerHTML = `<div class="files-error">${esc(err.message)}</div>`;
+    }
+  }
+
+  // ---- Git tab ----
+
+  function gitApiUrl(folder, action) {
+    return `/api/folders/${encodeURIComponent(folder)}/git/${action}`;
+  }
+
+  function relativeTime(dateStr) {
+    const now = Date.now();
+    const then = new Date(dateStr).getTime();
+    const diff = Math.max(0, now - then);
+    const s = Math.floor(diff / 1000);
+    if (s < 60) return "just now";
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + "m ago";
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + "h ago";
+    const d = Math.floor(h / 24);
+    if (d < 30) return d + "d ago";
+    return new Date(dateStr).toLocaleDateString();
+  }
+
+  function statusClass(s) {
+    if (s === "A" || s === "?") return s === "A" ? "added" : "untracked";
+    if (s === "M") return "modified";
+    if (s === "D") return "deleted";
+    if (s === "R") return "renamed";
+    return "modified";
+  }
+
+  function getCurrentFolder() {
+    const s = [...sessions, ...workflowSessions, ...archivedSessions].find(x => x.id === currentSessionId);
+    return s?.folder;
+  }
+
+  // Sub-tab switching
+  document.querySelector(".git-sub-tabs")?.addEventListener("click", (e) => {
+    const btn = e.target.closest(".git-sub-tab");
+    if (!btn) return;
+    const tab = btn.dataset.tab;
+    activeGitSubTab = tab;
+    document.querySelectorAll(".git-sub-tab").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
+    gitChanges.style.display = tab === "changes" ? "" : "none";
+    gitHistory.style.display = tab === "history" ? "" : "none";
+    gitBranches.style.display = tab === "branches" ? "" : "none";
+    const folder = getCurrentFolder();
+    if (folder) loadGitSubTab(folder, tab);
+  });
+
+  function loadGitSubTab(folder, tab) {
+    if (tab === "changes") loadGitStatus(folder);
+    else if (tab === "history") loadGitLog(folder);
+    else if (tab === "branches") loadGitBranches(folder);
+  }
+
+  async function loadGitStatus(folder) {
+    gitChanges.innerHTML = '<div class="git-empty">Loading...</div>';
+    try {
+      const res = await fetch(gitApiUrl(folder, "status"));
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      renderGitChanges(folder, data);
+    } catch (err) {
+      gitChanges.innerHTML = `<div class="git-empty">${esc(err.message)}</div>`;
+    }
+  }
+
+  function renderGitChanges(folder, data) {
+    const staged = data.files.filter(f => f.staged);
+    const unstaged = data.files.filter(f => !f.staged);
+    let html = `<div class="git-branch-bar">
+      <span class="git-branch-badge">${esc(data.branch || "unknown")}</span>
+      <button class="git-btn" data-action="pull" title="Pull from remote">Pull</button>
+      <button class="git-btn" data-action="push" title="Push to remote">Push</button>
+    </div>`;
+
+    if (staged.length) {
+      html += `<div class="git-section-label">Staged (${staged.length})</div>`;
+      staged.forEach(f => {
+        html += `<div class="git-file-row">
+          <span class="git-file-status ${statusClass(f.status)}">${esc(f.status)}</span>
+          <span class="git-file-path" title="${esc(f.path)}">${esc(f.path)}</span>
+          <span class="git-file-actions">
+            <button class="git-btn" data-action="unstage" data-file="${esc(f.path)}">Unstage</button>
+            <button class="git-btn" data-action="diff" data-file="${esc(f.path)}" data-staged="true">Diff</button>
+          </span>
+        </div>`;
+      });
+    }
+
+    if (unstaged.length) {
+      html += `<div class="git-section-label">Changes (${unstaged.length})</div>`;
+      unstaged.forEach(f => {
+        html += `<div class="git-file-row">
+          <span class="git-file-status ${statusClass(f.status)}">${esc(f.status)}</span>
+          <span class="git-file-path" title="${esc(f.path)}">${esc(f.path)}</span>
+          <span class="git-file-actions">
+            <button class="git-btn" data-action="stage" data-file="${esc(f.path)}">Stage</button>
+            <button class="git-btn" data-action="diff" data-file="${esc(f.path)}">Diff</button>
+          </span>
+        </div>`;
+      });
+      html += `<div style="margin-top:8px"><button class="git-btn" data-action="stage-all">Stage All</button></div>`;
+    }
+
+    if (!staged.length && !unstaged.length) {
+      html += `<div class="git-empty">Working tree clean</div>`;
+    }
+
+    // Commit area
+    html += `<div class="git-commit-area">
+      <textarea class="git-commit-input" id="gitCommitMsg" rows="2" placeholder="Commit message..."></textarea>
+      <button class="git-btn primary" id="gitCommitBtn"${!staged.length ? " disabled" : ""}>Commit</button>
+    </div>`;
+
+    gitChanges.innerHTML = html;
+
+    // Commit button
+    document.getElementById("gitCommitBtn")?.addEventListener("click", async () => {
+      const msg = document.getElementById("gitCommitMsg")?.value.trim();
+      if (!msg) return;
+      const btn = document.getElementById("gitCommitBtn");
+      btn.disabled = true; btn.textContent = "Committing...";
+      try {
+        const r = await fetch(gitApiUrl(folder, "commit"), {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: msg })
+        });
+        if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || `HTTP ${r.status}`); }
+        loadGitStatus(folder);
+      } catch (err) {
+        btn.textContent = "Error: " + err.message;
+        setTimeout(() => { btn.textContent = "Commit"; btn.disabled = false; }, 2000);
+      }
+    });
+  }
+
+  // Delegated click handler for git changes actions
+  gitChanges.addEventListener("click", async (e) => {
+    const btn = e.target.closest("[data-action]");
+    if (!btn) return;
+    const folder = getCurrentFolder();
+    if (!folder) return;
+    const action = btn.dataset.action;
+    const file = btn.dataset.file;
+
+    if (action === "stage") {
+      btn.disabled = true;
+      await fetch(gitApiUrl(folder, "stage"), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ files: [file] })
+      });
+      loadGitStatus(folder);
+    } else if (action === "unstage") {
+      btn.disabled = true;
+      await fetch(gitApiUrl(folder, "unstage"), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ files: [file] })
+      });
+      loadGitStatus(folder);
+    } else if (action === "stage-all") {
+      btn.disabled = true;
+      await fetch(gitApiUrl(folder, "stage"), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ all: true })
+      });
+      loadGitStatus(folder);
+    } else if (action === "diff") {
+      showGitDiff(folder, file, btn.dataset.staged === "true");
+    }
+  });
+
+  async function showGitDiff(folder, file, staged) {
+    let url = gitApiUrl(folder, "diff") + `?file=${encodeURIComponent(file)}`;
+    if (staged) url += "&staged=true";
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const lines = (data.diff || "No diff available").split("\n");
+      let linesHtml = lines.map(line => {
+        let cls = "";
+        if (line.startsWith("+") && !line.startsWith("+++")) cls = "add";
+        else if (line.startsWith("-") && !line.startsWith("---")) cls = "del";
+        else if (line.startsWith("@@")) cls = "hunk";
+        return `<div class="git-diff-line ${cls}">${esc(line)}</div>`;
+      }).join("");
+
+      const overlay = document.createElement("div");
+      overlay.className = "git-diff-overlay";
+      overlay.innerHTML = `<div class="git-diff-modal">
+        <div class="git-diff-header">
+          <span>${esc(file)}${staged ? " (staged)" : ""}</span>
+          <button class="git-diff-close">&times;</button>
+        </div>
+        <div class="git-diff-body">${linesHtml}</div>
+      </div>`;
+      document.body.appendChild(overlay);
+      overlay.querySelector(".git-diff-close").addEventListener("click", () => overlay.remove());
+      overlay.addEventListener("click", (ev) => { if (ev.target === overlay) overlay.remove(); });
+    } catch (err) {
+      alert("Failed to load diff: " + err.message);
+    }
+  }
+
+  async function loadGitLog(folder) {
+    gitHistory.innerHTML = '<div class="git-empty">Loading...</div>';
+    try {
+      const res = await fetch(gitApiUrl(folder, "log") + "?limit=30");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (!data.commits?.length) {
+        gitHistory.innerHTML = '<div class="git-empty">No commits yet</div>';
+        return;
+      }
+      gitHistory.innerHTML = data.commits.map(c =>
+        `<div class="git-log-item" data-hash="${esc(c.hash)}">
+          <span class="git-log-hash">${esc(c.short || c.hash?.slice(0,7))}</span>
+          <span class="git-log-msg">${esc(c.message)}</span>
+          <span class="git-log-time">${relativeTime(c.date)}</span>
+        </div>`
+      ).join("");
+    } catch (err) {
+      gitHistory.innerHTML = `<div class="git-empty">${esc(err.message)}</div>`;
+    }
+  }
+
+  async function loadGitBranches(folder) {
+    gitBranches.innerHTML = '<div class="git-empty">Loading...</div>';
+    try {
+      const res = await fetch(gitApiUrl(folder, "branches"));
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (!data.branches?.length) {
+        gitBranches.innerHTML = '<div class="git-empty">No branches found</div>';
+        return;
+      }
+      gitBranches.innerHTML = data.branches.map(b =>
+        `<div class="git-branch-item">
+          <span class="git-branch-indicator ${b.current ? "current" : "other"}"></span>
+          <span class="git-branch-name ${b.current ? "current" : ""}">${esc(b.name)}${b.current ? " (current)" : ""}</span>
+          ${b.current ? "" : `<button class="git-btn" data-checkout="${esc(b.name)}">Checkout</button>`}
+        </div>`
+      ).join("");
+    } catch (err) {
+      gitBranches.innerHTML = `<div class="git-empty">${esc(err.message)}</div>`;
+    }
+  }
+
+  // Delegated click handler for branch checkout
+  gitBranches.addEventListener("click", async (e) => {
+    const btn = e.target.closest("[data-checkout]");
+    if (!btn) return;
+    const folder = getCurrentFolder();
+    if (!folder) return;
+    btn.disabled = true; btn.textContent = "Switching...";
+    try {
+      const r = await fetch(gitApiUrl(folder, "checkout"), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ branch: btn.dataset.checkout })
+      });
+      if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || `HTTP ${r.status}`); }
+      loadGitBranches(folder);
+      loadGitStatus(folder); // refresh changes too
+    } catch (err) {
+      btn.textContent = "Error";
+      setTimeout(() => { btn.textContent = "Checkout"; btn.disabled = false; }, 2000);
+    }
+  });
+
   function attachSession(id, session) {
     // Hide workflow/task-detail view and restore normal chat layout
     workflowView.style.display = "none";
     messagesEl.style.display = "";
     document.getElementById("inputArea").style.display = "";
+    // Show session tabs, reset to Chat tab
+    sessionTabs.classList.add("visible");
+    switchSessionTab("chat");
+    filesContent.innerHTML = '<div class="files-content-empty">Select a file to view</div>';
+    selectedFilePath = null;
+    isFileEditing = false;
+    rawFileContent = null;
+    // Reset git view
+    gitChanges.innerHTML = "";
+    gitHistory.innerHTML = "";
+    gitBranches.innerHTML = "";
+    activeGitSubTab = "changes";
+
     currentTaskDetailId = null;
     if (taskDetailCountdownInterval) {
       clearInterval(taskDetailCountdownInterval);
@@ -3172,6 +3688,7 @@
   const reportBell = document.getElementById("reportBell");
   const reportBadge = document.getElementById("reportBadge");
   const reportPanel = document.getElementById("reportPanel");
+  const reportPanelBackdrop = document.getElementById("reportPanelBackdrop");
   const reportPanelClose = document.getElementById("reportPanelClose");
   const reportListEl = document.getElementById("reportList");
   const reportDetail = document.getElementById("reportDetail");
@@ -3276,6 +3793,7 @@
       if (report?.sessionId) {
         this.closeDetail();
         reportPanel.classList.add("hidden");
+        reportPanelBackdrop.classList.add("hidden");
         const sess = sessions.find((s) => s.id === report.sessionId);
         if (sess) attachSession(sess.id, sess);
       }
@@ -3330,16 +3848,23 @@
           Notification.requestPermission();
         }
         reportPanel.classList.remove("hidden");
+        reportPanelBackdrop.classList.remove("hidden");
       } else {
         reportPanel.classList.add("hidden");
+        reportPanelBackdrop.classList.add("hidden");
       }
     },
   };
 
   reportBell.addEventListener("click", () => reportManager.togglePanel());
-  reportPanelClose.addEventListener("click", () =>
-    reportPanel.classList.add("hidden"),
-  );
+  reportPanelClose.addEventListener("click", () => {
+    reportPanel.classList.add("hidden");
+    reportPanelBackdrop.classList.add("hidden");
+  });
+  reportPanelBackdrop.addEventListener("click", (e) => {
+    e.stopPropagation();
+    // Intentionally does nothing — only the X button closes the panel
+  });
   reportBack.addEventListener("click", () => reportManager.closeDetail());
   reportDetailClose.addEventListener("click", () =>
     reportManager.closeDetail(),

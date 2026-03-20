@@ -226,6 +226,11 @@ body {
 .report-badge.hidden { display: none; }
 
 /* ---- Report panel (right slide-in) ---- */
+.report-panel-backdrop {
+  position: fixed; inset: 0; z-index: 199;
+  background: rgba(0,0,0,0.3);
+}
+.report-panel-backdrop.hidden { display: none; }
 .report-panel {
   position: fixed; top: 0; right: 0; bottom: 0;
   width: 360px; max-width: 100vw;
@@ -1454,7 +1459,259 @@ body {
 .workflow-view {
   flex: 1; overflow-y: auto; padding: 20px 24px; display: flex; flex-direction: column; gap: 12px;
 }
+
+/* ---- Session detail tabs (Chat / Files) ---- */
+.session-tabs {
+  display: none; /* shown when a session is active */
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  padding: 0 16px;
+}
+.session-tabs.visible { display: flex; }
+.session-tab {
+  padding: 7px 14px;
+  font-size: 12px; font-weight: 500;
+  background: none; border: none; cursor: pointer;
+  color: var(--text-muted); border-bottom: 2px solid transparent;
+  margin-bottom: -1px; transition: color 0.1s;
+  font-family: inherit; letter-spacing: 0.02em;
+}
+.session-tab.active { color: var(--text); border-bottom-color: var(--text); }
+.session-tab:hover:not(.active) { color: var(--text-secondary); }
+
+/* ---- Files view ---- */
+.files-view {
+  flex: 1; display: none; flex-direction: row; overflow: hidden;
+}
+.files-view.visible { display: flex; }
+.files-tree {
+  width: 240px; min-width: 180px;
+  border-right: 1px solid var(--border);
+  overflow-y: auto; overflow-x: hidden;
+  padding: 8px 0;
+  flex-shrink: 0;
+  -webkit-overflow-scrolling: touch;
+}
+.files-tree-item {
+  display: flex; align-items: center; gap: 4px;
+  padding: 3px 8px; cursor: pointer;
+  font-size: 13px; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  border-radius: 4px; margin: 0 4px;
+  transition: background 0.1s;
+  user-select: none;
+}
+.files-tree-item:hover { background: var(--bg-tertiary); }
+.files-tree-item.selected { background: var(--accent-dim); font-weight: 500; }
+.files-tree-icon {
+  flex-shrink: 0; font-size: 10px; width: 14px; text-align: center;
+  color: var(--text-muted);
+}
+.files-tree-name {
+  overflow: hidden; text-overflow: ellipsis;
+}
+.files-tree-dir > .files-tree-children { display: none; }
+.files-tree-dir.open > .files-tree-children { display: block; }
+.files-content {
+  flex: 1; overflow: auto; min-width: 0;
+  background: var(--bg-secondary);
+}
+.files-content-empty {
+  display: flex; align-items: center; justify-content: center;
+  height: 100%; color: var(--text-muted); font-size: 13px;
+}
+.files-content pre {
+  margin: 0; padding: 12px 16px;
+  font-size: 13px; line-height: 1.55;
+  tab-size: 4;
+  overflow-x: auto;
+}
+.files-content code {
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
+  background: transparent !important;
+}
+.files-content-header-row {
+  position: sticky; top: 0;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 16px;
+  font-size: 12px; font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
+  z-index: 1;
+}
+.files-content-header-row .files-edit-actions { display: flex; gap: 6px; }
+.files-edit-actions button {
+  padding: 2px 10px; font-size: 11px; border-radius: 4px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--bg-tertiary); color: var(--text);
+}
+.files-edit-actions button:hover:not(:disabled) { background: var(--accent); color: #fff; border-color: var(--accent); }
+.files-edit-actions button:disabled { opacity: 0.4; cursor: default; }
+.files-edit-actions .save-ok { color: var(--success, #22c55e); font-size: 11px; line-height: 24px; }
+.files-editor {
+  width: 100%; height: 100%; box-sizing: border-box;
+  padding: 12px 16px; margin: 0; resize: none;
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
+  font-size: 13px; line-height: 1.55; tab-size: 4;
+  background: var(--bg-secondary); color: var(--text);
+  border: none; outline: none;
+}
+.files-loading {
+  padding: 24px; text-align: center; color: var(--text-muted); font-size: 12px;
+}
+.files-error {
+  padding: 16px; color: var(--error); font-size: 13px;
+}
+@media (max-width: 600px) {
+  .files-tree { width: 180px; min-width: 140px; }
+  .files-tree-item { font-size: 12px; }
+}
+
+/* ---- Git view ---- */
+.git-view {
+  flex: 1; display: none; flex-direction: column; overflow: hidden;
+}
+.git-view.visible { display: flex; }
+.git-sub-tabs {
+  display: flex; gap: 0; border-bottom: 1px solid var(--border);
+  padding: 0 16px; flex-shrink: 0;
+}
+.git-sub-tab {
+  padding: 6px 12px; font-size: 11px; font-weight: 500;
+  background: none; border: none; cursor: pointer;
+  color: var(--text-muted); border-bottom: 2px solid transparent;
+  margin-bottom: -1px; transition: color 0.1s;
+  font-family: inherit; letter-spacing: 0.02em;
+}
+.git-sub-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+.git-sub-tab:hover:not(.active) { color: var(--text-secondary); }
+.git-panel {
+  flex: 1; overflow-y: auto; padding: 12px 16px;
+  -webkit-overflow-scrolling: touch;
+}
+.git-branch-badge {
+  display: inline-block; font-size: 12px; font-weight: 500;
+  color: var(--accent); background: var(--accent-dim);
+  padding: 2px 10px; border-radius: 10px; margin-bottom: 12px;
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
+}
+.git-section-label {
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--text-muted); margin: 12px 0 6px;
+}
+.git-file-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 0; font-size: 13px; color: var(--text);
+}
+.git-file-status {
+  font-size: 11px; font-weight: 600; width: 18px; text-align: center;
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
+}
+.git-file-status.added { color: #3fb950; }
+.git-file-status.modified { color: #d29922; }
+.git-file-status.deleted { color: #f85149; }
+.git-file-status.renamed { color: #a371f7; }
+.git-file-status.untracked { color: #8b949e; }
+.git-file-path {
+  flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: 'SF Mono', Monaco, Consolas, monospace; font-size: 12px;
+}
+.git-file-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.git-btn {
+  padding: 2px 8px; font-size: 11px; border-radius: 4px;
+  border: 1px solid var(--border); background: var(--bg-secondary);
+  color: var(--text-secondary); cursor: pointer; font-family: inherit;
+  transition: background 0.1s, color 0.1s;
+}
+.git-btn:hover { background: var(--bg-tertiary); color: var(--text); }
+.git-btn.primary {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+}
+.git-btn.primary:hover { opacity: 0.9; }
+.git-btn.primary:disabled { opacity: 0.5; cursor: default; }
+.git-commit-area {
+  margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);
+}
+.git-commit-input {
+  width: 100%; box-sizing: border-box; padding: 8px 10px;
+  font-size: 13px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--bg-secondary);
+  color: var(--text); font-family: inherit; resize: none;
+  margin-bottom: 8px;
+}
+.git-commit-input::placeholder { color: var(--text-muted); }
+.git-commit-input:focus { outline: none; border-color: var(--accent); }
+.git-empty {
+  color: var(--text-muted); font-size: 13px; text-align: center;
+  padding: 32px 0;
+}
+/* Diff modal */
+.git-diff-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+  z-index: 1000; display: flex; align-items: center; justify-content: center;
+}
+.git-diff-modal {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 10px; width: 90vw; max-width: 800px;
+  max-height: 80vh; display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.git-diff-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 16px; border-bottom: 1px solid var(--border);
+  font-size: 13px; font-weight: 500; color: var(--text);
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
+}
+.git-diff-close {
+  background: none; border: none; color: var(--text-muted);
+  font-size: 18px; cursor: pointer; padding: 0 4px;
+}
+.git-diff-close:hover { color: var(--text); }
+.git-diff-body {
+  flex: 1; overflow: auto; padding: 0;
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
+  font-size: 12px; line-height: 1.6;
+}
+.git-diff-line { padding: 0 16px; white-space: pre; min-height: 1.6em; }
+.git-diff-line.add { background: rgba(63,185,80,0.12); color: var(--text); }
+.git-diff-line.del { background: rgba(248,81,73,0.12); color: var(--text); }
+.git-diff-line.hunk { color: var(--text-muted); background: rgba(130,80,223,0.08); }
+/* Git log */
+.git-log-item {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 6px 0; border-bottom: 1px solid var(--border);
+  font-size: 13px; cursor: pointer; transition: background 0.1s;
+}
+.git-log-item:last-child { border-bottom: none; }
+.git-log-item:hover { background: var(--bg-tertiary); margin: 0 -16px; padding: 6px 16px; }
+.git-log-hash {
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
+  font-size: 12px; color: var(--accent); flex-shrink: 0;
+}
+.git-log-msg { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.git-log-time { flex-shrink: 0; font-size: 11px; color: var(--text-muted); }
+/* Branches */
+.git-branch-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 0; font-size: 13px;
+}
+.git-branch-indicator {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+}
+.git-branch-indicator.current { background: var(--accent); }
+.git-branch-indicator.other { background: var(--text-muted); opacity: 0.3; }
+.git-branch-name {
+  flex: 1; font-family: 'SF Mono', Monaco, Consolas, monospace; font-size: 12px;
+}
+.git-branch-name.current { font-weight: 600; color: var(--text); }
+@media (max-width: 600px) {
+  .git-diff-modal { width: 96vw; max-height: 90vh; }
+  .git-file-row { font-size: 12px; }
+  .git-log-item { font-size: 12px; }
+}
 </style>
+<link rel="stylesheet" href="/hljs-github-dark.css">
 </head>
 <body>
 
@@ -1476,6 +1733,9 @@ body {
     <button class="header-ctx-clear" id="headerCtxClear">Clear</button>
   </div>
   <div class="header-right">
+    <a class="header-btn" href="/reports" title="All Reports" style="text-decoration:none;font-size:12px;font-weight:500;color:var(--text-secondary);">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+    </a>
     <button class="header-btn report-bell" id="reportBell" title="Reports">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
       <span class="report-badge hidden" id="reportBadge">0</span>
@@ -1519,8 +1779,35 @@ body {
 
   <!-- Chat area -->
   <main class="chat-area">
+    <!-- Session detail tabs (Chat / Files) -->
+    <div class="session-tabs" id="sessionTabs">
+      <button class="session-tab active" id="sessionTabChat">Chat</button>
+      <button class="session-tab" id="sessionTabFiles">Files</button>
+      <button class="session-tab" id="sessionTabGit">Git</button>
+    </div>
+
     <!-- Workflow detail view (replaces messages when a workflow is selected) -->
     <div id="workflowView" class="workflow-view" style="display:none"></div>
+
+    <!-- Files view -->
+    <div class="files-view" id="filesView">
+      <div class="files-tree" id="filesTree"></div>
+      <div class="files-content" id="filesContent">
+        <div class="files-content-empty">Select a file to view</div>
+      </div>
+    </div>
+
+    <!-- Git view -->
+    <div class="git-view" id="gitView">
+      <div class="git-sub-tabs">
+        <button class="git-sub-tab active" data-tab="changes">Changes</button>
+        <button class="git-sub-tab" data-tab="history">History</button>
+        <button class="git-sub-tab" data-tab="branches">Branches</button>
+      </div>
+      <div class="git-panel" id="gitChanges"></div>
+      <div class="git-panel" id="gitHistory" style="display:none"></div>
+      <div class="git-panel" id="gitBranches" style="display:none"></div>
+    </div>
 
     <div class="messages" id="messages">
       <div class="messages-inner" id="messagesInner">
@@ -1582,6 +1869,9 @@ body {
   </div>
 </div>
 
+<!-- Report panel backdrop (blocks clicks to page behind) -->
+<div class="report-panel-backdrop hidden" id="reportPanelBackdrop"></div>
+
 <!-- Report panel (slide-in from right) -->
 <div class="report-panel hidden" id="reportPanel">
   <div class="report-panel-header">
@@ -1617,6 +1907,7 @@ body {
 </div>
 
 <script src="/marked.min.js" nonce="{{NONCE}}"></script>
+<script src="/highlight.min.js" nonce="{{NONCE}}"></script>
 <script src="/chat.js" nonce="{{NONCE}}"></script>
 </body>
 </html>
