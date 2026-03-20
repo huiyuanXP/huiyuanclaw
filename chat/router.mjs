@@ -108,6 +108,7 @@ const staticMimeTypes = {
   'icon.svg': 'image/svg+xml',
   'apple-touch-icon.png': 'image/png',
   'chat.js': 'application/javascript',
+  'themes.js': 'application/javascript',
   'marked.min.js': 'application/javascript',
   'highlight.min.js': 'application/javascript',
   'hljs-github-dark.css': 'text/css',

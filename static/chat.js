@@ -85,7 +85,10 @@
   let thinkingEnabled = localStorage.getItem("thinkingEnabled") !== "false";
   let sidebarCollapsed = localStorage.getItem("sidebarCollapsed") === "true";
   let themeMode = localStorage.getItem("themeMode") || "auto"; // 'auto' | 'dark' | 'light'
+  let selectedThemeId = localStorage.getItem("selectedTheme") || "classic";
   const themeBtn = document.getElementById("themeBtn");
+  const themePicker = document.getElementById("themePicker");
+  let themePickerOpen = false;
   let toolsList = [];
   let isDesktop = window.matchMedia("(min-width: 768px)").matches;
   let collapsedFolders = JSON.parse(
@@ -146,21 +149,111 @@
     return h < 7 || h >= 19;
   }
 
+  function getThemeById(id) {
+    return (typeof THEMES !== "undefined" ? THEMES : []).find((t) => t.id === id);
+  }
+
   function applyTheme() {
     const dark = themeMode === "dark" || (themeMode === "auto" && isDarkByTime());
     document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+
+    // Apply selected theme's CSS variables
+    const theme = getThemeById(selectedThemeId);
+    if (theme) {
+      const vars = dark ? theme.dark : theme.light;
+      const root = document.documentElement;
+      for (const [k, v] of Object.entries(vars)) {
+        root.style.setProperty(k, v);
+      }
+
+      // Theme class for extra CSS (glass backdrop-filter, github font)
+      root.classList.remove("theme-glass", "theme-github");
+      if (theme.id === "glass") root.classList.add("theme-glass");
+      else if (theme.id === "github") root.classList.add("theme-github");
+
+      // Load Google Font if needed
+      if (theme.fontUrl && !document.getElementById("theme-font-" + theme.id)) {
+        const link = document.createElement("link");
+        link.id = "theme-font-" + theme.id;
+        link.rel = "stylesheet";
+        link.href = theme.fontUrl;
+        document.head.appendChild(link);
+      }
+    }
+
+    // Update button icon
     const icons = { auto: "◑", dark: "●", light: "○" };
-    const titles = { auto: "自动（时间段）", dark: "深色模式", light: "浅色模式" };
     themeBtn.textContent = icons[themeMode];
-    themeBtn.title = titles[themeMode];
+    themeBtn.title = (theme ? theme.name + " — " : "") + { auto: "自动", dark: "深色", light: "浅色" }[themeMode];
+
+    // Update picker UI if open
+    if (themePickerOpen) renderThemePicker();
   }
 
-  function toggleTheme() {
-    const cycle = { auto: "dark", dark: "light", light: "auto" };
-    themeMode = cycle[themeMode];
-    localStorage.setItem("themeMode", themeMode);
+  function selectTheme(id) {
+    selectedThemeId = id;
+    localStorage.setItem("selectedTheme", id);
     applyTheme();
   }
+
+  function setThemeMode(mode) {
+    themeMode = mode;
+    localStorage.setItem("themeMode", mode);
+    applyTheme();
+  }
+
+  function renderThemePicker() {
+    const dark = themeMode === "dark" || (themeMode === "auto" && isDarkByTime());
+    const themes = typeof THEMES !== "undefined" ? THEMES : [];
+    let html = "";
+    for (const t of themes) {
+      const isActive = t.id === selectedThemeId;
+      const dots = (dark ? t.previewDark || t.preview : t.preview) || [];
+      html += '<button class="theme-option' + (isActive ? " active" : "") + '" data-theme-id="' + t.id + '">';
+      html += '<span class="theme-option-colors">';
+      for (const c of dots) {
+        html += '<span class="theme-option-dot" style="background:' + c + '"></span>';
+      }
+      html += "</span>";
+      html += '<span class="theme-option-info">';
+      html += '<span class="theme-option-name">' + t.name + (isActive ? ' <span class="check">✓</span>' : "") + "</span>";
+      html += '<span class="theme-option-desc">' + t.description + "</span>";
+      html += "</span></button>";
+    }
+    html += '<div class="theme-picker-divider"></div>';
+    html += '<div class="theme-mode-row">';
+    for (const [m, label] of [["auto", "◑ 自动"], ["light", "○ 浅色"], ["dark", "● 深色"]]) {
+      html += '<button class="theme-mode-btn' + (themeMode === m ? " active" : "") + '" data-mode="' + m + '">' + label + "</button>";
+    }
+    html += "</div>";
+    themePicker.innerHTML = html;
+  }
+
+  function toggleThemePicker() {
+    themePickerOpen = !themePickerOpen;
+    if (themePickerOpen) {
+      renderThemePicker();
+      themePicker.classList.add("open");
+    } else {
+      themePicker.classList.remove("open");
+    }
+  }
+
+  // Close picker on outside click
+  document.addEventListener("click", function (e) {
+    if (themePickerOpen && !e.target.closest(".theme-picker-wrap")) {
+      themePickerOpen = false;
+      themePicker.classList.remove("open");
+    }
+  });
+
+  // Delegate clicks inside picker
+  themePicker.addEventListener("click", function (e) {
+    const opt = e.target.closest("[data-theme-id]");
+    if (opt) { selectTheme(opt.dataset.themeId); return; }
+    const modeBtn = e.target.closest("[data-mode]");
+    if (modeBtn) { setThemeMode(modeBtn.dataset.mode); }
+  });
 
   // ---- Responsive layout ----
   function initResponsiveLayout() {
@@ -1538,9 +1631,11 @@
         <span class="folder-chevron">&#9660;</span>
         <span class="folder-name" title="${esc(shortFolder)}">${esc(folderName)}</span>
         <span class="folder-count">${folderSessions.length}</span>${runningBadge}
-        ${allowAdd ? `<button class="folder-add-btn" title="New session">+</button>` : ""}`;
+        ${allowAdd ? `<button class="folder-add-btn" title="New session">+</button>` : ""}
+        ${allowAdd ? `<button class="folder-del-btn" title="Delete folder">&times;</button>` : ""}`;
       header.addEventListener("click", (e) => {
-        if (allowAdd && e.target.classList.contains("folder-add-btn")) return;
+        if (e.target.classList.contains("folder-add-btn")) return;
+        if (e.target.classList.contains("folder-del-btn")) return;
         if (allowDrag && e.target.classList.contains("folder-drag-handle")) return;
         header.classList.toggle("collapsed");
         collapsedFolders[folder] = header.classList.contains("collapsed");
@@ -1563,6 +1658,24 @@
             }
           };
           ws.addEventListener("message", handler);
+        });
+
+        header.querySelector(".folder-del-btn").addEventListener("click", (e) => {
+          e.stopPropagation();
+          const count = folderSessions.length;
+          if (count > 0 && !confirm(`This folder has ${count} session${count > 1 ? "s" : ""}. Delete all?`)) return;
+          // Delete all sessions in this folder
+          for (const s of folderSessions) {
+            wsSend({ action: "delete", sessionId: s.id });
+          }
+          // Remove folder from folderOrder and collapsedFolders
+          folderOrderList = folderOrderList.filter(f => f !== folder);
+          delete collapsedFolders[folder];
+          localStorage.setItem("folderOrder", JSON.stringify(folderOrderList));
+          localStorage.setItem("collapsedFolders", JSON.stringify(collapsedFolders));
+          fetch('/api/ui-settings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folderOrder: folderOrderList, collapsedFolders }) }).catch(() => {});
+          // Remove the folder group from DOM immediately
+          group.remove();
         });
       }
 
@@ -3967,7 +4080,7 @@
   // ---- Init ----
   applyTheme();
   setInterval(applyTheme, 60000); // recheck time every minute for auto mode
-  themeBtn.addEventListener("click", toggleTheme);
+  themeBtn.addEventListener("click", function (e) { e.stopPropagation(); toggleThemePicker(); });
   initResponsiveLayout();
   loadInlineTools();
   loadInlineModels();
