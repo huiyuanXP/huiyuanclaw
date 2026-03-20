@@ -45,6 +45,13 @@ import {
   updateSessionRuntimePreferences,
 } from './session-manager.mjs';
 import {
+  createTrigger,
+  deleteTrigger,
+  getTrigger,
+  listTriggers,
+  updateTrigger,
+} from './triggers.mjs';
+import {
   normalizeSessionWorkflowPriority,
   normalizeSessionWorkflowState,
 } from './session-workflow-state.mjs';
@@ -1076,6 +1083,8 @@ function serializeJsonForScript(value) {
 
 function isOwnerOnlyRoute(pathname, method) {
   if (pathname === '/api/sessions' && (method === 'GET' || method === 'POST')) return true;
+  if (pathname === '/api/triggers' && (method === 'GET' || method === 'POST')) return true;
+  if (pathname.startsWith('/api/triggers/') && ['GET', 'PATCH', 'DELETE'].includes(method)) return true;
   if (pathname.startsWith('/api/sessions/') && pathname.endsWith('/share') && method === 'POST') return true;
   if (pathname.startsWith('/api/sessions/') && pathname.endsWith('/fork') && method === 'POST') return true;
   if (pathname.startsWith('/api/sessions/') && pathname.endsWith('/delegate') && method === 'POST') return true;
@@ -1095,6 +1104,11 @@ function isOwnerOnlyRoute(pathname, method) {
 
 function parseSharePayloadRoute(pathname) {
   const match = /^\/share-payload\/(snap_[a-f0-9]{48})\.js$/.exec(pathname || '');
+  return match ? match[1] : null;
+}
+
+function parseTriggerRoute(pathname) {
+  const match = /^\/api\/triggers\/(trg_[a-f0-9]{24})$/.exec(pathname || '');
   return match ? match[1] : null;
 }
 
@@ -1166,6 +1180,92 @@ export async function handleRequest(req, res) {
   // ---- API endpoints ----
 
   const sessionGetRoute = req.method === 'GET' ? parseSessionGetRoute(pathname) : null;
+  const triggerId = parseTriggerRoute(pathname);
+
+  if (pathname === '/api/triggers' && req.method === 'GET') {
+    const sessionId = typeof parsedUrl?.query?.sessionId === 'string'
+      ? parsedUrl.query.sessionId
+      : '';
+    const triggers = await listTriggers({ sessionId });
+    writeJson(res, 200, { triggers });
+    return;
+  }
+
+  if (pathname === '/api/triggers' && req.method === 'POST') {
+    let payload = {};
+    try {
+      const body = await readBody(req, 32768);
+      payload = body ? JSON.parse(body) : {};
+    } catch {
+      writeJson(res, 400, { error: 'Invalid request body' });
+      return;
+    }
+    try {
+      if (Object.prototype.hasOwnProperty.call(payload, 'thinking') && typeof payload.thinking !== 'boolean') {
+        writeJson(res, 400, { error: 'thinking must be a boolean' });
+        return;
+      }
+      if (Object.prototype.hasOwnProperty.call(payload, 'enabled') && typeof payload.enabled !== 'boolean') {
+        writeJson(res, 400, { error: 'enabled must be a boolean' });
+        return;
+      }
+      const trigger = await createTrigger(payload || {});
+      writeJson(res, 201, { trigger });
+    } catch (error) {
+      writeJson(res, 400, { error: error.message || 'Failed to create trigger' });
+    }
+    return;
+  }
+
+  if (triggerId && req.method === 'GET') {
+    const trigger = await getTrigger(triggerId);
+    if (!trigger) {
+      writeJson(res, 404, { error: 'Trigger not found' });
+      return;
+    }
+    writeJson(res, 200, { trigger });
+    return;
+  }
+
+  if (triggerId && req.method === 'PATCH') {
+    let payload = {};
+    try {
+      const body = await readBody(req, 32768);
+      payload = body ? JSON.parse(body) : {};
+    } catch {
+      writeJson(res, 400, { error: 'Invalid request body' });
+      return;
+    }
+    try {
+      if (Object.prototype.hasOwnProperty.call(payload, 'thinking') && typeof payload.thinking !== 'boolean') {
+        writeJson(res, 400, { error: 'thinking must be a boolean' });
+        return;
+      }
+      if (Object.prototype.hasOwnProperty.call(payload, 'enabled') && typeof payload.enabled !== 'boolean') {
+        writeJson(res, 400, { error: 'enabled must be a boolean' });
+        return;
+      }
+      const trigger = await updateTrigger(triggerId, payload || {});
+      if (!trigger) {
+        writeJson(res, 404, { error: 'Trigger not found' });
+        return;
+      }
+      writeJson(res, 200, { trigger });
+    } catch (error) {
+      writeJson(res, 400, { error: error.message || 'Failed to update trigger' });
+    }
+    return;
+  }
+
+  if (triggerId && req.method === 'DELETE') {
+    const trigger = await deleteTrigger(triggerId);
+    if (!trigger) {
+      writeJson(res, 404, { error: 'Trigger not found' });
+      return;
+    }
+    writeJson(res, 200, { ok: true, trigger });
+    return;
+  }
 
   if (pathname === '/api/voice-input/config' && req.method === 'GET') {
     const config = await readVoiceInputConfig();
