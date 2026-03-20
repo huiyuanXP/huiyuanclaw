@@ -1702,9 +1702,39 @@ body {
 .git-branch-indicator.current { background: var(--accent); }
 .git-branch-indicator.other { background: var(--text-muted); opacity: 0.3; }
 .git-branch-name {
-  flex: 1; font-family: 'SF Mono', Monaco, Consolas, monospace; font-size: 12px;
+  font-family: 'SF Mono', Monaco, Consolas, monospace; font-size: 12px;
 }
 .git-branch-name.current { font-weight: 600; color: var(--text); }
+.git-branch-card {
+  padding: 8px 10px; border-bottom: 1px solid var(--border);
+}
+.git-branch-card:last-child { border-bottom: none; }
+.git-branch-card-top {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.git-branch-card-bottom {
+  display: flex; align-items: center; gap: 10px; margin-top: 3px; padding-left: 18px;
+}
+.git-branch-hash {
+  font-family: 'SF Mono', Monaco, Consolas, monospace; font-size: 11px;
+  background: var(--bg-tertiary); color: var(--text-muted);
+  padding: 1px 6px; border-radius: 3px;
+}
+.git-ahead-behind { display: inline-flex; gap: 4px; font-size: 11px; font-weight: 500; }
+.git-ahead { color: #22c55e; }
+.git-behind { color: #f59e0b; }
+.git-behind.zero { color: var(--text-muted); }
+.git-ahead.zero { color: var(--text-muted); }
+.git-branch-msg {
+  color: var(--text-secondary); font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0;
+}
+.git-branch-time { color: var(--text-muted); font-size: 11px; white-space: nowrap; }
+.git-section-group { margin-bottom: 12px; }
+.git-section-group-label {
+  font-size: 11px; text-transform: uppercase; color: var(--text-muted);
+  margin-bottom: 4px; letter-spacing: 0.5px; padding: 0 10px;
+}
 @media (max-width: 600px) {
   .git-diff-modal { width: 96vw; max-height: 90vh; }
   .git-file-row { font-size: 12px; }

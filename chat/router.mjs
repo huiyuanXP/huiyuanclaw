@@ -857,7 +857,19 @@ export async function handleRequest(req, res) {
             // Only staged, no unstaged counterpart — already added above
           }
         }
-        jsonReply(200, { files, branch, clean: files.length === 0 });
+        // Get ahead/behind tracking info
+        let ahead = null, behind = null, tracking = null;
+        try {
+          const trackBranch = (await runGit(['rev-parse', '--abbrev-ref', `${branch}@{upstream}`], folderPath)).trim();
+          if (trackBranch) {
+            tracking = trackBranch;
+            const counts = (await runGit(['rev-list', '--left-right', '--count', `HEAD...@{upstream}`], folderPath)).trim();
+            const [a, b] = counts.split(/\s+/);
+            ahead = parseInt(a, 10) || 0;
+            behind = parseInt(b, 10) || 0;
+          }
+        } catch { /* no upstream tracking */ }
+        jsonReply(200, { files, branch, clean: files.length === 0, ahead, behind, tracking });
         return;
       }
 
@@ -948,10 +960,33 @@ export async function handleRequest(req, res) {
 
       // GET /git/branches
       if (action === 'branches' && req.method === 'GET') {
-        const out = await runGit(['branch', '-a', '--format=%(refname:short)|%(objectname:short)|%(HEAD)'], folderPath);
+        const fmt = '%(refname:short)|%(objectname:short)|%(HEAD)|%(subject)|%(authordate:unix)|%(authorname)|%(upstream:short)|%(upstream:track)';
+        const out = await runGit(['branch', '-a', '--format=' + fmt], folderPath);
         const branches = out.split('\n').filter(Boolean).map(line => {
-          const [name, short, head] = line.split('|');
-          return { name, short, current: head.trim() === '*' };
+          const parts = line.split('|');
+          const name = parts[0];
+          const short = parts[1];
+          const isCurrent = parts[2]?.trim() === '*';
+          const message = parts[3] || '';
+          const date = parseInt(parts[4], 10) || 0;
+          const author = parts[5] || '';
+          const tracking = parts[6] || '';
+          const trackInfo = parts.slice(7).join('|') || '';
+          let ahead = 0, behind = 0;
+          const aheadMatch = trackInfo.match(/ahead (\d+)/);
+          const behindMatch = trackInfo.match(/behind (\d+)/);
+          if (aheadMatch) ahead = parseInt(aheadMatch[1], 10);
+          if (behindMatch) behind = parseInt(behindMatch[1], 10);
+          const isRemote = name.includes('/') && !name.startsWith('refs/') && /^[^/]+\//.test(name) && !isCurrent && !tracking;
+          const entry = { name, short, current: isCurrent, message, date, author };
+          if (isRemote) {
+            entry.remote = true;
+          } else {
+            if (tracking) entry.tracking = tracking;
+            entry.ahead = ahead;
+            entry.behind = behind;
+          }
+          return entry;
         });
         const current = branches.find(b => b.current)?.name || '';
         jsonReply(200, { current, branches });

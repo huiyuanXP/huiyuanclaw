@@ -2725,8 +2725,23 @@
   function renderGitChanges(folder, data) {
     const staged = data.files.filter(f => f.staged);
     const unstaged = data.files.filter(f => !f.staged);
+    let trackingHtml = '';
+    if (data.tracking) {
+      const aheadCls = data.ahead > 0 ? 'git-ahead' : 'git-ahead zero';
+      const behindCls = data.behind > 0 ? 'git-behind' : 'git-behind zero';
+      trackingHtml = `<span class="git-branch-badge">${esc(data.branch)}</span>
+        <span style="color:var(--text-muted);margin:0 2px">→</span>
+        <span style="color:var(--text-secondary);font-size:12px">${esc(data.tracking)}</span>
+        <span class="git-ahead-behind">
+          <span class="${aheadCls}">↑${data.ahead}</span>
+          <span class="${behindCls}">↓${data.behind}</span>
+        </span>`;
+    } else {
+      trackingHtml = `<span class="git-branch-badge">${esc(data.branch || "unknown")}</span>
+        <span style="color:var(--text-muted);font-size:11px;margin-left:4px">(no remote)</span>`;
+    }
     let html = `<div class="git-branch-bar">
-      <span class="git-branch-badge">${esc(data.branch || "unknown")}</span>
+      ${trackingHtml}
       <button class="git-btn" data-action="pull" title="Pull from remote">Pull</button>
       <button class="git-btn" data-action="push" title="Push to remote">Push</button>
     </div>`;
@@ -2824,6 +2839,38 @@
       loadGitStatus(folder);
     } else if (action === "diff") {
       showGitDiff(folder, file, btn.dataset.staged === "true");
+    } else if (action === "pull") {
+      btn.disabled = true; btn.textContent = "Pulling...";
+      try {
+        const r = await fetch(gitApiUrl(folder, "pull"), {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({})
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+        btn.textContent = d.output || "Done"; btn.disabled = false;
+        setTimeout(() => { btn.textContent = "Pull"; }, 2000);
+        loadGitStatus(folder);
+      } catch (err) {
+        btn.textContent = "Error"; btn.disabled = false;
+        setTimeout(() => { btn.textContent = "Pull"; }, 2000);
+      }
+    } else if (action === "push") {
+      btn.disabled = true; btn.textContent = "Pushing...";
+      try {
+        const r = await fetch(gitApiUrl(folder, "push"), {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({})
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+        btn.textContent = d.output || "Done"; btn.disabled = false;
+        setTimeout(() => { btn.textContent = "Push"; }, 2000);
+        loadGitStatus(folder);
+      } catch (err) {
+        btn.textContent = "Error"; btn.disabled = false;
+        setTimeout(() => { btn.textContent = "Push"; }, 2000);
+      }
     }
   });
 
@@ -2882,6 +2929,33 @@
     }
   }
 
+  function renderBranchCard(b) {
+    const indicator = b.current ? '<span class="git-branch-indicator current"></span>' : (b.remote ? '' : '<span class="git-branch-indicator other"></span>');
+    const nameCls = b.current ? 'git-branch-name current' : 'git-branch-name';
+    let abHtml = '';
+    if (!b.remote && (b.ahead != null || b.behind != null)) {
+      const aCls = b.ahead > 0 ? 'git-ahead' : 'git-ahead zero';
+      const bCls = b.behind > 0 ? 'git-behind' : 'git-behind zero';
+      abHtml = `<span class="git-ahead-behind"><span class="${aCls}">↑${b.ahead || 0}</span><span class="${bCls}">↓${b.behind || 0}</span></span>`;
+    }
+    const hashBadge = `<span class="git-branch-hash">${esc(b.short)}</span>`;
+    const timeStr = b.date ? relativeTime(b.date) : '';
+    const checkoutBtn = b.current ? '' : `<button class="git-btn" data-checkout="${esc(b.name)}">Checkout</button>`;
+    return `<div class="git-branch-card">
+      <div class="git-branch-card-top">
+        ${indicator}
+        <span class="${nameCls}">${esc(b.name)}</span>
+        ${hashBadge}
+        ${abHtml}
+        ${checkoutBtn}
+      </div>
+      <div class="git-branch-card-bottom">
+        <span class="git-branch-msg" title="${esc(b.message)}">${esc(b.message)}</span>
+        ${timeStr ? `<span class="git-branch-time">${timeStr}</span>` : ''}
+      </div>
+    </div>`;
+  }
+
   async function loadGitBranches(folder) {
     gitBranches.innerHTML = '<div class="git-empty">Loading...</div>';
     try {
@@ -2892,13 +2966,20 @@
         gitBranches.innerHTML = '<div class="git-empty">No branches found</div>';
         return;
       }
-      gitBranches.innerHTML = data.branches.map(b =>
-        `<div class="git-branch-item">
-          <span class="git-branch-indicator ${b.current ? "current" : "other"}"></span>
-          <span class="git-branch-name ${b.current ? "current" : ""}">${esc(b.name)}${b.current ? " (current)" : ""}</span>
-          ${b.current ? "" : `<button class="git-btn" data-checkout="${esc(b.name)}">Checkout</button>`}
-        </div>`
-      ).join("");
+      const localBranches = data.branches.filter(b => !b.remote);
+      const remoteBranches = data.branches.filter(b => b.remote);
+      let bhtml = '';
+      if (localBranches.length) {
+        bhtml += `<div class="git-section-group"><div class="git-section-group-label">Local branches</div>`;
+        bhtml += localBranches.map(b => renderBranchCard(b)).join('');
+        bhtml += `</div>`;
+      }
+      if (remoteBranches.length) {
+        bhtml += `<div class="git-section-group"><div class="git-section-group-label">Remote branches</div>`;
+        bhtml += remoteBranches.map(b => renderBranchCard(b)).join('');
+        bhtml += `</div>`;
+      }
+      gitBranches.innerHTML = bhtml;
     } catch (err) {
       gitBranches.innerHTML = `<div class="git-empty">${esc(err.message)}</div>`;
     }
