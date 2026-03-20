@@ -39,6 +39,7 @@ import {
   buildSessionContinuationContextFromBody,
   prepareSessionContinuationBody,
 } from './session-continuation.mjs';
+import { buildSessionDisplayEvents } from './session-display-events.mjs';
 import { buildTurnRoutingHint } from './session-routing.mjs';
 import { broadcastOwners, getClientsMatching } from './ws-clients.mjs';
 import {
@@ -1578,6 +1579,65 @@ function clipReplySelfCheckText(value, maxChars = 5000) {
   return `${text.slice(0, headChars).trimEnd()}\n[... truncated by RemoteLab ...]\n${text.slice(-tailChars).trimStart()}`;
 }
 
+function formatReplySelfCheckDisplayEvent(event) {
+  if (!event || typeof event !== 'object') return '';
+  if (event.type === 'message' && event.role === 'assistant') {
+    return normalizeReplySelfCheckText(event.content || '');
+  }
+  if (event.type === 'thinking_block') {
+    const label = normalizeReplySelfCheckText(event.label || 'Thought');
+    return label ? `[Displayed thought block: ${label}]` : '[Displayed thought block]';
+  }
+  if (event.type === 'status') {
+    const content = normalizeReplySelfCheckText(event.content || '');
+    return content ? `[Displayed status: ${content}]` : '';
+  }
+  return '';
+}
+
+function buildReplySelfCheckDisplayedAssistantTurn(history = []) {
+  const displayEvents = buildSessionDisplayEvents(history, { sessionRunning: false });
+  const parts = [];
+  for (const event of displayEvents) {
+    if (event?.type === 'message' && event.role === 'user') continue;
+    const text = formatReplySelfCheckDisplayEvent(event);
+    if (text) {
+      parts.push(text);
+    }
+  }
+  return parts.join('\n\n').trim();
+}
+
+async function loadReplySelfCheckTurnContext(sessionId, runId) {
+  const history = await loadHistory(sessionId, { includeBodies: true });
+  const runHistory = [];
+  let userMessage = null;
+  let latestAssistantMessage = null;
+
+  for (const event of history) {
+    if (runId && event?.runId !== runId) continue;
+    runHistory.push(event);
+    if (event?.type === 'message' && event.role === 'user') {
+      userMessage = event;
+      continue;
+    }
+    if (event?.type === 'message' && event.role === 'assistant') {
+      latestAssistantMessage = event;
+    }
+  }
+
+  const turnHistory = Number.isInteger(userMessage?.seq)
+    ? runHistory.filter((event) => !Number.isInteger(event?.seq) || event.seq >= userMessage.seq)
+    : runHistory;
+  const assistantTurnText = buildReplySelfCheckDisplayedAssistantTurn(turnHistory)
+    || normalizeReplySelfCheckText(latestAssistantMessage?.content || '');
+
+  return {
+    userMessage,
+    assistantTurnText,
+  };
+}
+
 function summarizeReplySelfCheckReason(value, fallback = REPLY_SELF_CHECK_DEFAULT_REASON) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   if (!text) return fallback;
@@ -1762,18 +1822,7 @@ export async function rewriteVoiceTranscriptForSession(sessionId, transcript, op
   };
 }
 
-async function findLatestUserMessageForRun(sessionId, runId) {
-  const events = await loadHistory(sessionId, { includeBodies: true });
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    if (event?.type !== 'message' || event.role !== 'user') continue;
-    if (runId && event.runId !== runId) continue;
-    return event;
-  }
-  return null;
-}
-
-function buildReplySelfCheckPrompt({ userMessage, assistantMessage }) {
+function buildReplySelfCheckPrompt({ userMessage, assistantTurnText }) {
   return [
     'You are RemoteLab\'s hidden end-of-turn completion reviewer.',
     'Judge only whether the latest assistant reply stopped too early for the current user turn.',
@@ -1792,8 +1841,8 @@ function buildReplySelfCheckPrompt({ userMessage, assistantMessage }) {
     'Current user message:',
     clipReplySelfCheckText(userMessage?.content || '', 3000) || '[none]',
     '',
-    'Latest assistant reply shown to the user:',
-    clipReplySelfCheckText(assistantMessage?.content || '', 5000) || '[none]',
+    'Latest assistant turn content shown to the user:',
+    clipReplySelfCheckText(assistantTurnText || '', 5000) || '[none]',
   ].join('\n');
 }
 
@@ -1811,7 +1860,7 @@ function parseReplySelfCheckDecision(content) {
   };
 }
 
-function buildReplySelfRepairPrompt({ userMessage, assistantMessage, reviewDecision }) {
+function buildReplySelfRepairPrompt({ userMessage, assistantTurnText, reviewDecision }) {
   const continuationPrompt = String(reviewDecision?.continuationPrompt || '').trim();
   const reason = summarizeReplySelfCheckReason(reviewDecision?.reason || 'finish the missing work now');
   return [
@@ -1826,8 +1875,8 @@ function buildReplySelfRepairPrompt({ userMessage, assistantMessage, reviewDecis
     'Original user message:',
     clipReplySelfCheckText(userMessage?.content || '', 3000) || '[none]',
     '',
-    'Previous assistant reply already shown to the user:',
-    clipReplySelfCheckText(assistantMessage?.content || '', 5000) || '[none]',
+    'Previous assistant turn content already shown to the user:',
+    clipReplySelfCheckText(assistantTurnText || '', 5000) || '[none]',
     '',
     'Hidden reviewer guidance:',
     continuationPrompt || `Finish the missing work now. Reviewer reason: ${reason}`,
@@ -1845,11 +1894,8 @@ async function maybeRunReplySelfCheck(sessionId, session, run, manifest) {
     return false;
   }
 
-  const [userMessage, assistantMessage] = await Promise.all([
-    findLatestUserMessageForRun(sessionId, run.id),
-    findLatestAssistantMessageForRun(sessionId, run.id),
-  ]);
-  if (!assistantMessage?.content) {
+  const { userMessage, assistantTurnText } = await loadReplySelfCheckTurnContext(sessionId, run.id);
+  if (!assistantTurnText) {
     return false;
   }
 
@@ -1865,7 +1911,7 @@ async function maybeRunReplySelfCheck(sessionId, session, run, manifest) {
       model: run.model || undefined,
       effort: run.effort || undefined,
       thinking: false,
-    }, buildReplySelfCheckPrompt({ userMessage, assistantMessage }));
+    }, buildReplySelfCheckPrompt({ userMessage, assistantTurnText }));
   } catch (error) {
     await appendEvent(sessionId, statusEvent(`Assistant self-check: review failed — ${summarizeReplySelfCheckReason(error.message, 'background reviewer error')}`));
     broadcastSessionInvalidation(sessionId);
@@ -1893,7 +1939,7 @@ async function maybeRunReplySelfCheck(sessionId, session, run, manifest) {
   try {
     await sendMessage(sessionId, buildReplySelfRepairPrompt({
       userMessage,
-      assistantMessage,
+      assistantTurnText,
       reviewDecision,
     }), [], {
       tool: run.tool || session.tool,

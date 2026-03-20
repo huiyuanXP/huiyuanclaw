@@ -23,29 +23,65 @@ const isReplyReviewPrompt = prompt.includes("You are RemoteLab's hidden end-of-t
 const isRepairPrompt = prompt.includes('You are continuing the same user-facing reply after a hidden self-check found an avoidable early stop.');
 
 let threadId = 'main-thread';
-let text = '我已经分析了机制问题。下一条我可以直接给你那份极短执行守则。';
+let items = [{ type: 'agent_message', text: '我已经分析了机制问题。下一条我可以直接给你那份极短执行守则。' }];
 
 if (isWorkflowPrompt) {
   threadId = 'workflow-thread';
-  text = JSON.stringify({ workflowState: 'done', workflowPriority: 'low', reason: 'done' });
+  items = [{
+    type: 'agent_message',
+    text: JSON.stringify({ workflowState: 'done', workflowPriority: 'low', reason: 'done' }),
+  }];
 } else if (isReplyReviewPrompt) {
   threadId = 'review-thread';
-  text = '<hide>' + JSON.stringify({
-    action: 'continue',
-    reason: '上一条回复把本轮该直接交付的内容留到了后面。',
-    continuationPrompt: '直接给出那份极短执行守则，不要再征求许可，也不要重复前面的机制分析。',
-  }) + '</hide>';
+  const isChecklistScenario = prompt.includes('todo checklist');
+  const hasVisibleAnswer = prompt.includes('真正有效答复：把缺的结论直接补齐。');
+  const hasDisplayedChecklist = prompt.includes('[ ] todo checklist');
+  items = [{
+    type: 'agent_message',
+    text: '<hide>' + JSON.stringify(isChecklistScenario
+      ? {
+        action: hasVisibleAnswer && hasDisplayedChecklist ? 'continue' : 'accept',
+        reason: hasVisibleAnswer && hasDisplayedChecklist
+          ? '最后展示给用户的 turn 里既有真正答复也有 checklist，需要按整个展示 turn 判断。'
+          : 'review prompt missed part of the visible turn',
+        continuationPrompt: hasVisibleAnswer && hasDisplayedChecklist
+          ? '直接补上最后缺的结论，不要重复前面的真正有效答复，也不要重复 checklist。'
+          : '',
+      }
+      : {
+        action: 'continue',
+        reason: '上一条回复把本轮该直接交付的内容留到了后面。',
+        continuationPrompt: '直接给出那份极短执行守则，不要再征求许可，也不要重复前面的机制分析。',
+      }) + '</hide>',
+  }];
 } else if (isRepairPrompt) {
   threadId = 'repair-thread';
-  text = '极短执行守则：默认先做完再汇报；除非高风险、真歧义、缺关键信息，否则不要停；不要用“如果你愿意我下一条再做”作为结尾。';
+  const isChecklistScenario = prompt.includes('todo checklist');
+  const hasVisibleAnswer = prompt.includes('真正有效答复：把缺的结论直接补齐。');
+  const hasDisplayedChecklist = prompt.includes('[ ] todo checklist');
+  items = [{
+    type: 'agent_message',
+    text: isChecklistScenario
+      ? (hasVisibleAnswer && hasDisplayedChecklist
+        ? '补上的最终结论。'
+        : 'repair prompt missed part of the visible turn')
+      : '极短执行守则：默认先做完再汇报；除非高风险、真歧义、缺关键信息，否则不要停；不要用“如果你愿意我下一条再做”作为结尾。',
+  }];
+} else if (prompt.includes('先给真正答复，再在最后发一份 todo checklist，然后停住。')) {
+  items = [
+    { type: 'agent_message', text: '真正有效答复：把缺的结论直接补齐。' },
+    { type: 'todo_list', items: [{ completed: false, text: 'todo checklist' }] },
+  ];
 }
 
 console.log(JSON.stringify({ type: 'thread.started', thread_id: threadId }));
 console.log(JSON.stringify({ type: 'turn.started' }));
-console.log(JSON.stringify({
-  type: 'item.completed',
-  item: { type: 'agent_message', text },
-}));
+for (const item of items) {
+  console.log(JSON.stringify({
+    type: 'item.completed',
+    item,
+  }));
+}
 console.log(JSON.stringify({
   type: 'turn.completed',
   usage: { input_tokens: 1, output_tokens: 1 },
@@ -152,6 +188,53 @@ try {
   assert.ok(
     assistantTexts.some((text) => text.includes('极短执行守则：默认先做完再汇报')),
     'history should include the automatically continued reply',
+  );
+
+  const checklistSession = await createSession(tempHome, 'fake-codex', 'Reply Self Check Visible Turn', {
+    group: 'RemoteLab',
+    description: 'Verify self-check reuses the visible turn display when a checklist is the final assistant item.',
+  });
+
+  await sendMessage(checklistSession.id, '先给真正答复，再在最后发一份 todo checklist，然后停住。', [], {
+    tool: 'fake-codex',
+    model: 'fake-model',
+    effort: 'low',
+  });
+
+  await waitFor(
+    async () => {
+      const visibleTurnHistory = await getHistory(checklistSession.id);
+      return visibleTurnHistory.some((event) => event.type === 'message' && event.role === 'assistant' && (event.content || '').includes('补上的最终结论。'));
+    },
+    'self-check should inspect the whole displayed assistant turn instead of only the last checklist item',
+  );
+
+  await waitFor(
+    async () => (await getSession(checklistSession.id))?.activity?.run?.state === 'idle',
+    'checklist session should become idle after the automatic follow-up reply',
+  );
+
+  const checklistHistory = await getHistory(checklistSession.id);
+  const checklistAssistantTexts = checklistHistory
+    .filter((event) => event.type === 'message' && event.role === 'assistant')
+    .map((event) => event.content || '');
+
+  assert.ok(
+    checklistAssistantTexts.some((text) => text.includes('真正有效答复：把缺的结论直接补齐。')),
+    'history should keep the visible substantive assistant reply that appeared before the checklist',
+  );
+  assert.ok(
+    checklistAssistantTexts.some((text) => text.includes('[ ] todo checklist')),
+    'history should keep the trailing checklist that ended the original assistant turn',
+  );
+  assert.ok(
+    checklistAssistantTexts.some((text) => text.includes('补上的最终结论。')),
+    'repair continuation should still see the whole displayed assistant turn context',
+  );
+  assert.equal(
+    checklistAssistantTexts.some((text) => text.includes('repair prompt missed part of the visible turn')),
+    false,
+    'repair prompt should not fall back to a missing-context placeholder',
   );
 } finally {
   killAll();
