@@ -219,7 +219,10 @@ try {
 
   let output = '';
   const stdout = { write(chunk) { output += chunk; } };
-  const exitCode = await runUsageSummaryCommand(['--days', '2', '--top', '3', '--json'], { stdout });
+  const exitCode = await runUsageSummaryCommand(
+    ['--days', '2', '--top', '3', '--now', '2026-03-19T12:00:00.000Z', '--json'],
+    { stdout },
+  );
   assert.equal(exitCode, 0, 'command should exit cleanly');
   const parsed = JSON.parse(output);
   assert.equal(parsed.totalTokens, 315, 'json command output should expose the aggregated totals');
