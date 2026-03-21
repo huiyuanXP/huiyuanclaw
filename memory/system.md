@@ -167,6 +167,14 @@ Universal learnings and patterns that apply to all RemoteLab deployments, regard
 - If the UI only checks the URL to decide visitor mode, a refresh silently falls back into owner-style initialization and immediately calls owner-only APIs.
 - Reliable pattern: derive mode from authenticated role before any owner-only requests, but do not force that through a blocking extra round-trip. If the HTML render already knows the auth session, inline a small bootstrap payload (for example owner vs visitor plus visitor session IDs) and let the frontend use `/api/auth/me` only as a fallback or non-HTML API surface.
 
+### Visitor Mode Must Propagate Across Bootstrap (2026-03-12)
+- Visitor-mode requests should carry an explicit signal (currently `?visitor=1`) across initial page loads, API fetches, and WebSocket upgrades when owner and visitor cookies can coexist.
+- Frontend test harnesses may load `static/chat/session-http.js` or other modules without `bootstrap.js`; any visitor-flag helpers introduced in `bootstrap.js` need a local fallback to avoid undefined globals during tests.
+
+### Owner Session Cookies Should Use PWA-Compatible Defaults (2026-03-12)
+- For owner login persistence in installed PWAs, prefer standard web-cookie defaults: `HttpOnly`, `Secure` when HTTPS, `SameSite=Lax`, and both `Max-Age` plus `Expires`.
+- `SameSite=Strict` can break app-launch or external-entry flows; a light refresh on authenticated entry points keeps server-side expiry aligned without forcing refresh on every request.
+
 ### Hidden Markdown Blocks Work Best As Parser Extensions (2026-03-06)
 - For `marked`, custom block + inline extensions are a clean way to consume tags like `<private>...</private>` and `<hide>...</hide>` so the UI hides them while the raw message text stays intact for history and model context.
 - After rendering, skip empty assistant bubbles; otherwise a response that only contains hidden blocks still leaves blank UI chrome behind.
@@ -443,6 +451,10 @@ Universal learnings and patterns that apply to all RemoteLab deployments, regard
 - In RemoteLab, the chat input control row naturally grows over time as tool/model/thinking/status/resume/compact actions are added.
 - On mobile, wrapping or clipping these controls is worse than horizontal scrolling because the right-side actions become unreachable precisely when they matter most.
 - A robust pattern is: keep the row single-line, split it into left/right flex groups with `min-width: max-content`, and make the parent row `overflow-x: auto` with touch scrolling enabled.
+
+### Composer Pending State Should Clear On HTTP Acceptance (2026-03-17)
+- The first-class acceptance signal is `POST /messages` success with the returned `requestId`; clear the composer pending state immediately on that response.
+- Session/event reconciliation should remain a fallback, not the only clear path, because running-session refresh optimizations can skip the exact event fetch that would otherwise clear `Sending...`.
 
 ### Android Long Screenshots Need A Full-Document Capture Surface (2026-03-12)
 - Android's native long-screenshot flow is unreliable when a web app behaves like an app shell with `body`/viewport locked and the real conversation scroll trapped inside an inner `overflow-y: auto` panel.
