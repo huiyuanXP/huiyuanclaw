@@ -45,5 +45,11 @@ assert.match(context, /let the child fetch it from the parent session/);
 assert.match(context, /REMOTELAB_SESSION_ID/);
 assert.match(context, /trigger command defaults to REMOTELAB_SESSION_ID/);
 assert.match(context, /session-test-123/);
+assert.match(context, /Execution Bias/);
+assert.match(context, /Treat a clear user request as standing permission to carry the task forward until it reaches a meaningful stopping point/);
+assert.match(context, /Default to continuing after partial progress instead of stopping to ask whether you should proceed/);
+assert.match(context, /Prefer doing the next reasonable, reversible step over describing what you could do next/);
+assert.match(context, /Pause only for a real blocker: an explicitly requested stop\/wait, missing credentials or external information you cannot obtain yourself, a destructive or irreversible action without clear authorization, or a decision that only the user can make/);
+assert.match(context, /Do not treat the absence of micro-instructions as a blocker; execution-layer decisions are part of your job/);
 
 console.log('test-system-prompt: ok');
