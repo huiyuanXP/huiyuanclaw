@@ -942,7 +942,7 @@ function setShareSnapshotHeaders(res, nonce = '') {
     "frame-ancestors 'none'",
     "connect-src 'none'",
     `script-src ${scriptSrc.join(' ')}`,
-    "style-src 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "media-src 'self' data: blob:",
     "font-src 'none'",
