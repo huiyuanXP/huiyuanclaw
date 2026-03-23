@@ -18,6 +18,7 @@ const {
   buildSessionDescription,
   createRuntimeContext,
   buildRemoteLabMessage,
+  claimConnectorPidLock,
   compileFeishuReplyText,
   ensureAuthCookie,
   ensureAllowedSendersFile,
@@ -30,6 +31,7 @@ const {
   loadPersistedAccessState,
   normalizeReplyText,
   normalizeProcessingReactionConfig,
+  releaseConnectorPidLock,
   summarizeChatMemberUserAddedEvent,
   summarizeEvent,
 } = await import(pathToFileURL(join(repoRoot, 'scripts', 'feishu-connector.mjs')).href);
@@ -110,6 +112,32 @@ assert.equal(handled[0].messageId, 'msg_test_confirmation_1');
 assert.equal(handled[0].metadata.status, 'confirmation_sent');
 assert.equal(handled[0].metadata.reason, 'empty_assistant_reply');
 assert.equal(handled[0].metadata.responseMessageId, 'out_confirmation_test_1');
+
+const connectorLockDir = join(tempHome, 'connector-lock');
+const claimedLock = await claimConnectorPidLock(connectorLockDir, 54321);
+assert.equal(claimedLock.processId, 54321, 'pid lock should return the claimed process id');
+assert.equal(
+  (await readFile(claimedLock.pidPath, 'utf8')).trim(),
+  '54321',
+  'pid lock should persist the claimed pid',
+);
+releaseConnectorPidLock(claimedLock);
+
+await writeFile(claimedLock.pidPath, `${process.pid}\n`);
+await assert.rejects(
+  claimConnectorPidLock(connectorLockDir, 65432),
+  /already running/,
+  'pid lock should reject when another live connector already owns the lock',
+);
+
+await writeFile(claimedLock.pidPath, '999999\n');
+const recoveredLock = await claimConnectorPidLock(connectorLockDir, 65432);
+assert.equal(
+  (await readFile(recoveredLock.pidPath, 'utf8')).trim(),
+  '65432',
+  'pid lock should recover stale lock files',
+);
+releaseConnectorPidLock(recoveredLock);
 
 sendCalls = 0;
 handled.length = 0;

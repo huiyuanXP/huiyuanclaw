@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { appendFile, mkdir, readFile, rename, writeFile } from 'fs/promises';
+import { readFileSync, rmSync } from 'fs';
+import { appendFile, mkdir, readFile, rename, rm, writeFile } from 'fs/promises';
 import { homedir } from 'os';
 import { dirname, join, resolve } from 'path';
 import { setTimeout as delay } from 'timers/promises';
@@ -41,6 +42,7 @@ const RUN_POLL_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_FEISHU_TEXT_LENGTH = 5000;
 const MAX_INBOUND_LOG_PREVIEW_LENGTH = 240;
 const DEFAULT_PROCESSING_REACTION_EMOJI_TYPE = 'THINKING';
+const CONNECTOR_PID_FILENAME = 'connector.pid';
 const REMOTELAB_SESSION_APP_ID = 'feishu';
 const APPROVE_CURRENT_CHAT_COMMANDS = new Set([
   '授权本群',
@@ -412,6 +414,70 @@ async function loadConfig(pathname) {
     processingReaction: normalizeProcessingReactionConfig(parsed?.processingReaction),
     silentConfirmationText: normalizeReplyText(parsed?.silentConfirmationText),
   };
+}
+
+function parsePid(value) {
+  const parsed = Number.parseInt(String(value || '').trim(), 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return 0;
+  }
+  return parsed;
+}
+
+function isProcessAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function claimConnectorPidLock(storageDir, processId = process.pid) {
+  const pidPath = join(storageDir, CONNECTOR_PID_FILENAME);
+  const pidValue = `${processId}\n`;
+  await mkdir(storageDir, { recursive: true });
+  try {
+    await writeFile(pidPath, pidValue, { flag: 'wx' });
+  } catch (error) {
+    if (error?.code !== 'EEXIST') {
+      throw error;
+    }
+    const existingPid = parsePid(await readFile(pidPath, 'utf8').catch(() => ''));
+    if (existingPid && existingPid !== processId && isProcessAlive(existingPid)) {
+      throw new Error(`Feishu connector already running (pid ${existingPid})`);
+    }
+    await rm(pidPath, { force: true });
+    await writeFile(pidPath, pidValue, { flag: 'wx' });
+  }
+  return { pidPath, processId };
+}
+
+function releaseConnectorPidLock(lock) {
+  const pidPath = trimString(lock?.pidPath);
+  if (!pidPath) {
+    return;
+  }
+  const processId = parsePid(lock?.processId);
+  if (!processId) {
+    return;
+  }
+  const currentPid = parsePid((() => {
+    try {
+      return readFileSync(pidPath, 'utf8');
+    } catch {
+      return '';
+    }
+  })());
+  if (currentPid !== processId) {
+    return;
+  }
+  try {
+    rmSync(pidPath, { force: true });
+  } catch {}
 }
 
 function parseTextPreview(rawContent) {
@@ -1906,6 +1972,7 @@ export {
   buildChatAccessStatusReply,
   buildRemoteLabMessage,
   buildSessionDescription,
+  claimConnectorPidLock,
   compileFeishuReplyText,
   createRuntimeContext,
   ensureAuthCookie,
@@ -1923,6 +1990,7 @@ export {
   normalizeProcessingReactionConfig,
   normalizeReplyText,
   queueAccessStateFlush,
+  releaseConnectorPidLock,
   removeProcessingReaction,
   snapshotAccessState,
   summarizeChatMemberUserAddedEvent,
@@ -1933,6 +2001,10 @@ export {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const config = await loadConfig(options.configPath);
+  const connectorPidLock = await claimConnectorPidLock(config.storageDir);
+  process.on('exit', () => {
+    releaseConnectorPidLock(connectorPidLock);
+  });
   const accessState = await loadPersistedAccessState(config.intakePolicy);
   const storagePaths = {
     eventsLogPath: join(config.storageDir, 'events.jsonl'),

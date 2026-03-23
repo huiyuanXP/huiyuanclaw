@@ -83,7 +83,7 @@ Prefer one Feishu-console visit that covers app creation, permissions, event sub
 - ensure the RemoteLab chat server is running at `http://127.0.0.1:7690`
 - front-load all missing context and expected return payloads so the human can finish the console work in as few interruptions as possible
 - create `~/.config/remotelab/feishu-connector/config.json`
-- use `npm run feishu:connect:instance` to start the connector
+- use `npm run feishu:ops -- restart` to start or restart the connector without spawning a duplicate local instance when `launchd` is already managing it
 - use `npm run feishu:check -- --watch 15` and the connector logs to validate inbound and outbound behavior
 - keep the rollout inside this conversation; when a console fix is required, pause with a precise `[HUMAN]` instruction
 - if V0 succeeds, optionally suggest widening availability or switching from `allow_all` to `whitelist`
