@@ -132,6 +132,7 @@ Config shape:
       "emojiType": "${DEFAULT_PROCESSING_REACTION_EMOJI_TYPE}",
       "removeOnCompletion": false
     },
+    "silentConfirmationText": "",
     "intakePolicy": {
       "mode": "allow_all",
       "accessStatePath": "~/.config/remotelab/feishu-connector/${DEFAULT_ACCESS_STATE_FILENAME}",
@@ -409,6 +410,7 @@ async function loadConfig(pathname) {
     thinking: normalizeBoolean(parsed?.thinking, false),
     systemPrompt: normalizeSystemPrompt(parsed?.systemPrompt),
     processingReaction: normalizeProcessingReactionConfig(parsed?.processingReaction),
+    silentConfirmationText: normalizeReplyText(parsed?.silentConfirmationText),
   };
 }
 
@@ -1684,6 +1686,25 @@ async function handleMessage(runtime, summary, sourceLabel, helpers = {}) {
     const generated = await generateReply(runtime, summary);
     const replyText = normalizeReplyText(generated.replyText);
     if (!replyText) {
+      const confirmationText = normalizeReplyText(runtime?.config?.silentConfirmationText);
+      if (confirmationText) {
+        const reply = await sendText(runtime, summary, confirmationText);
+        await markHandled(runtime.storagePaths.handledMessagesPath, summary.messageId, {
+          status: 'confirmation_sent',
+          sourceLabel,
+          chatId: summary.chatId,
+          sessionId: generated.sessionId,
+          runId: generated.runId,
+          requestId: generated.requestId,
+          duplicate: generated.duplicate,
+          reason: 'empty_assistant_reply',
+          confirmationText,
+          responseMessageId: reply.message_id || '',
+          repliedAt: nowIso(),
+        });
+        console.log(`[feishu-connector] sent confirmation for ${summary.messageId} with ${reply.message_id}`);
+        return;
+      }
       await markHandled(runtime.storagePaths.handledMessagesPath, summary.messageId, {
         status: 'silent_no_reply',
         sourceLabel,

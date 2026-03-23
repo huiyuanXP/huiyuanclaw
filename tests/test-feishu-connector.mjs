@@ -79,6 +79,38 @@ assert.equal(handled[0].metadata.reason, 'empty_assistant_reply');
 assert.equal(handled[0].metadata.sessionId, 'session_test_1');
 assert.equal(runtime.processingMessageIds.size, 0, 'message processing state should always be cleaned up');
 
+const confirmationTexts = [];
+sendCalls = 0;
+handled.length = 0;
+runtime.config = { silentConfirmationText: '[委屈]' };
+
+await handleMessage(runtime, { ...summary, messageId: 'msg_test_confirmation_1' }, 'test', {
+  wasMessageHandled: async () => false,
+  generateRemoteLabReply: async () => ({
+    sessionId: 'session_confirmation_test_1',
+    runId: 'run_confirmation_test_1',
+    requestId: 'request_confirmation_test_1',
+    duplicate: false,
+    replyText: '',
+  }),
+  sendFeishuText: async (_runtime, _summary, text) => {
+    sendCalls += 1;
+    confirmationTexts.push(text);
+    return { message_id: 'out_confirmation_test_1' };
+  },
+  markMessageHandled: async (_pathname, messageId, metadata) => {
+    handled.push({ messageId, metadata });
+  },
+});
+
+assert.equal(sendCalls, 1, 'empty assistant replies should send the configured confirmation text');
+assert.deepEqual(confirmationTexts, ['[委屈]']);
+assert.equal(handled.length, 1, 'confirmation sends should still be marked handled');
+assert.equal(handled[0].messageId, 'msg_test_confirmation_1');
+assert.equal(handled[0].metadata.status, 'confirmation_sent');
+assert.equal(handled[0].metadata.reason, 'empty_assistant_reply');
+assert.equal(handled[0].metadata.responseMessageId, 'out_confirmation_test_1');
+
 let reactionCalls = [];
 sendCalls = 0;
 handled.length = 0;
@@ -394,6 +426,7 @@ assert.deepEqual(loadedConfig.processingReaction, {
   emojiType: 'FINGERHEART',
   removeOnCompletion: false,
 }, 'processing reactions should default to disabled');
+assert.equal(loadedConfig.silentConfirmationText, '', 'silent confirmations should default to disabled');
 
 assert.deepEqual(normalizeProcessingReactionConfig(true), {
   enabled: true,

@@ -120,6 +120,7 @@ Notes:
     "emojiType": "FINGERHEART",
     "removeOnCompletion": false
   },
+  "silentConfirmationText": "",
   "intakePolicy": {
     "mode": "allow_all"
   }
@@ -133,6 +134,7 @@ Notes:
 - omit `sessionFolder` to use the operator's home directory by default
 - `processingReaction` lets the bot add a quick reaction on the user's message before the real reply lands; by default it uses `FINGERHEART` and stays attached after the reply as a lightweight ack marker
 - `emojiType` must be one of Feishu's reaction emoji types such as `FINGERHEART`, `GLANCE`, `THINKING`, or `SMILE`
+- `silentConfirmationText` lets the connector send a tiny text acknowledgement when the assistant would otherwise stay silent; this is useful for Feishu-style emoticon tokens like `[委屈]`
 - set `removeOnCompletion` to `true` only if you want the reaction to be temporary
 - the connector forwards mostly the rendered user message plus mention-token hints, not a large blob of transport metadata
 - `allow_all` is the simplest V0 mode; move to `whitelist` after the first validation if needed
