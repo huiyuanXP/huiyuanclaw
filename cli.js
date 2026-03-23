@@ -32,6 +32,7 @@ Usage:
   remotelab stop                     Stop all services
   remotelab restart [service]        Restart services (chat|tunnel|all)
   remotelab release                  Create, gate, and activate a release snapshot
+  remotelab guest-instance           Create isolated guest instances on this machine
   remotelab chat                     Run chat server in foreground
   remotelab api                      Call the local RemoteLab HTTP API with owner auth
   remotelab trigger                  Manage durable session triggers
@@ -74,6 +75,18 @@ switch (command) {
     const { runReleaseCommand } = await import(scriptPath('lib/release-command.mjs'));
     try {
       process.exitCode = await runReleaseCommand(args);
+    } catch (error) {
+      console.error(error.message || String(error));
+      process.exit(1);
+    }
+    break;
+  }
+
+  case 'guest-instance':
+  case 'guest-instances': {
+    const { runGuestInstanceCommand } = await import(scriptPath('lib/guest-instance-command.mjs'));
+    try {
+      process.exitCode = await runGuestInstanceCommand(args);
     } catch (error) {
       console.error(error.message || String(error));
       process.exit(1);

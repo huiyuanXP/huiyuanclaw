@@ -250,11 +250,15 @@ remotelab setup                运行交互式配置向导
 remotelab start                启动所有服务
 remotelab stop                 停止所有服务
 remotelab restart [service]    重启：chat | tunnel | all
+remotelab release              跑测试、生成 release 快照、重启并做健康检查
+remotelab guest-instance       创建带独立 config + memory 的访客实例
 remotelab chat                 前台运行 chat server（调试用）
 remotelab generate-token       生成新的访问 token
 remotelab set-password         设置用户名和密码登录
 remotelab --help               显示帮助
 ```
+
+如果你想在同一台机器上快速开一套可分享的隔离环境，可以用 `remotelab guest-instance create <name>`。它会为这个访客实例单独准备 `REMOTELAB_INSTANCE_ROOT`、独立的 launchd 服务，以及可选的 Cloudflare 子域名，同时不混入 owner 主实例的 chat history 和 memory。
 
 ## 配置项
 

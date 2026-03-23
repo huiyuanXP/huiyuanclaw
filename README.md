@@ -252,11 +252,14 @@ remotelab start                Start all services
 remotelab stop                 Stop all services
 remotelab restart [service]    Restart: chat | tunnel | all
 remotelab release              Run tests, snapshot the runtime, restart, and health-check the active release
+remotelab guest-instance       Create isolated guest instances with separate config + memory
 remotelab chat                 Run chat server in foreground (debug)
 remotelab generate-token       Generate a new access token
 remotelab set-password         Set username & password login
 remotelab --help               Show help
 ```
+
+For quick shareable sandboxes on the same machine, use `remotelab guest-instance create <name>`. It provisions a separate `REMOTELAB_INSTANCE_ROOT`, a dedicated launchd service, and an optional Cloudflare hostname without mixing chat history or memory into the owner's main instance.
 
 Production updates should go through `remotelab release` rather than live-editing the running `7690` surface. The release command snapshots the shipped runtime, restarts only after the test gate passes, and automatically restores the previous active release if the health check fails.
 
