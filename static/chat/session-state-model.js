@@ -1,7 +1,42 @@
 "use strict";
 
 (function attachRemoteLabSessionStateModel(root) {
-  const t = root.remotelabT || ((key) => key);
+  const fallbackStrings = {
+    "status.idle": "idle",
+    "status.running": "running",
+    "workflow.priority.high": "High",
+    "workflow.priority.highTitle": "Needs user attention soon.",
+    "workflow.priority.medium": "Medium",
+    "workflow.priority.mediumTitle": "Worth checking soon, but not urgent.",
+    "workflow.priority.low": "Low",
+    "workflow.priority.lowTitle": "Safe to leave for later.",
+    "workflow.status.waiting": "waiting",
+    "workflow.status.waitingTitle": "Waiting on user input",
+    "workflow.status.done": "done",
+    "workflow.status.doneTitle": "Current task complete",
+    "workflow.status.parked": "parked",
+    "workflow.status.parkedTitle": "Parked for later",
+    "workflow.status.queued": "queued",
+    "workflow.status.queuedTitle": "{count} follow-up{suffix} queued",
+    "workflow.status.compacting": "compacting",
+    "workflow.status.renaming": "renaming",
+    "workflow.status.renameFailed": "rename failed",
+    "workflow.status.renameFailedTitle": "Session rename failed",
+    "workflow.status.unread": "new",
+    "workflow.status.unreadTitle": "Updated since you last reviewed this session",
+  };
+
+  function fallbackTranslate(key, vars = {}) {
+    const template = fallbackStrings[key];
+    if (!template) return key;
+    return template.replace(/\{(\w+)\}/g, (match, token) => (
+      Object.prototype.hasOwnProperty.call(vars, token) ? String(vars[token]) : match
+    ));
+  }
+
+  const t = root.remotelabT
+    ? (key, vars) => root.remotelabT(key, vars)
+    : fallbackTranslate;
   const workflowPrioritySpecs = {
     high: {
       key: "high",
