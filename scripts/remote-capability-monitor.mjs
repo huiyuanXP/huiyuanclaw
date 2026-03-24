@@ -109,7 +109,7 @@ const SIGNALS = [
   {
     key: 'voice',
     score: 1,
-    reason: 'voice input or audio control',
+    reason: 'audio cleanup or spoken control',
     proposal: 'Voice briefings and spoken summaries for hands-busy control moments.',
     patterns: [
       /\bvoice\b/i,

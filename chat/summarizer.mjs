@@ -383,7 +383,7 @@ async function runSessionWorkflowStateSuggestion(sessionMeta, _options = {}) {
     '- If the assistant delivered the requested result or clearly closed the task, prefer "done".',
     '- If the session is paused, open-ended, or only loosely pending without needing the user right now, choose "parked".',
     '- On failures that require user intervention, prefer "waiting_user". On failures that simply stop progress without a clear ask, prefer "parked".',
-    '- Also choose the user-attention priority for the next glance at the board.',
+    '- Also choose the user-attention priority for the next glance at the session list.',
     '- Use "high" when the user should probably look soon, especially for blockers, approvals, decisions, or important next actions.',
     '- Use "medium" for meaningful open work that matters but is not urgent right now.',
     '- Use "low" for safely parked or completed work that does not deserve immediate attention.',

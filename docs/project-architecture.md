@@ -356,7 +356,7 @@ It is intentionally separate from the live session.
 
 ### 6.7 Session workflow projection
 
-Represents owner-facing session organization views such as the sidebar and board.
+Represents owner-facing session organization views such as the sidebar and session list ordering.
 
 It is not a separate durable object. It is derived from canonical session metadata plus live activity.
 
@@ -601,7 +601,7 @@ That call generates JSON describing canonical presentation metadata:
 - maybe `description`
 
 The result is written back into canonical session metadata.
-The current board is intentionally session-first: workflow organization piggybacks on canonical session metadata plus live activity instead of a separate task-board object.
+The current workflow projection is intentionally session-first: session organization piggybacks on canonical metadata plus live activity instead of a separate task-board object.
 
 ### 9.5 Context compaction and “drop tools”
 
@@ -698,7 +698,7 @@ The main chat frontend (`static/chat/`, loaded by `static/chat.js`) is responsib
 - managing pending-message recovery on refresh
 - managing inline tool/model/reasoning selectors
 - handling session archive/rename actions
-- rendering the session-first board / workflow projection
+- rendering the session-first sidebar / workflow projection
 - registering push notifications
 
 ### 10.4 Share snapshot frontend

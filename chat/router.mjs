@@ -97,12 +97,6 @@ import { broadcastAll } from './ws-clients.mjs';
 import { handlePublicRoutes } from './router-public-routes.mjs';
 import { handleAdminRoutes } from './router-admin-routes.mjs';
 import {
-  buildVoiceInputConfigSummary,
-  readVoiceInputConfig,
-  transcribeVoiceInputAudio,
-  updateVoiceInputConfig,
-} from './voice-input.mjs';
-import {
   buildFileAssetDirectUrl,
   createFileAssetUploadIntent,
   finalizeFileAssetUpload,
@@ -186,7 +180,7 @@ const staticMimeTypesByExtension = {
 
 const staticDirResolved = resolve(staticDir);
 const MESSAGE_SUBMISSION_MAX_BYTES = 256 * 1024 * 1024;
-const VOICE_INPUT_UPLOAD_MAX_BYTES = 32 * 1024 * 1024;
+const VOICE_CLEANUP_PAYLOAD_MAX_BYTES = 256 * 1024;
 const uploadedMediaMimeTypes = {
   gif: 'image/gif',
   jpeg: 'image/jpeg',
@@ -299,57 +293,25 @@ async function readSessionMessagePayload(req, pathname) {
   };
 }
 
-async function readVoiceInputPayload(req, pathname) {
+async function readVoiceCleanupPayload(req) {
   const contentType = String(req.headers['content-type'] || '').toLowerCase();
-  if (!contentType.startsWith('multipart/form-data')) {
-    const body = await readBody(req, VOICE_INPUT_UPLOAD_MAX_BYTES);
-    const payload = JSON.parse(body);
-    const audio = payload?.audio && typeof payload.audio === 'object'
-      ? {
-          buffer: Buffer.isBuffer(payload.audio.buffer)
-            ? payload.audio.buffer
-            : Buffer.from(typeof payload.audio.data === 'string' ? payload.audio.data : '', 'base64'),
-          mimeType: typeof payload.audio.mimeType === 'string' ? payload.audio.mimeType : '',
-          originalName: typeof payload.audio.originalName === 'string' ? payload.audio.originalName : '',
-        }
-      : null;
-    return {
-      audio,
-      language: typeof payload?.language === 'string' ? payload.language.trim() : '',
-      persistAudio: payload?.persistAudio !== false,
-      rewriteWithContext: payload?.rewriteWithContext === true,
-      providedTranscript: typeof payload?.providedTranscript === 'string' ? payload.providedTranscript.trim() : '',
-    };
+  if (contentType.startsWith('multipart/form-data')) {
+    const error = new Error('Audio voice input has been removed. Send `providedTranscript` JSON instead.');
+    error.statusCode = 410;
+    throw error;
   }
 
-  const contentLength = getMultipartBodyLength(req);
-  if (contentLength !== null && contentLength > VOICE_INPUT_UPLOAD_MAX_BYTES) {
-    throw bodyTooLargeError();
-  }
-
-  const formRequest = new Request(`http://127.0.0.1${pathname}`, {
-    method: req.method,
-    headers: req.headers,
-    body: req,
-    duplex: 'half',
-  });
-  const formData = await formRequest.formData();
-  let audio = null;
-  const audioEntry = formData.get('audio');
-  if (audioEntry && typeof audioEntry.arrayBuffer === 'function') {
-    audio = {
-      buffer: Buffer.from(await audioEntry.arrayBuffer()),
-      mimeType: typeof audioEntry.type === 'string' ? audioEntry.type : '',
-      originalName: typeof audioEntry.name === 'string' ? audioEntry.name : '',
-    };
+  const body = await readBody(req, VOICE_CLEANUP_PAYLOAD_MAX_BYTES);
+  const payload = body ? JSON.parse(body) : {};
+  if (payload?.audio) {
+    const error = new Error('Audio voice input has been removed. Send `providedTranscript` JSON instead.');
+    error.statusCode = 410;
+    throw error;
   }
 
   return {
-    audio,
-    language: parseFormString(formData.get('language')),
-    persistAudio: parseFormString(formData.get('persistAudio')) !== 'false',
-    rewriteWithContext: parseFormString(formData.get('rewriteWithContext')) === 'true',
-    providedTranscript: parseFormString(formData.get('providedTranscript')),
+    rewriteWithContext: payload?.rewriteWithContext === true,
+    providedTranscript: typeof payload?.providedTranscript === 'string' ? payload.providedTranscript.trim() : '',
   };
 }
 
@@ -1395,43 +1357,6 @@ export async function handleRequest(req, res) {
     return;
   }
 
-  if (pathname === '/api/voice-input/config' && req.method === 'GET') {
-    const config = await readVoiceInputConfig();
-    writeJson(res, 200, { config: buildVoiceInputConfigSummary(config, authSession) });
-    return;
-  }
-
-  if (pathname === '/api/voice-input/config' && req.method === 'PATCH') {
-    if (authSession?.role !== 'owner') {
-      writeJson(res, 403, { error: 'Owner access required' });
-      return;
-    }
-    let payload = {};
-    try {
-      const body = await readBody(req, 32768);
-      payload = body ? JSON.parse(body) : {};
-    } catch {
-      writeJson(res, 400, { error: 'Invalid request body' });
-      return;
-    }
-
-    const patch = {
-      ...(Object.prototype.hasOwnProperty.call(payload || {}, 'enabled') ? { enabled: payload.enabled !== false } : {}),
-      volcengine: {
-        ...(Object.prototype.hasOwnProperty.call(payload || {}, 'appId') ? { appId: typeof payload.appId === 'string' ? payload.appId : '' } : {}),
-        ...(Object.prototype.hasOwnProperty.call(payload || {}, 'accessKey') ? { accessKey: typeof payload.accessKey === 'string' ? payload.accessKey : '' } : {}),
-        ...(Object.prototype.hasOwnProperty.call(payload || {}, 'endpoint') ? { endpoint: typeof payload.endpoint === 'string' ? payload.endpoint : '' } : {}),
-        ...(Object.prototype.hasOwnProperty.call(payload || {}, 'streamEndpoint') ? { streamEndpoint: typeof payload.streamEndpoint === 'string' ? payload.streamEndpoint : '' } : {}),
-        ...(Object.prototype.hasOwnProperty.call(payload || {}, 'resourceId') ? { resourceId: typeof payload.resourceId === 'string' ? payload.resourceId : '' } : {}),
-        ...(Object.prototype.hasOwnProperty.call(payload || {}, 'language') ? { language: typeof payload.language === 'string' ? payload.language : '' } : {}),
-        ...(Object.prototype.hasOwnProperty.call(payload || {}, 'modelLabel') ? { modelLabel: typeof payload.modelLabel === 'string' ? payload.modelLabel : '' } : {}),
-      },
-    };
-    const next = await updateVoiceInputConfig(patch);
-    writeJson(res, 200, { config: buildVoiceInputConfigSummary(next, authSession) });
-    return;
-  }
-
   if (sessionGetRoute?.kind === 'list' || sessionGetRoute?.kind === 'archived-list') {
     const includeVisitor = authSession?.role === 'owner'
       && ['1', 'true', 'yes'].includes(String(parsedUrl.query.includeVisitor || '').toLowerCase());
@@ -1827,75 +1752,47 @@ export async function handleRequest(req, res) {
       if (!requireSessionAccess(res, authSession, sessionId)) return;
       let payload;
       try {
-        payload = await readVoiceInputPayload(req, pathname);
+        payload = await readVoiceCleanupPayload(req);
       } catch (error) {
-        writeJson(res, error.code === 'BODY_TOO_LARGE' ? 413 : 400, { error: error.code === 'BODY_TOO_LARGE' ? 'Request body too large' : 'Bad request' });
+        writeJson(
+          res,
+          error.code === 'BODY_TOO_LARGE' ? 413 : (error?.statusCode || 400),
+          { error: error.code === 'BODY_TOO_LARGE' ? 'Request body too large' : (error?.message || 'Bad request') },
+        );
         return;
       }
 
       const providedTranscript = typeof payload?.providedTranscript === 'string'
         ? payload.providedTranscript.trim()
         : '';
-      const hasAudio = !!payload?.audio && Buffer.isBuffer(payload.audio.buffer) && payload.audio.buffer.length > 0;
-
-      if (!hasAudio && !providedTranscript) {
-        writeJson(res, 400, { error: 'audio is required' });
-        return;
-      }
-
-      if (!hasAudio && payload.persistAudio !== false) {
-        writeJson(res, 400, { error: 'audio is required when persistAudio is true' });
+      if (!providedTranscript) {
+        writeJson(res, 400, { error: 'providedTranscript is required' });
         return;
       }
 
       try {
-        const voiceConfig = await readVoiceInputConfig();
-        const transcription = providedTranscript
-          ? {
-              transcript: providedTranscript,
-              durationMs: 0,
-              language: payload.language || voiceConfig.volcengine.language,
-              modelLabel: voiceConfig.volcengine.modelLabel,
-            }
-          : await transcribeVoiceInputAudio(payload.audio, {
-              language: payload.language,
-            });
-        let transcript = transcription.transcript;
+        let transcript = providedTranscript;
         let rewriteApplied = false;
         if (payload.rewriteWithContext && transcript) {
           try {
             const rewritten = await rewriteVoiceTranscriptForSession(sessionId, transcript, {
-              language: transcription.language,
+              language: 'zh-CN',
             });
             if (typeof rewritten?.transcript === 'string' && rewritten.transcript.trim()) {
               rewriteApplied = rewritten.changed === true;
               transcript = rewritten.transcript.trim();
             }
           } catch (error) {
-            console.warn(`[voice-input] transcript rewrite failed for ${sessionId.slice(0, 8)}: ${error?.message || error}`);
+            console.warn(`[voice-cleanup] transcript rewrite failed for ${sessionId.slice(0, 8)}: ${error?.message || error}`);
           }
         }
-        const savedAttachment = payload.persistAudio === false || !hasAudio
-          ? null
-          : (await saveAttachments([payload.audio]))[0] || null;
         writeJson(res, 200, {
           transcript,
-          ...(rewriteApplied ? { rawTranscript: transcription.transcript } : {}),
+          ...(rewriteApplied ? { rawTranscript: providedTranscript } : {}),
           rewriteApplied,
-          durationMs: transcription.durationMs,
-          language: transcription.language,
-          modelLabel: transcription.modelLabel,
-          attachment: savedAttachment
-            ? {
-                filename: savedAttachment.filename,
-                ...(savedAttachment.originalName ? { originalName: savedAttachment.originalName } : {}),
-                mimeType: savedAttachment.mimeType,
-              }
-            : null,
-          config: buildVoiceInputConfigSummary(voiceConfig, authSession),
         });
       } catch (error) {
-        writeJson(res, error?.statusCode || 502, { error: error?.message || 'Voice input transcription failed' });
+        writeJson(res, error?.statusCode || 400, { error: error?.message || 'Voice cleanup failed' });
       }
       return;
     }

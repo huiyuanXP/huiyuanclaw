@@ -128,12 +128,6 @@
   max-height: calc(1.55em * 10);
   overflow-y: auto;
 }
-.input-row textarea.is-voice-live {
-  text-decoration-line: underline;
-  text-decoration-style: wavy;
-  text-decoration-color: var(--accent);
-  text-decoration-thickness: 1.4px;
-}
 .input-row textarea::placeholder { color: var(--text-muted); }
 .composer-pending-state {
   display: none;
@@ -155,40 +149,6 @@
   background: var(--accent);
   opacity: 0.8;
   flex-shrink: 0;
-}
-.voice-input-status {
-  display: none;
-  padding: 0 14px 10px;
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.45;
-}
-.voice-input-status.visible {
-  display: block;
-}
-.voice-input-status.is-error {
-  color: var(--error);
-}
-.composer-voice-btn {
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  border: 1px solid var(--border);
-  background: var(--bg-secondary);
-  color: var(--text-secondary);
-  font-size: 16px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-.composer-voice-btn:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-}
-.composer-voice-btn:active {
-  background: var(--bg-tertiary);
 }
 .input-footer {
   display: flex;

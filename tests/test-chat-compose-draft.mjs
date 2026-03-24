@@ -184,16 +184,10 @@ function createContext({
     sessionTemplateSelect: makeEventTarget(),
     saveTemplateBtn: makeEventTarget(),
     tabSessions: makeEventTarget(),
-    tabBoard: makeEventTarget(),
     tabSettings: makeEventTarget(),
     sessionListFooter: makeEventTarget(),
     sortSessionListBtn: makeEventTarget(),
     newSessionBtn: makeEventTarget(),
-    boardPanel: {
-      classList: {
-        toggle() {},
-      },
-    },
     settingsPanel: {
       classList: {
         toggle() {},

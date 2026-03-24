@@ -252,12 +252,10 @@ const sessionTemplateRow = document.getElementById("sessionTemplateRow");
 const sessionTemplateSelect = document.getElementById("sessionTemplateSelect");
 const sessionTemplateStatus = document.getElementById("sessionTemplateStatus");
 const tabSessions = document.getElementById("tabSessions");
-const tabBoard = document.getElementById("tabBoard");
 const tabSettings = document.getElementById("tabSettings");
 const sourceFilterSelect = document.getElementById("sourceFilterSelect");
 const sessionAppFilterSelect = document.getElementById("sessionAppFilterSelect");
 const userFilterSelect = document.getElementById("userFilterSelect");
-const boardPanel = document.getElementById("boardPanel");
 const settingsPanel = document.getElementById("settingsPanel");
 const inputArea = document.getElementById("inputArea");
 const composerPendingState = document.getElementById("composerPendingState");
@@ -316,7 +314,6 @@ if (!sessionStateModel) {
 }
 
 function normalizeSidebarTab(tab) {
-  if (tab === "board" || tab === "progress") return "board";
   if (tab === "settings") return "settings";
   return "sessions";
 }

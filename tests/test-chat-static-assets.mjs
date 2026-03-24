@@ -180,7 +180,10 @@ async function main() {
     assert.match(page.text, /<meta name="color-scheme" content="light dark">/);
     assert.match(page.text, /<meta name="theme-color" content="#ffffff" media="\(prefers-color-scheme: light\)">/);
     assert.match(page.text, /<meta name="theme-color" content="#1e1e1e" media="\(prefers-color-scheme: dark\)">/);
-    assert.match(page.text, /window\.__REMOTELAB_BOOTSTRAP__ = \{"auth":\{"role":"owner"\}\};/);
+    const bootstrapMatch = page.text.match(/window\.__REMOTELAB_BOOTSTRAP__ = ([^;]+);/);
+    assert.ok(bootstrapMatch, 'chat page should inline bootstrap payload');
+    const bootstrap = JSON.parse(bootstrapMatch[1]);
+    assert.deepEqual(bootstrap.auth, { role: 'owner' }, 'bootstrap payload should include owner auth');
     assert.match(page.text, /<script src="\/chat\/bootstrap\.js(?:\?v=[^"]*)?"/);
     assert.match(page.text, /<script src="\/chat\/bootstrap-session-catalog\.js(?:\?v=[^"]*)?"/);
     assert.match(page.text, /<script src="\/chat\/session-http-helpers\.js(?:\?v=[^"]*)?"/);
@@ -196,13 +199,21 @@ async function main() {
     assert.match(page.text, /<script src="\/chat\/settings-ui\.js(?:\?v=[^"]*)?"/);
     assert.match(page.text, /<script src="\/chat\/sidebar-ui\.js(?:\?v=[^"]*)?"/);
     assert.match(page.text, /<script src="\/chat\/compose\.js(?:\?v=[^"]*)?"/);
-    assert.match(page.text, /<script src="\/chat\/voice-input\.js(?:\?v=[^"]*)?"/);
+    assert.doesNotMatch(page.text, /<script src="\/chat\/voice-input\.js(?:\?v=[^"]*)?"/);
 
     const visitorPage = await request(port, 'GET', '/?visitor=1', null, { Cookie: visitorCookie });
     assert.equal(visitorPage.status, 200, 'chat page should also render for visitor session');
-    assert.match(
-      visitorPage.text,
-      /window\.__REMOTELAB_BOOTSTRAP__ = \{"auth":\{"role":"visitor","appId":"shared-app","sessionId":"visitor-session-id","visitorId":"visitor-123"\}\};/,
+    const visitorBootstrapMatch = visitorPage.text.match(/window\.__REMOTELAB_BOOTSTRAP__ = ([^;]+);/);
+    assert.ok(visitorBootstrapMatch, 'visitor page should inline bootstrap payload');
+    const visitorBootstrap = JSON.parse(visitorBootstrapMatch[1]);
+    assert.deepEqual(
+      visitorBootstrap.auth,
+      {
+        role: 'visitor',
+        appId: 'shared-app',
+        sessionId: 'visitor-session-id',
+        visitorId: 'visitor-123',
+      },
       'visitor page should inline auth bootstrap data from the server render',
     );
     assert.match(page.text, /<script src="\/chat\/init\.js(?:\?v=[^"]*)?"/);
@@ -212,8 +223,8 @@ async function main() {
     assert.match(page.text, /id="userFilterSelect"/);
     assert.match(page.text, /id="sortSessionListBtn"/);
     assert.match(page.text, /id="settingsAppsList"/);
-    assert.match(page.text, /id="tabBoard"/);
-    assert.match(page.text, /id="boardPanel"/);
+    assert.doesNotMatch(page.text, /id="tabBoard"/);
+    assert.doesNotMatch(page.text, /id="boardPanel"/);
     assert.match(page.text, /id="settingsUsersList"/);
     assert.match(page.text, /id="newUserNameInput"/);
     assert.match(page.text, /id="createUserBtn"/);
@@ -222,11 +233,11 @@ async function main() {
     assert.match(page.text, /id="newAppWelcomeInput"/);
     assert.match(page.text, /id="newAppSystemPromptInput"/);
     assert.match(page.text, /id="createAppConfigBtn"/);
-    assert.match(page.text, /id="voiceSettingsMount"/);
-    assert.match(page.text, /id="voiceInputBtn"/);
-    assert.match(page.text, /id="voiceFileInput"/);
-    assert.match(page.text, /id="voiceInputBtn"[\s\S]*id="sendBtn"/, 'voice button should render immediately before send');
-    assert.match(page.text, /id="voiceInputStatus"/);
+    assert.doesNotMatch(page.text, /id="voiceSettingsMount"/);
+    assert.doesNotMatch(page.text, /id="voiceInputBtn"/);
+    assert.doesNotMatch(page.text, /id="voiceFileInput"/);
+    assert.match(page.text, /id="msgInput"[\s\S]*id="sendBtn"/, 'send button should render immediately after the composer textarea');
+    assert.doesNotMatch(page.text, /id="voiceInputStatus"/);
     assert.match(page.text, /id="tabSettings"/);
     assert.doesNotMatch(page.text, /id="collapseBtn"/, 'desktop sidebar should no longer expose a collapse control');
     assert.doesNotMatch(page.text, /id="tabProgress"/);
@@ -273,9 +284,6 @@ async function main() {
     assert.match(combinedChatStyles, /--app-height:\s*100dvh/);
     assert.match(combinedChatStyles, /--keyboard-inset-height:\s*0px/);
     assert.match(combinedChatStyles, /--sidebar-width-expanded:\s*min\(80vw, calc\(100vw - 240px\)\);/);
-    assert.match(combinedChatStyles, /body\.board-tab-expanded\s*\{[\s\S]*?--sidebar-width:\s*var\(--sidebar-width-expanded\);/, 'desktop board hover mode should widen the sidebar via CSS variables');
-    assert.match(combinedChatStyles, /\.board-column-attention\s*\{[\s\S]*?border-radius:\s*999px;/, 'board columns should surface a compact high-priority count');
-    assert.match(combinedChatStyles, /\.board-priority-pill\s*\{[\s\S]*?border-radius:\s*999px;/, 'board cards should render compact priority pills');
     assert.match(combinedChatStyles, /\.app-shell\s*\{[\s\S]*?position:\s*fixed;[\s\S]*?grid-template-rows:\s*auto minmax\(0, 1fr\);/, 'app shell should reserve a fixed header row and a flexible body row');
     assert.match(combinedChatStyles, /\.app-container\s*\{[\s\S]*?min-height:\s*0;/);
     assert.match(combinedChatStyles, /\.chat-area\s*\{[\s\S]*?grid-template-rows:\s*minmax\(0, 1fr\) auto auto;[\s\S]*?min-height:\s*0;/, 'chat area should model content, queued panel, and composer as explicit rows');
@@ -523,12 +531,7 @@ async function main() {
     assert.match(composeAsset.text, /window\.RemoteLabLayout\?\.subscribe/);
 
     const voiceInputAsset = await request(port, 'GET', '/chat/voice-input.js');
-    assert.equal(voiceInputAsset.status, 200, 'voice input asset should load');
-    assert.match(voiceInputAsset.text, /function loadVoiceInputConfig\(/);
-    assert.match(voiceInputAsset.text, /voice-transcriptions/);
-    assert.match(voiceInputAsset.text, /voiceInputBtn/);
-    assert.match(voiceInputAsset.text, /rewriteWithContext/);
-    assert.match(voiceInputAsset.text, /ws\/voice-input/);
+    assert.equal(voiceInputAsset.status, 404, 'removed voice input asset should no longer be served');
 
     const initAsset = await request(port, 'GET', '/chat/init.js');
     assert.equal(initAsset.status, 200, 'init asset should load');

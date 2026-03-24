@@ -146,7 +146,7 @@ Keep session continuity distinct from scope and task memory.
   - REMOTELAB_CHAT_BASE_URL — local RemoteLab API base URL (usually http://127.0.0.1:${CHAT_PORT})
   - REMOTELAB_PROJECT_ROOT — local RemoteLab project root for fallback commands
 - The spawn command defaults to REMOTELAB_SESSION_ID, so you usually do not need to pass --source-session explicitly.
-- RemoteLab may append a lightweight source-session note, but do not rely on heavy parent/child UI; normal session-list and board surfaces are the primary way spawned sessions show up.
+- RemoteLab may append a lightweight source-session note, but do not rely on heavy parent/child UI; normal session-list and sidebar surfaces are the primary way spawned sessions show up.
 - Use this capability judiciously: split work when it reduces context pressure or enables real parallelism, not for every trivial substep.
 
 ### User-Level Memory (private, machine-specific)

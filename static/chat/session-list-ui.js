@@ -1,6 +1,5 @@
 // ---- Session list ----
 function renderSessionList() {
-  renderSessionBoard();
   sessionList.innerHTML = "";
   const pinnedSessions = getVisiblePinnedSessions();
   const visibleSessions = getVisibleActiveSessions();

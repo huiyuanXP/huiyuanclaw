@@ -145,16 +145,6 @@ function buildSessionMetaParts(session) {
   return parts;
 }
 
-function buildBoardCardMetaParts(session) {
-  const parts = [];
-  parts.push(...renderSessionScopeContext(session));
-  const reviewHtml = renderSessionStatusHtml(getSessionReviewStatusInfo(session));
-  if (reviewHtml) parts.push(reviewHtml);
-  const statusHtml = renderSessionStatusHtml(getSessionMetaStatusInfo(session));
-  if (statusHtml) parts.push(statusHtml);
-  return parts;
-}
-
 function renderSessionScopeContext(session) {
   const parts = [];
   const sourceName = typeof getEffectiveSessionSourceName === "function"
@@ -225,116 +215,6 @@ function renderSessionStatusHtml(statusInfo) {
   return `<span class="${statusInfo.className}"${title}>● ${esc(statusInfo.label)}</span>`;
 }
 
-function formatBoardTimestampValue(stamp) {
-  const parsed = new Date(stamp || "").getTime();
-  if (!Number.isFinite(parsed)) return "";
-  return messageTimeFormatter.format(parsed);
-}
-
-function formatBoardSessionTimestamp(session) {
-  const stamp = session?.lastEventAt || session?.updatedAt || session?.created || "";
-  return formatBoardTimestampValue(stamp);
-}
-
-function renderBoardPriorityPill(priorityInfo) {
-  if (!priorityInfo?.label) return "";
-  const title = priorityInfo.title ? ` title="${esc(priorityInfo.title)}"` : "";
-  const className = priorityInfo.className ? ` ${priorityInfo.className}` : "";
-  return `<span class="board-priority-pill${className}"${title}>${esc(priorityInfo.label)}</span>`;
-}
-
-function createBoardSessionCard(session) {
-  const priorityInfo = getSessionBoardPriority(session);
-  const card = document.createElement("div");
-  card.className = "board-card"
-    + (priorityInfo?.className ? ` ${priorityInfo.className}` : "")
-    + (session.id === currentSessionId ? " active" : "");
-
-  const displayName = getSessionDisplayName(session);
-  const metaParts = buildBoardCardMetaParts(session);
-
-  const description = typeof session?.description === "string"
-    ? session.description.trim()
-    : "";
-  const timestamp = formatBoardSessionTimestamp(session);
-
-  card.innerHTML = `
-    <div class="board-card-topline">
-      ${renderBoardPriorityPill(priorityInfo)}
-      ${timestamp ? `<div class="board-card-time">Updated ${esc(timestamp)}</div>` : ""}
-    </div>
-    <div class="board-card-title">${session.pinned ? `<span class="session-pin-badge" title="Pinned">${renderUiIcon("pinned")}</span>` : ""}${esc(displayName)}</div>
-    ${metaParts.length > 0 ? `<div class="board-card-meta">${metaParts.join(" · ")}</div>` : ""}
-    ${description ? `<div class="board-card-description">${esc(description)}</div>` : ""}`;
-
-  card.addEventListener("click", () => {
-    attachSession(session.id, session);
-    if (!isDesktop) closeSidebarFn();
-  });
-
-  return card;
-}
-
-function createSessionBoardScroller(sessionList) {
-  const scroller = document.createElement("div");
-  scroller.className = "board-scroller";
-
-  const visibleSessions = Array.isArray(sessionList) ? sessionList : [];
-  const columns = getSessionBoardColumns(visibleSessions);
-  const grouped = new Map(columns.map((column) => [column.key, {
-    column,
-    sessions: [],
-  }]));
-
-  for (const session of visibleSessions) {
-    const boardColumn = getSessionBoardColumn(session, visibleSessions);
-    const target = grouped.get(boardColumn.key) || grouped.get(columns[0]?.key);
-    target?.sessions.push(session);
-  }
-
-  for (const { column, sessions: columnSessions } of grouped.values()) {
-    columnSessions.sort(compareBoardSessions);
-    const highPriorityCount = columnSessions.filter((session) => getSessionBoardPriority(session)?.key === "high").length;
-    const columnEl = document.createElement("div");
-    columnEl.className = "board-column";
-    columnEl.dataset.column = column.key;
-
-    const header = document.createElement("div");
-    header.className = "board-column-header";
-    header.innerHTML = `
-      <span class="board-column-dot"></span>
-      <span class="board-column-title" title="${esc(column.title || column.label)}">${esc(column.label)}</span>
-      ${highPriorityCount > 0 ? `<span class="board-column-attention">${highPriorityCount} high</span>` : ""}
-      <span class="board-column-count">${columnSessions.length}</span>`;
-
-    const body = document.createElement("div");
-    body.className = "board-column-body";
-    if (columnSessions.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "board-card-empty";
-      empty.textContent = column.emptyText || "No sessions";
-      body.appendChild(empty);
-    } else {
-      for (const session of columnSessions) {
-        body.appendChild(createBoardSessionCard(session));
-      }
-    }
-
-    columnEl.appendChild(header);
-    columnEl.appendChild(body);
-    scroller.appendChild(columnEl);
-  }
-
-  return scroller;
-}
-
-function renderSessionBoard() {
-  if (!boardPanel) return;
-  boardPanel.innerHTML = "";
-  const visibleSessions = getActiveSessions().filter((session) => matchesCurrentFilters(session));
-  boardPanel.appendChild(createSessionBoardScroller(visibleSessions));
-}
-
 function createActiveSessionItem(session) {
   const statusInfo = getSessionMetaStatusInfo(session);
   const completeRead = isSessionCompleteAndReviewed(session);
@@ -387,4 +267,3 @@ function createActiveSessionItem(session) {
 
   return div;
 }
-

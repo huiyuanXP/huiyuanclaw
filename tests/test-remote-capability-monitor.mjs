@@ -22,7 +22,7 @@ const atomFixture = `<?xml version="1.0" encoding="UTF-8"?>
     <updated>2026-03-10T00:43:03Z</updated>
     <link rel="alternate" type="text/html" href="https://github.com/anthropics/claude-code/releases/tag/v2.1.72"/>
     <title>v2.1.72</title>
-    <content type="html">&lt;ul&gt;&lt;li&gt;Added CLAUDE_CODE_DISABLE_CRON environment variable to immediately stop scheduled cron jobs mid-session&lt;/li&gt;&lt;li&gt;Improved voice input transcription accuracy for repo names and common dev terms&lt;/li&gt;&lt;li&gt;Reduced false-positive bash permission prompts&lt;/li&gt;&lt;/ul&gt;</content>
+    <content type="html">&lt;ul&gt;&lt;li&gt;Added CLAUDE_CODE_DISABLE_CRON environment variable to immediately stop scheduled cron jobs mid-session&lt;/li&gt;&lt;li&gt;Improved transcript cleanup accuracy for repo names and common dev terms&lt;/li&gt;&lt;li&gt;Reduced false-positive bash permission prompts&lt;/li&gt;&lt;/ul&gt;</content>
   </entry>
 </feed>`;
 

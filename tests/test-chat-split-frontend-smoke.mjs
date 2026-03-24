@@ -18,7 +18,6 @@ const filesToParse = [
   join(repoRoot, 'static', 'chat', 'settings-ui.js'),
   join(repoRoot, 'static', 'chat', 'sidebar-ui.js'),
   join(repoRoot, 'static', 'chat', 'compose.js'),
-  join(repoRoot, 'static', 'chat', 'voice-input.js'),
 ];
 
 for (const filePath of filesToParse) {
@@ -329,7 +328,6 @@ const orderedFiles = [
   'settings-ui.js',
   'sidebar-ui.js',
   'compose.js',
-  'voice-input.js',
 ];
 
 for (const fileName of orderedFiles) {
