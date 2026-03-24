@@ -129,12 +129,12 @@ try {
     assert.equal(
       Object.prototype.hasOwnProperty.call(list.json || {}, 'board'),
       false,
-      'default session list should omit board layout data',
+      'default session list should omit legacy layout fields',
     );
     assert.equal(
       Object.prototype.hasOwnProperty.call(list.json || {}, 'taskBoard'),
       false,
-      'default session list should omit task board state',
+      'default session list should omit legacy task-view state',
     );
     const listSession = (list.json.sessions || []).find((entry) => entry.id === sessionId);
     assert.ok(listSession, 'default session list should include the created session payload');
@@ -145,12 +145,12 @@ try {
     assert.equal(
       Object.prototype.hasOwnProperty.call(refs.json || {}, 'board'),
       false,
-      'refs-only session list should omit board layout data',
+      'refs-only session list should omit legacy layout fields',
     );
     assert.equal(
       Object.prototype.hasOwnProperty.call(refs.json || {}, 'taskBoard'),
       false,
-      'refs-only session list should omit task board state',
+      'refs-only session list should omit legacy task-view state',
     );
     const ref = (refs.json.sessionRefs || []).find((entry) => entry.id === sessionId);
     assert.ok(ref, 'refs-only session list should include the created session ref');
@@ -162,12 +162,12 @@ try {
     assert.equal(
       Object.prototype.hasOwnProperty.call(summary.json?.session || {}, 'board'),
       false,
-      'summary route should omit board metadata',
+      'summary route should omit legacy layout metadata',
     );
     assert.equal(
       Object.prototype.hasOwnProperty.call(summary.json?.session || {}, 'task'),
       false,
-      'summary route should omit task board metadata',
+      'summary route should omit legacy task metadata',
     );
     assert.equal(
       Object.prototype.hasOwnProperty.call(summary.json.session, 'queuedMessages'),
@@ -180,12 +180,12 @@ try {
     assert.equal(
       Object.prototype.hasOwnProperty.call(detail.json?.session || {}, 'board'),
       false,
-      'detail route should omit board metadata',
+      'detail route should omit legacy layout metadata',
     );
     assert.equal(
       Object.prototype.hasOwnProperty.call(detail.json?.session || {}, 'task'),
       false,
-      'detail route should omit task board metadata',
+      'detail route should omit legacy task metadata',
     );
     assert.equal(Array.isArray(detail.json.session.queuedMessages), true, 'detail route should keep queuedMessages for the attached session view');
 

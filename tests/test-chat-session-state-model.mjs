@@ -103,23 +103,6 @@ const renameFailedStatus = model.getSessionStatusSummary(renameFailedSession);
 assert.equal(renameFailedStatus.primary.key, 'rename-failed');
 assert.equal(renameFailedStatus.primary.title, 'rename crashed');
 
-assert.equal(
-  JSON.stringify(Array.from(model.getBoardColumns(null, [runningSession, queuedSession, makeSession({ workflowState: 'waiting_user' })]), (column) => column.key)),
-  JSON.stringify(['active_now', 'waiting_user']),
-  'board columns should be derived from live session state in left-to-right order',
-);
-
-const fallbackBoardColumn = model.getSessionBoardColumn(makeSession(), null, []);
-assert.equal(fallbackBoardColumn.key, 'open');
-
-const waitingBoardColumn = model.getSessionBoardColumn(
-  makeSession({
-    workflowState: 'waiting_user',
-  }),
-  null,
-);
-assert.equal(waitingBoardColumn.key, 'waiting_user');
-
 assert.equal(model.normalizeSessionWorkflowPriority('P1'), 'high');
 assert.equal(model.normalizeSessionWorkflowPriority('normal'), 'medium');
 assert.equal(model.normalizeSessionWorkflowPriority('later'), 'low');
@@ -142,11 +125,11 @@ assert.equal(
   'unknown workflow states should not synthesize fake status badges',
 );
 
-const explicitHighPriority = model.getSessionBoardPriority(makeSession({ workflowPriority: 'urgent' }));
+const explicitHighPriority = model.getSessionWorkflowPriorityInfo(makeSession({ workflowPriority: 'urgent' }));
 assert.equal(explicitHighPriority.key, 'high');
 assert.equal(explicitHighPriority.rank, 3);
 
-const workflowPriorityFallback = model.getSessionBoardPriority(
+const workflowPriorityFallback = model.getSessionWorkflowPriorityInfo(
   makeSession({ workflowPriority: 'done-later' }),
 );
 assert.equal(workflowPriorityFallback.key, 'medium', 'unknown priority strings should fall back to medium attention');
@@ -181,7 +164,7 @@ const runningUnreadCandidate = makeSession({
 assert.equal(model.hasSessionUnreadUpdate(runningUnreadCandidate), false, 'running sessions should not constantly become unread while streaming');
 
 assert.ok(
-  model.compareBoardSessions(
+  model.compareSessionListSessions(
     makeSession({ workflowPriority: 'high', updatedAt: '2026-03-14T12:00:00.000Z' }),
     makeSession({ workflowPriority: 'low', updatedAt: '2026-03-14T13:00:00.000Z' }),
   ) < 0,
@@ -189,7 +172,7 @@ assert.ok(
 );
 
 assert.ok(
-  model.compareBoardSessions(
+  model.compareSessionListSessions(
     makeSession({ pinned: true, workflowPriority: 'medium', updatedAt: '2026-03-14T12:00:00.000Z' }),
     makeSession({ workflowPriority: 'medium', updatedAt: '2026-03-14T13:00:00.000Z' }),
   ) < 0,
@@ -197,7 +180,7 @@ assert.ok(
 );
 
 assert.ok(
-  model.compareBoardSessions(
+  model.compareSessionListSessions(
     makeSession({ workflowPriority: 'medium', updatedAt: '2026-03-14T12:00:00.000Z' }),
     makeSession({ workflowPriority: 'medium', updatedAt: '2026-03-14T13:00:00.000Z' }),
   ) > 0,

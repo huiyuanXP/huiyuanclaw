@@ -1,66 +1,26 @@
 "use strict";
 
 (function attachRemoteLabSessionStateModel(root) {
-  const defaultBoardColumn = {
-    key: "open",
-    label: "Open",
-    title: "Sessions that are ready for more work.",
-    emptyText: "No open sessions",
-    order: 20,
-  };
-
-  const sessionBoardColumnSpecs = [
-    {
-      key: "active_now",
-      label: "Active",
-      title: "Running, queued, or compacting sessions.",
-      emptyText: "No active sessions",
-      order: 0,
-    },
-    {
-      key: "waiting_user",
-      label: "Waiting",
-      title: "Sessions blocked on your input or approval.",
-      emptyText: "Nothing waiting on you",
-      order: 10,
-    },
-    { ...defaultBoardColumn },
-    {
-      key: "parked",
-      label: "Parked",
-      title: "Sessions intentionally paused for later.",
-      emptyText: "Nothing parked",
-      order: 30,
-    },
-    {
-      key: "done",
-      label: "Done",
-      title: "Completed sessions kept for reference.",
-      emptyText: "No completed sessions",
-      order: 40,
-    },
-  ];
-
   const workflowPrioritySpecs = {
     high: {
       key: "high",
       label: "High",
       rank: 3,
-      className: "board-priority-high",
+      className: "workflow-priority-high",
       title: "Needs user attention soon.",
     },
     medium: {
       key: "medium",
       label: "Medium",
       rank: 2,
-      className: "board-priority-medium",
+      className: "workflow-priority-medium",
       title: "Worth checking soon, but not urgent.",
     },
     low: {
       key: "low",
       label: "Low",
       rank: 1,
-      className: "board-priority-low",
+      className: "workflow-priority-low",
       title: "Safe to leave for later.",
     },
   };
@@ -194,14 +154,6 @@
     return Number.isInteger(parsed) && parsed > 0 ? parsed : 0;
   }
 
-  function cloneBoardColumn(column) {
-    return { ...(column || defaultBoardColumn) };
-  }
-
-  function getBoardColumnSpec(key) {
-    return sessionBoardColumnSpecs.find((column) => column.key === key) || defaultBoardColumn;
-  }
-
   function normalizeSessionActivity(session) {
     const raw = session?.activity || {};
     const rawRunState = raw?.run?.state;
@@ -249,23 +201,6 @@
     return activity.run.state === "running"
       || activity.queue.state === "queued"
       || activity.compact.state === "pending";
-  }
-
-  function deriveSessionBoardColumnKey(session) {
-    const activity = normalizeSessionActivity(session);
-    if (
-      activity.run.state === "running"
-      || activity.queue.state === "queued"
-      || activity.compact.state === "pending"
-    ) {
-      return "active_now";
-    }
-
-    const workflowState = normalizeSessionWorkflowState(session?.workflowState || "");
-    if (workflowState === "waiting_user") return "waiting_user";
-    if (workflowState === "done") return "done";
-    if (workflowState === "parked") return "parked";
-    return defaultBoardColumn.key;
   }
 
   function getSessionPrimaryStatus(session, options = {}) {
@@ -333,31 +268,7 @@
     return getSessionStatusSummary(session, options).primary;
   }
 
-  function getBoardColumns(_layout, sessions = []) {
-    const sessionList = Array.isArray(sessions) ? sessions : [];
-    const counts = new Map(sessionBoardColumnSpecs.map((column) => [column.key, 0]));
-    for (const session of sessionList) {
-      const key = deriveSessionBoardColumnKey(session);
-      counts.set(key, (counts.get(key) || 0) + 1);
-    }
-
-    const columns = sessionBoardColumnSpecs
-      .filter((column) => sessionList.length === 0 ? column.key === defaultBoardColumn.key : (counts.get(column.key) || 0) > 0)
-      .map(cloneBoardColumn);
-
-    return columns.length > 0 ? columns : [cloneBoardColumn(defaultBoardColumn)];
-  }
-
-  function getSessionBoardColumn(session, layout, sessions = []) {
-    const columns = getBoardColumns(layout, sessions);
-    const derivedKey = deriveSessionBoardColumnKey(session);
-    return columns.find((column) => column.key === derivedKey)
-      || cloneBoardColumn(getBoardColumnSpec(derivedKey))
-      || columns[0]
-      || cloneBoardColumn(defaultBoardColumn);
-  }
-
-  function getSessionBoardPriority(session) {
+  function getSessionWorkflowPriorityInfo(session) {
     const explicitPriority = getWorkflowPriorityInfo(session?.workflowPriority);
     if (explicitPriority) return explicitPriority;
     const workflowState = normalizeSessionWorkflowState(session?.workflowState || "");
@@ -416,24 +327,7 @@
     const attentionBandDiff = getSessionAttentionBand(a) - getSessionAttentionBand(b);
     if (attentionBandDiff) return attentionBandDiff;
 
-    const priorityDiff = (getSessionBoardPriority(b)?.rank || 0) - (getSessionBoardPriority(a)?.rank || 0);
-    if (priorityDiff) return priorityDiff;
-
-    const pinDiff = (b?.pinned === true ? 1 : 0) - (a?.pinned === true ? 1 : 0);
-    if (pinDiff) return pinDiff;
-
-    return getSessionSortTime(b) - getSessionSortTime(a);
-  }
-
-  function getSessionBoardOrder(_session) {
-    return 0;
-  }
-
-  function compareBoardSessions(a, b) {
-    const boardOrderDiff = getSessionBoardOrder(a) - getSessionBoardOrder(b);
-    if (boardOrderDiff) return boardOrderDiff;
-
-    const priorityDiff = (getSessionBoardPriority(b)?.rank || 0) - (getSessionBoardPriority(a)?.rank || 0);
+    const priorityDiff = (getSessionWorkflowPriorityInfo(b)?.rank || 0) - (getSessionWorkflowPriorityInfo(a)?.rank || 0);
     if (priorityDiff) return priorityDiff;
 
     const pinDiff = (b?.pinned === true ? 1 : 0) - (a?.pinned === true ? 1 : 0);
@@ -456,11 +350,7 @@
     hasSessionUnreadUpdate,
     getSessionReviewStatusInfo,
     isSessionCompleteAndReviewed,
-    getBoardColumns,
-    getSessionBoardColumn,
-    getSessionBoardPriority,
-    getSessionBoardOrder,
+    getSessionWorkflowPriorityInfo,
     compareSessionListSessions,
-    compareBoardSessions,
   };
 })(typeof globalThis !== "undefined" ? globalThis : window);

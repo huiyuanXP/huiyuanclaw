@@ -1,7 +1,7 @@
 # Session-First Workflow Surfaces
 
 > Status: current baseline.
-> Purpose: freeze the organization model for session list / board / group / task-like workflow views so RemoteLab does not drift into parallel domain objects before they are truly needed.
+> Purpose: freeze the organization model for session list / grouping / task-like workflow views so RemoteLab does not drift into parallel domain objects before they are truly needed.
 
 ---
 
@@ -18,9 +18,7 @@ Everything the owner sees in workflow organization should be one of two things:
 
 That means the current system does **not** have separate canonical objects for:
 
-- `Board`
 - `Task`
-- `BoardCard`
 - `ProgressItem`
 - `Group`
 
@@ -30,21 +28,21 @@ Those are product surfaces, not independent storage authorities.
 
 For the current discovery phase:
 
-- Do not let the shipped `Board` implementation define the main product shape while the owner interaction is still being discovered.
-- The current `Board` surface should be removed from the active owner flow instead of being kept around as a half-live planning constraint.
-- If `Board` returns later, it should return as a derived projection over sessions, not as the object that justifies the workflow model.
+- Do not let any secondary workflow view define the main product shape while the owner interaction is still being discovered.
+- Keep the active owner flow centered on the session list instead of preserving half-used planning surfaces.
+- If a richer workflow view returns later, it should return as a derived projection over sessions, not as the object that justifies the workflow model.
 
-This means the current board implementation is not something to refine in place during this phase. It is something to delete so the next interaction model can be designed more honestly from the session-first core.
+This means the legacy board implementation was not something to refine in place during this phase. It was something to delete so the next interaction model could be designed more honestly from the session-first core.
 
 ---
 
-## Board Removal Consequence
+## Workflow Surface Consequence
 
 For the next product iteration:
 
-- do not preserve `Board` just to avoid losing a familiar UI surface
+- do not preserve retired workflow surfaces just to avoid losing familiar UI vocabulary
 - do not let card/column vocabulary steer the main interaction model
-- do not treat board regressions as the central product risk during this rewrite
+- do not treat the removed board as the central product risk during this rewrite
 - do use the session-first foundation to design the owner flow again from first principles
 
 ---
@@ -70,33 +68,32 @@ Live execution state is still separate and should remain separate:
 - queued follow-ups
 - rename / compaction activity
 
-The board should read those session-level signals. It should not invent a second durable “task status” object.
+Any workflow projection should read those session-level signals. It should not invent a second durable “task status” object.
 
 ---
 
-## What The Current Board Is
+## What Workflow Projection Is
 
-The current board is a projection over sessions.
+The remaining workflow projection is a projection over sessions.
 
 In practical terms:
 
-- columns are derived from live session activity plus `workflowState`
-- priority pills are derived from `workflowPriority` with sensible fallback from `workflowState`
-- card ordering is derived from priority, pinning, and recency
-- board cards point back to the underlying session
-- the session list and the board are two views over the same canonical objects
+- session ordering is derived from live session activity, `workflowState`, `workflowPriority`, pinning, and recency
+- attention cues are derived from `workflowState`, `workflowPriority`, and review timestamps
+- any future secondary workflow view must still point back to the underlying session
+- the session list and any future workflow view are projections over the same canonical objects
 
 So the correct mental model is:
 
 ```text
-Board = session workflow view
 Session list = session compact view
+Any future workflow view = session workflow projection
 ```
 
 Not:
 
 ```text
-Board = separate task system that happens to link to sessions
+A workflow view = separate task system that happens to link to sessions
 ```
 
 ---
@@ -116,7 +113,7 @@ It is **not** currently:
 - a first-class parent entity
 - a permissions boundary
 - a durable container with its own lifecycle
-- a place where independent board logic should live
+- a place where independent workflow-surface logic should live
 
 So the right current reading is:
 
@@ -134,7 +131,7 @@ But under the current architecture, a “task” should usually collapse into on
 
 - the session itself when the work is one durable thread
 - the session title / description when the work only needs labeling
-- `workflowState` / `workflowPriority` when the work only needs board organization
+- `workflowState` / `workflowPriority` when the work only needs lightweight workflow organization
 - future cross-session structure only when one real unit of work outgrows a single session
 
 So unless something has its own identity and lifecycle independent from a session, do **not** persist it as a separate task object.
@@ -146,14 +143,14 @@ So unless something has its own identity and lifecycle independent from a sessio
 When adding workflow-management features, prefer these rules in order:
 
 1. Attach durable presentation/workflow metadata to `Session` first.
-2. Derive board/list/filter views from sessions second.
+2. Derive list/filter/secondary workflow views from sessions second.
 3. Only introduce a new object if session metadata can no longer express the product honestly.
 
 Three hard constraints should hold:
 
-1. The board must not own truth that the session does not.
+1. A workflow view must not own truth that the session does not.
 2. The frontend must not silently invent a second authoritative workflow model.
-3. The backend must not maintain a separate task-board store unless the product intentionally grows a new canonical object.
+3. The backend must not maintain a separate task-style store unless the product intentionally grows a new canonical object.
 
 ---
 
@@ -180,11 +177,11 @@ Workstream/Case/Project (new object)
 Not:
 
 ```text
-BoardCard/Task becomes the hidden real object
+A task-like workflow artifact becomes the hidden real object
 and Session becomes a chat attachment hanging off it
 ```
 
-In other words: if RemoteLab grows a second layer, it should be an explicit parent above sessions, not a shadow board entity beside sessions.
+In other words: if RemoteLab grows a second layer, it should be an explicit parent above sessions, not a shadow workflow artifact beside sessions.
 
 ---
 
@@ -192,7 +189,7 @@ In other words: if RemoteLab grows a second layer, it should be an explicit pare
 
 For current feature work, these defaults should hold:
 
-- if the owner wants a better board, improve session metadata and board derivation first
+- if the owner wants a richer workflow view later, improve session metadata and derivation first
 - if the owner wants better recall after many delegated conversations, improve session naming / grouping / descriptions / summaries first
 - if the owner wants easier attention management, improve workflow projection first
 - if a proposal needs its own object, ask whether it truly survives beyond any one session

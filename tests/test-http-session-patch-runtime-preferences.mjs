@@ -160,8 +160,8 @@ try {
       'pinned sessions should stay ahead of newer unpinned sessions after runtime preference updates',
     );
     const pinnedListEntry = listAfterPin.json.sessions.find((session) => session.id === older.id);
-    assert.equal(pinnedListEntry?.workflowState, 'waiting_user', 'session list payload should keep workflow state for board consumers');
-    assert.equal(pinnedListEntry?.workflowPriority, 'high', 'session list payload should keep workflow priority for board consumers');
+    assert.equal(pinnedListEntry?.workflowState, 'waiting_user', 'session list payload should keep workflow state for session attention logic');
+    assert.equal(pinnedListEntry?.workflowPriority, 'high', 'session list payload should keep workflow priority for session attention logic');
     assert.equal(pinnedListEntry?.lastReviewedAt, reviewStamp, 'session list payload should expose the persisted review timestamp');
 
     const detail = await request(port, 'GET', `/api/sessions/${older.id}`);

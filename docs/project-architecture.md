@@ -601,7 +601,7 @@ That call generates JSON describing canonical presentation metadata:
 - maybe `description`
 
 The result is written back into canonical session metadata.
-The current workflow projection is intentionally session-first: session organization piggybacks on canonical metadata plus live activity instead of a separate task-board object.
+The current workflow projection is intentionally session-first: session organization piggybacks on canonical metadata plus live activity instead of a separate task-style object.
 
 ### 9.5 Context compaction and “drop tools”
 

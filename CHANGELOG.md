@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-- Adds a first owner-facing `Board` sidebar tab that reuses sessions as the only durable object while presenting kanban-style workflow columns.
-- Persists lightweight session `workflowState` metadata (`parked`, `waiting_user`, `done`) and derives `Running` from live runtime activity instead of duplicating run truth.
-- Triggers a post-turn AI classifier to refresh each session's board position after normal assistant turns complete.
+- Removes the unused `Board` surface and keeps the shipped owner flow centered on sessions and settings.
+- Removes voice-input UI/backend paths while keeping transcript-based voice cleanup intact.
+- Keeps session workflow organization derived from `workflowState`, `workflowPriority`, review state, and live activity instead of a parallel planning surface.
 
 ## v0.3.1
 

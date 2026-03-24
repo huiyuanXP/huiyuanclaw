@@ -253,7 +253,7 @@ try {
   const remoteLabSession = await request(port, 'POST', '/api/sessions', {
     folder: repoRoot,
     tool: 'fake-codex',
-    name: 'RemoteLab board cleanup',
+    name: 'RemoteLab workflow cleanup',
   });
   assert.equal(remoteLabSession.status, 201, 'first session should be created');
 
@@ -282,7 +282,7 @@ try {
     text: buildSessionListOrganizerTask([
       {
         id: remoteLabSession.json.session.id,
-        title: 'RemoteLab board cleanup',
+        title: 'RemoteLab workflow cleanup',
         brief: 'Clean up the session grouping and structure.',
         existingGroup: '',
         existingSidebarOrder: null,

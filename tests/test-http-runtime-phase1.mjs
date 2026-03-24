@@ -758,7 +758,7 @@ async function phase13DelegateSession() {
       group: 'Tests',
       description: 'Delegate route contract',
     });
-    const submit = await submitMessage(port, session.id, 'req-delegate-parent', 'Please investigate the board design problem before delegating');
+    const submit = await submitMessage(port, session.id, 'req-delegate-parent', 'Please investigate the workflow design problem before delegating');
     await waitForRunTerminal(port, submit.json.run.id);
 
     const delegate = await request(port, 'POST', `/api/sessions/${session.id}/delegate`, {
@@ -780,7 +780,7 @@ async function phase13DelegateSession() {
     assert.match(manifest.prompt || '', new RegExp(`Parent session id: ${session.id}`), 'delegated prompt should include the parent session id');
     assert.doesNotMatch(manifest.prompt || '', /## Delegated task/, 'delegated prompt should not impose a heavy sectioned handoff format');
     assert.doesNotMatch(manifest.prompt || '', /## Source session reference/, 'delegated prompt should not include extra source-session formatting blocks');
-    assert.doesNotMatch(manifest.prompt || '', /Please investigate the board design problem before delegating/, 'delegated prompt should omit the latest parent user message by default');
+    assert.doesNotMatch(manifest.prompt || '', /Please investigate the workflow design problem before delegating/, 'delegated prompt should omit the latest parent user message by default');
     assert.doesNotMatch(manifest.prompt || '', /finished from fake codex/, 'delegated prompt should omit the latest parent assistant result by default');
     assert.doesNotMatch(manifest.prompt || '', /echo fake/, 'delegated prompt should omit intermediate tool details from the parent');
 

@@ -268,8 +268,8 @@ fork = create a fresh session from copied durable state, then continue independe
 The following are important product surfaces, but they are not the core domain:
 
 - sidebar grouping
-- board columns / workflow lanes
-- board attention priority
+- workflow lanes
+- workflow attention priority
 - progress summaries
 - task-like labels that do not have an independent lifecycle
 - “needs your decision” indicators
@@ -284,7 +284,7 @@ The short version is:
 
 - `Session` is the only durable work object today
 - `group`, `workflowState`, and `workflowPriority` are session metadata
-- board/list/progress-style organization is a projection over sessions, not a parallel task system
+- list/progress-style organization is a projection over sessions, not a parallel task system
 
 Two practical consequences:
 

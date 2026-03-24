@@ -8,7 +8,7 @@ Historical board-first hypothesis: `notes/archive/board-fanout-next-push.md`
 
 ## One-line goal
 
-- Delete the shipped `Board` surface and make the next push feel like an AI collaborator that keeps work coherent across multiple sessions, not like a board-shaped shell around chats.
+- With the shipped `Board` surface removed, make the next push feel like an AI collaborator that keeps work coherent across multiple sessions, not like a board-shaped shell around chats.
 
 ## Product shape for the next push
 
@@ -31,7 +31,7 @@ Historical board-first hypothesis: `notes/archive/board-fanout-next-push.md`
 
 ### In scope
 
-- Clarifying the owner main flow without `Board` lock-in.
+- Clarifying the owner main flow now that `Board` is gone.
 - One-turn multi-session fan-out.
 - A minimal cross-session context freshness contract.
 - Observability and regressions directly blocking the above.
@@ -47,11 +47,11 @@ Historical board-first hypothesis: `notes/archive/board-fanout-next-push.md`
 
 ## Concrete slices
 
-### Slice 1 — remove board and reset the session-first main flow
+### Slice 1 — validate the session-first main flow after board removal
 
 **Outcome**
 
-- The product can be evaluated after deleting the current `Board` surface instead of iterating inside it.
+- The product can be evaluated cleanly now that the current `Board` surface is gone instead of iterating inside it.
 
 **Product rules**
 

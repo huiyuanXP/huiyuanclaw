@@ -285,18 +285,6 @@ const context = {
       getSessionStatusSummary() {
         return { primary: { label: 'Idle', tone: 'idle' } };
       },
-      getBoardColumns() {
-        return [];
-      },
-      getSessionBoardColumn() {
-        return { key: 'open', label: 'Open', title: 'Open', emptyText: 'No sessions' };
-      },
-      getSessionBoardPriority() {
-        return { key: 'medium', label: 'Medium', rank: 2, className: '', title: '' };
-      },
-      compareBoardSessions() {
-        return 0;
-      },
     },
     __REMOTELAB_BUILD__: { assetVersion: 'test-build', title: 'test build' },
     __REMOTELAB_BOOTSTRAP__: { auth: { role: 'owner' } },

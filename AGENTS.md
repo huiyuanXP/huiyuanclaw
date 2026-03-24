@@ -226,15 +226,16 @@ Current operating rule: prefer capability-first shipping slices that validate th
 - [x] App system (CRUD API, share tokens, visitor flow)
 - [x] Resume ID persistence (survives server restarts)
 - [x] Web push notifications
+- [x] Remove the shipped `Board` surface from the active owner flow
+- [x] Remove voice-input UI/backend while keeping transcript-first voice cleanup
 
 ### P1 — Next Up
-- [ ] Remove the current `Board` product surface from the active owner flow and rewrite the session-first main flow from scratch instead of iterating inside board constraints
 - [ ] Multi-session fan-out from one owner turn — let a manager/control session intentionally spawn several focused parallel sessions, keep hierarchy light, and rely on concise aggregation plus session-level navigation rather than heavy parent-side handoff UI
 - [ ] Cross-session context freshness — let a new or sibling session pick up recent relevant context from adjacent work without requiring the user to restate everything, while keeping imports bounded and inspectable
 - [ ] Context carry/cache confirmation — validate and tune compaction, prepared fork context, summary/refs reuse, and any cross-session handoff packet so session-first multi-session flows stay fast and bounded
-- [ ] Expose AI-controlled session presentation (`title`, `group`, `description`) via session APIs, then validate the AI-owned session-list / inbox UX as the primary owner surface after board removal
+- [ ] Expose AI-controlled session presentation (`title`, `group`, `description`) via session APIs, then validate the AI-owned session-list / inbox UX as the primary owner surface now that board removal is complete
 - [ ] Universal control inbox / dispatcher session — a default high-trust intake surface layered on top of the session-first + multi-session contract, not one giant always-growing work thread
-- [ ] Revisit board/grouping/task-like workflow surfaces only if the rewritten main flow later proves a board-like view is truly needed; keep the owner-facing surface single-layer and session-first unless lived use disproves that default
+- [ ] Revisit grouping/task-like workflow surfaces only if the rewritten main flow later proves a richer derived view is truly needed; keep the owner-facing surface single-layer and session-first unless lived use disproves that default
 - [ ] Skills framework (file storage + loading mechanism)
 - [ ] Provider registry abstraction — open model selection, local JS/JSON provider config, no more Claude/Codex-only model wiring
 - [ ] Provider management UX — setup/settings should support preset enablement, simple GUI JSON providers, and advanced code mode
