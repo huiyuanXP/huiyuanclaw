@@ -266,6 +266,8 @@ remotelab --help               Show help
 
 For quick shareable sandboxes on the same machine, use `remotelab guest-instance create <name>`. It provisions a separate `REMOTELAB_INSTANCE_ROOT`, a dedicated launchd service, and an optional Cloudflare hostname without mixing chat history or memory into the owner's main instance. If the agent mailbox is initialized, `create` and `show` also print the default inbound mailbox for that instance, such as `rowan+trial4@example.com` or `trial4@example.com`, depending on the mailbox identity's `instanceAddressMode`.
 
+If you want public inbound email per guest instance, prefer a catch-all Cloudflare Email Routing rule into the Email Worker rather than creating separate mailbox accounts. `node scripts/agent-mail-cloudflare-routing.mjs status` prints the desired routing shape and `probe --address <email>` verifies whether SMTP will currently accept a guest mailbox such as `trial6@example.com`.
+
 Production updates should go through `remotelab release` rather than live-editing the running `7690` surface. The release command snapshots the shipped runtime, restarts only after the test gate passes, and automatically restores the previous active release if the health check fails.
 
 ## Configuration

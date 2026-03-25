@@ -104,6 +104,8 @@ Key design choices:
 - Cloudflare forwards the real envelope recipient (`rcptTo`) to the local bridge, and the local mailbox worker resolves `trial6` against `~/.config/remotelab/guest-instances.json`.
 - When the guest instance exists, the worker uses that instance's `localBaseUrl` and `authFile` automatically, so a new guest instance naturally gains a matching inbound email alias without a separate mailbox account.
 - Direct per-instance addresses require the Cloudflare Email Routing rule to be catch-all (or one literal route per instance). A single literal route like `rowan@...` will not accept `rowan+trial6@...` or `trial6@...` at SMTP time.
+- On this machine, the Cloudflare Email Routing API does not accept the OAuth token from `wrangler login`; use a dedicated `CLOUDFLARE_API_TOKEN` or make the catch-all route once in the dashboard.
+- `node scripts/agent-mail-cloudflare-routing.mjs status` prints the desired Cloudflare state and `probe --address <email>` does a live SMTP RCPT check against the domain MX records.
 - Delivery state is written back into the mailbox item, so `approved/` items can show `processing_for_reply`, `reply_sent`, or `reply_failed`.
 - The preferred outbound path is the Cloudflare Worker fetch endpoint backed by Cloudflare `send_email`, with `apple_mail` still available for local fallback testing.
 - The preferred inbound path is Cloudflare Email Routing -> thin Worker ingress -> local mailbox bridge -> local agent-mail-worker, so provider logic stays thin and business logic stays in RemoteLab-owned code.

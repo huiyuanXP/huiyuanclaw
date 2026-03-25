@@ -47,6 +47,12 @@ If any Cloudflare dashboard action is still needed, the AI should batch those as
 2. Create or confirm the Cloudflare Email Routing rule that sends the mailbox alias to the Worker. If you want one low-cost public address per guest instance, prefer a catch-all route into the Worker; a single literal route like `rowan@domain` will not accept `rowan+trial6@domain` or `trial6@domain` at SMTP time.
 3. Provide any mailbox identity values the AI cannot infer, such as sender address, worker URL, or mailbox bridge URL.
 
+## Cloudflare API auth note
+
+- The OAuth session from `wrangler login` is sufficient for Worker deploys, but it is not sufficient for Cloudflare Email Routing API endpoints such as `/zones/:zone_id/email/routing/settings` or `/rules`.
+- For fully scriptable Email Routing changes, use a dedicated `CLOUDFLARE_API_TOKEN` with zone-level Email Routing access, or do the route step once in the Cloudflare dashboard.
+- To prepare the exact desired state and validate SMTP acceptance from the host machine, run `node scripts/agent-mail-cloudflare-routing.mjs status` and `node scripts/agent-mail-cloudflare-routing.mjs probe --address trial6@example.com`.
+
 ## AI execution contract
 
 - copy `cloudflare/email-worker/wrangler.example.jsonc` to the gitignored local `cloudflare/email-worker/wrangler.jsonc`
@@ -87,6 +93,7 @@ The Worker should not carry RemoteLab login or session-orchestration config. Tha
 - RemoteLab completion targets can call `POST /api/send-email`
 - `curl https://.../healthz` succeeds
 - mailbox bridge and reply tests pass when the AI runs them
+- SMTP probes accept both the owner mailbox and one guest mailbox such as `trial6@domain`
 
 ## Validation examples
 
