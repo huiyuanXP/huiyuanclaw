@@ -24,6 +24,8 @@ The installer writes one custom tool record into `~/.config/remotelab/tools.json
 So the UI treats it like a lightweight preset, while the actual runtime stays the normal Codex CLI.
 Unlike the earlier bare-user version, it now follows RemoteLab's normal session prompt/context chain so memory activation, manager policy, and continuation behavior stay aligned with the built-in `codex` tool.
 
+Guest instances keep their own config directories, so they do not read the owner's `tools.json` directly. The supported `guest-instance create` / `guest-instance converge` flows now sync safe Codex-backed presets like `micro-agent` into each instance config to keep tool availability aligned across instances.
+
 When `micro-agent` is installed and available, the chat UI now prefers it as the default agent for new sessions and app tool pickers. Explicit per-session or per-app tool choices still win.
 
 ## Why this is lighter

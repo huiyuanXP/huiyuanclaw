@@ -9,6 +9,7 @@ import { fileURLToPath } from 'url';
 import {
   buildGuestMailboxAddress,
   formatGuestInstance,
+  planGuestRuntimeDefaults,
 } from '../lib/guest-instance-command.mjs';
 import {
   buildLaunchAgentPlist,
@@ -126,6 +127,91 @@ const formatted = formatGuestInstance({
   localReachable: true,
 });
 assert.match(formatted, /mailbox: rowan\+trial16@jiujianian\.dev/);
+
+const ownerMicroSelection = {
+  selectedTool: 'micro-agent',
+  selectedModel: 'gpt-5.4',
+  selectedEffort: 'xhigh',
+  thinkingEnabled: false,
+  reasoningKind: 'enum',
+};
+const ownerTools = [
+  {
+    id: 'doubao-fast',
+    name: 'Doubao Fast Agent',
+    command: '/Users/example/code/remotelab/scripts/doubao-fast-agent.mjs',
+    runtimeFamily: 'claude-stream-json',
+    visibility: 'private',
+  },
+  {
+    id: 'micro-agent',
+    name: 'Micro Agent',
+    command: 'codex',
+    toolProfile: 'micro-agent',
+    runtimeFamily: 'codex-json',
+    models: [{ id: 'gpt-5.4', label: 'gpt-5.4' }],
+    reasoning: { kind: 'none', label: 'Thinking' },
+  },
+];
+
+const plannedLegacyGuestDefaults = planGuestRuntimeDefaults({
+  ownerSelection: ownerMicroSelection,
+  ownerTools,
+  guestSelection: {
+    selectedTool: 'codex',
+    selectedModel: '',
+    selectedEffort: 'medium',
+    thinkingEnabled: false,
+    reasoningKind: 'enum',
+  },
+  guestTools: [],
+  detectedModel: 'gpt-5.4',
+});
+assert.deepEqual(
+  plannedLegacyGuestDefaults.tools.map((tool) => tool.id),
+  ['micro-agent'],
+  'legacy guests should inherit safe Codex-backed owner presets',
+);
+assert.equal(
+  plannedLegacyGuestDefaults.selection.selectedTool,
+  'codex',
+  'legacy guests should keep an existing valid built-in selection during convergence',
+);
+
+const plannedFreshGuestDefaults = planGuestRuntimeDefaults({
+  ownerSelection: ownerMicroSelection,
+  ownerTools,
+  guestSelection: null,
+  guestTools: [],
+  detectedModel: 'gpt-5.4',
+});
+assert.equal(
+  plannedFreshGuestDefaults.selection.selectedTool,
+  'micro-agent',
+  'fresh guests should still inherit the owner-selected micro-agent preset',
+);
+
+const plannedUpdatedGuestDefaults = planGuestRuntimeDefaults({
+  ownerSelection: ownerMicroSelection,
+  ownerTools,
+  guestSelection: {
+    selectedTool: 'micro-agent',
+    selectedModel: 'gpt-5.2-codex',
+    selectedEffort: 'medium',
+    thinkingEnabled: false,
+    reasoningKind: 'enum',
+  },
+  guestTools: [{
+    ...ownerTools[1],
+    models: [{ id: 'gpt-5.2-codex', label: 'gpt-5.2-codex' }],
+  }],
+  detectedModel: 'gpt-5.4',
+});
+assert.equal(
+  plannedUpdatedGuestDefaults.tools[0].models[0].id,
+  'gpt-5.4',
+  'safe owner presets should refresh stale guest copies by tool id',
+);
 
 const sandboxHome = mkdtempSync(join(tmpdir(), 'remotelab-guest-instance-'));
 try {
