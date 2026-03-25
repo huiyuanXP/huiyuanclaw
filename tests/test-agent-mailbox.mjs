@@ -492,6 +492,52 @@ function testSubjectInstanceTagRoutesBaseMailboxToGuestInstance() {
   }
 }
 
+function testDirectInstanceRecipientRoutesWhenLocalPartModeEnabled() {
+  const rootDir = mkdtempSync(join(tmpdir(), 'remotelab-agent-mailbox-direct-routing-'));
+  try {
+    initializeMailbox({
+      rootDir,
+      name: 'Rowan',
+      localPart: 'rowan',
+      domain: 'jiujianian.dev',
+      instanceAddressMode: 'local_part',
+      allowEmails: ['jiujianian@gmail.com'],
+    });
+    saveMailboxAutomation(rootDir, {
+      allowlistAutoApprove: true,
+    });
+
+    const ingested = ingestRawMessage(
+      [
+        'From: jiujianian@gmail.com',
+        'To: trial6@jiujianian.dev',
+        'Subject: direct instance route',
+        'Message-ID: <trial6-direct-route@example.com>',
+        'Content-Type: text/plain; charset=UTF-8',
+        '',
+        'route me to the guest instance through the direct address please.',
+      ].join('\n'),
+      'trial6-direct-route.eml',
+      rootDir,
+      {
+        text: 'route me to the guest instance through the direct address please.',
+        envelope: {
+          rcptTo: 'trial6@jiujianian.dev',
+        },
+      },
+    );
+
+    assert.equal(ingested.message.toAddress, 'trial6@jiujianian.dev');
+    assert.equal(ingested.message.envelopeToAddress, 'trial6@jiujianian.dev');
+    assert.equal(ingested.message.effectiveToAddress, 'trial6@jiujianian.dev');
+    assert.equal(ingested.routing.instanceName, 'trial6');
+    assert.equal(ingested.routing.mailboxSubaddress, 'trial6');
+    assert.equal(ingested.routing.matchedBy, 'local_part_instance');
+  } finally {
+    rmSync(rootDir, { recursive: true, force: true });
+  }
+}
+
 testCloudflareWebhookHealthy();
 testCloudflareQueueReady();
 testCloudflareValidatedDelivery();
@@ -503,4 +549,5 @@ testDecodesNestedMultipartBodyText();
 testExtractsInlineImageAttachments();
 testEnvelopeRecipientRoutesToGuestInstanceAlias();
 testSubjectInstanceTagRoutesBaseMailboxToGuestInstance();
+testDirectInstanceRecipientRoutesWhenLocalPartModeEnabled();
 console.log('agent mailbox tests passed');

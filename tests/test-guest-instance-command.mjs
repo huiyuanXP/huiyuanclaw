@@ -35,8 +35,16 @@ assert.equal(
   'rowan+trial16@jiujianian.dev',
 );
 assert.equal(
+  buildGuestMailboxAddress('trial16', { localPart: 'rowan', domain: 'jiujianian.dev', instanceAddressMode: 'local_part' }),
+  'trial16@jiujianian.dev',
+);
+assert.equal(
   buildGuestMailboxAddress(' Trial 16 ', { localPart: 'rowan', domain: 'jiujianian.dev' }),
   'rowan+trial-16@jiujianian.dev',
+);
+assert.equal(
+  buildGuestMailboxAddress(' Trial 16 ', { localPart: 'rowan', domain: 'jiujianian.dev', instanceAddressMode: 'local_part' }),
+  'trial-16@jiujianian.dev',
 );
 assert.equal(buildGuestMailboxAddress('试用 用户', { localPart: 'rowan', domain: 'jiujianian.dev' }), '');
 

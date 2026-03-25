@@ -39,12 +39,12 @@ If any Cloudflare dashboard action is still needed, the AI should batch those as
 - RemoteLab and the local mailbox stack keep filtering, review, automation, session routing, and replies.
 - Inline or attached email images are forwarded into RemoteLab sessions as normal file attachments for the agent to inspect.
 - Edge config stays thin so provider migration remains easy.
-- The Worker forwards the raw message plus the real envelope recipient (`rcptTo`), which lets the local mailbox route aliases such as `rowan+trial6@domain` into the matching guest instance.
+- The Worker forwards the raw message plus the real envelope recipient (`rcptTo`), which lets the local mailbox route aliases such as `rowan+trial6@domain` or direct instance addresses such as `trial6@domain` into the matching guest instance.
 
 ## [HUMAN] steps
 
 1. Authenticate Wrangler or Cloudflare if the machine is not already logged in.
-2. Create or confirm the Cloudflare Email Routing rule that sends the mailbox alias to the Worker.
+2. Create or confirm the Cloudflare Email Routing rule that sends the mailbox alias to the Worker. If you want one low-cost public address per guest instance, prefer a catch-all route into the Worker; a single literal route like `rowan@domain` will not accept `rowan+trial6@domain` or `trial6@domain` at SMTP time.
 3. Provide any mailbox identity values the AI cannot infer, such as sender address, worker URL, or mailbox bridge URL.
 
 ## AI execution contract

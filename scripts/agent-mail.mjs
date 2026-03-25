@@ -86,7 +86,7 @@ function optionBoolean(options, key, fallbackValue = undefined) {
 
 function printUsage() {
   console.log(`Usage:
-  node scripts/agent-mail.mjs init --name <name> --local-part <localPart> --domain <domain> [--allow <email>] [--allow-domain <domain>]
+  node scripts/agent-mail.mjs init --name <name> --local-part <localPart> --domain <domain> [--instance-address-mode <plus|local_part>] [--allow <email>] [--allow-domain <domain>]
   node scripts/agent-mail.mjs status [--root <dir>]
   node scripts/agent-mail.mjs allow add <email-or-domain> [--root <dir>]
   node scripts/agent-mail.mjs allow list [--root <dir>]
@@ -100,7 +100,7 @@ function printUsage() {
   node scripts/agent-mail.mjs automation configure [--enabled <true|false>] [--allowlist-auto-approve <true|false>] [--auto-approve-reviewer <name>] [--chat-base-url <url>] [--auth-file <path>] [--delivery-mode <reply_email|session_only>] [--folder <dir>] [--tool <tool>] [--group <name>] [--description <text>] [--system-prompt <text>] [--model <name>] [--effort <level>] [--thinking <true|false>] [--root <dir>]
 
 Examples:
-  node scripts/agent-mail.mjs init --name Rowan --local-part rowan --domain example.com --allow owner@example.com
+  node scripts/agent-mail.mjs init --name Rowan --local-part rowan --domain example.com --instance-address-mode local_part --allow owner@example.com
   node scripts/agent-mail.mjs ingest --source /tmp/mail-samples
   node scripts/agent-mail.mjs queue review
   node scripts/agent-mail.mjs approve mail_123 --reviewer operator
@@ -131,6 +131,7 @@ async function main() {
       localPart: optionValue(options, 'local-part'),
       domain: optionValue(options, 'domain'),
       description: optionValue(options, 'description'),
+      instanceAddressMode: optionValue(options, 'instance-address-mode'),
       allowEmails: optionList(options, 'allow'),
       allowDomains: optionList(options, 'allow-domain'),
     });

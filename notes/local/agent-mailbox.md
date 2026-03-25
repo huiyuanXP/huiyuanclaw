@@ -100,8 +100,10 @@ Key design choices:
 
 - The mailbox keeps one primary identity such as `rowan@jiujianian.dev`.
 - Guest instances can be addressed through plus aliases such as `rowan+trial6@jiujianian.dev`.
+- When the mailbox identity uses `instanceAddressMode: local_part`, guest instances can instead use direct addresses such as `trial6@jiujianian.dev`.
 - Cloudflare forwards the real envelope recipient (`rcptTo`) to the local bridge, and the local mailbox worker resolves `trial6` against `~/.config/remotelab/guest-instances.json`.
 - When the guest instance exists, the worker uses that instance's `localBaseUrl` and `authFile` automatically, so a new guest instance naturally gains a matching inbound email alias without a separate mailbox account.
+- Direct per-instance addresses require the Cloudflare Email Routing rule to be catch-all (or one literal route per instance). A single literal route like `rowan@...` will not accept `rowan+trial6@...` or `trial6@...` at SMTP time.
 - Delivery state is written back into the mailbox item, so `approved/` items can show `processing_for_reply`, `reply_sent`, or `reply_failed`.
 - The preferred outbound path is the Cloudflare Worker fetch endpoint backed by Cloudflare `send_email`, with `apple_mail` still available for local fallback testing.
 - The preferred inbound path is Cloudflare Email Routing -> thin Worker ingress -> local mailbox bridge -> local agent-mail-worker, so provider logic stays thin and business logic stays in RemoteLab-owned code.
