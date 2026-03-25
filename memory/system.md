@@ -191,6 +191,7 @@ Universal learnings and patterns that apply to all RemoteLab deployments, regard
 ### Backend Connectors Cannot Inherit UI Runtime From LocalStorage (2026-03-12)
 - If an external connector should reuse the operator's current tool/model/reasoning choice, the browser must sync that selection to server-readable state; backend workers cannot see `localStorage`.
 - Treat the synced selection as the live runtime preference for connector-triggered sessions, and let connector-specific pinned overrides win only when they are explicitly configured.
+- Default product behavior should stay user-visible and uniform: external entry points such as email should follow the current chat UI runtime selection by default, use fallback defaults only when no synced UI selection exists, and diverge only on an explicit pinned override.
 
 ### Composer Drafts Must Exclude In-Flight Sends (2026-03-17)
 - Durable draft storage should represent only editable local composer text, not an outbound request that is already being sent.
