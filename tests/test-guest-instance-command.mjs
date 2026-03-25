@@ -10,6 +10,7 @@ import {
   buildGuestMailboxAddress,
   formatGuestInstance,
   planGuestRuntimeDefaults,
+  syncGuestMailboxProvisioning,
 } from '../lib/guest-instance-command.mjs';
 import {
   buildLaunchAgentPlist,
@@ -56,6 +57,45 @@ assert.equal(
   'trial-16@jiujianian.dev',
 );
 assert.equal(buildGuestMailboxAddress('试用 用户', { localPart: 'rowan', domain: 'jiujianian.dev' }), '');
+
+const syncedProvisioning = await syncGuestMailboxProvisioning({ name: 'trial16' }, {
+  mailboxIdentity: {
+    localPart: 'rowan',
+    domain: 'jiujianian.dev',
+    instanceAddressMode: 'local_part',
+  },
+  syncCloudflareRoutingFn: async () => ({
+    desiredRouteModel: 'literal_worker_rules_per_address',
+    operations: [{ type: 'literal_worker_rule', action: 'created' }],
+  }),
+});
+assert.equal(syncedProvisioning.mailboxAddress, 'trial16@jiujianian.dev');
+assert.equal(syncedProvisioning.status, 'synced');
+assert.equal(syncedProvisioning.desiredRouteModel, 'literal_worker_rules_per_address');
+assert.equal(syncedProvisioning.operations.length, 1);
+
+const skippedProvisioning = await syncGuestMailboxProvisioning({ name: 'trial16' }, {
+  mailboxIdentity: { localPart: 'rowan', domain: 'jiujianian.dev' },
+  mailboxSync: false,
+});
+assert.equal(skippedProvisioning.mailboxAddress, 'rowan+trial16@jiujianian.dev');
+assert.equal(skippedProvisioning.status, 'skipped');
+
+const unconfiguredProvisioning = await syncGuestMailboxProvisioning({ name: 'trial16' }, {
+  mailboxIdentity: null,
+});
+assert.equal(unconfiguredProvisioning.mailboxAddress, '');
+assert.equal(unconfiguredProvisioning.status, 'unconfigured');
+
+const failedProvisioning = await syncGuestMailboxProvisioning({ name: 'trial16' }, {
+  mailboxIdentity: { localPart: 'rowan', domain: 'jiujianian.dev' },
+  syncCloudflareRoutingFn: async () => {
+    throw new Error('bad token');
+  },
+});
+assert.equal(failedProvisioning.mailboxAddress, 'rowan+trial16@jiujianian.dev');
+assert.equal(failedProvisioning.status, 'failed');
+assert.match(failedProvisioning.detail, /bad token/);
 
 assert.equal(parseTunnelName(baseConfig), 'claude-code-remote');
 assert.equal(selectPrimaryHostnameForPort(baseConfig, { port: 7690 }), 'remotelab.example.com');
@@ -118,6 +158,7 @@ const formatted = formatGuestInstance({
   localBaseUrl: 'http://127.0.0.1:7710',
   publicBaseUrl: 'https://trial16.example.com',
   mailboxAddress: 'rowan+trial16@jiujianian.dev',
+  mailboxRoutingStatus: 'synced',
   instanceRoot: '/Users/example/.remotelab/instances/trial16',
   configDir: '/Users/example/.remotelab/instances/trial16/config',
   memoryDir: '/Users/example/.remotelab/instances/trial16/memory',
@@ -127,6 +168,7 @@ const formatted = formatGuestInstance({
   localReachable: true,
 });
 assert.match(formatted, /mailbox: rowan\+trial16@jiujianian\.dev/);
+assert.match(formatted, /mailboxRouting: synced/);
 
 const ownerMicroSelection = {
   selectedTool: 'micro-agent',

@@ -92,6 +92,7 @@ The Worker should not carry RemoteLab login or session-orchestration config. Tha
 ## Success state
 
 - inbound routing sends the owner mailbox and intended guest mailbox aliases to the Worker according to the chosen address mode
+- once the owner mailbox stack is configured, `remotelab guest-instance create <name>` attempts to sync Email Routing automatically so new instances get their own accepted inbound address by default
 - RemoteLab completion targets can call `POST /api/send-email`
 - `curl https://.../healthz` succeeds
 - mailbox bridge and reply tests pass when the AI runs them
