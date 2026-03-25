@@ -111,6 +111,11 @@ try {
   );
   assert.match(
     DEFAULT_CODEX_DEVELOPER_INSTRUCTIONS,
+    /universal product rules belong in shared startup context, this user's standing preferences belong in personal memory, and repo-specific or specialized workflows belong in repo-local instructions or on-demand skills/,
+    'default Codex developer instructions should separate shared defaults, personal memory, and repo-local workflows',
+  );
+  assert.match(
+    DEFAULT_CODEX_DEVELOPER_INSTRUCTIONS,
     /repo state, remotes, branches, checkpoints, and similar operator workflows as internal mechanics/,
     'default Codex developer instructions should keep internal Git and memory mechanics out of default user-facing status updates',
   );
@@ -133,6 +138,11 @@ try {
     MANAGER_RUNTIME_BOUNDARY_SECTION,
     /Do not assume every user or task centers on Git, GitHub, or a code repository/,
     'manager runtime boundary should avoid repo-centric assumptions as the default product model',
+  );
+  assert.match(
+    MANAGER_RUNTIME_BOUNDARY_SECTION,
+    /shared startup\/product defaults are only for universal cross-user principles; personal memory is for this user's standing preferences and machine-local habits; repo-local instructions and on-demand skills are for technical or domain-specific workflows/,
+    'manager runtime boundary should keep shared defaults, personal memory, and repo-local workflows clearly layered',
   );
   assert.match(
     MANAGER_RUNTIME_BOUNDARY_SECTION,

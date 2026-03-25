@@ -105,6 +105,8 @@ try {
   assert.match(createAppStarter?.systemPrompt || '', /visitors interact only through RemoteLab|local-path-based handoff/i);
   assert.match(createAppStarter?.systemPrompt || '', /chat attachments|share links|user-reachable channel/i);
   assert.match(createAppStarter?.systemPrompt || '', /opening welcome message teach this delivery contract|machine-side completion is not the same as user delivery|download, export, or share path/i);
+  assert.match(createAppStarter?.systemPrompt || '', /welcomeMessage, systemPrompt, tool, skills, shareToken|implementation details/i);
+  assert.match(createAppStarter?.systemPrompt || '', /Opening Message, Behavior Instructions, Default Assistant, and Share Plan|working sections, not as raw user-facing field labels/i);
   assert.match(createAppStarter?.systemPrompt || '', /http:\/\/127\.0\.0\.1:7692/);
   assert.match(
     createAppStarter?.systemPrompt || '',
@@ -115,6 +117,7 @@ try {
   assert.match(createAppStarter?.welcomeMessage || '', /visitor 首屏欢迎|宿主机只是执行面|翻路径的地方/u);
   assert.match(createAppStarter?.welcomeMessage || '', /不等于用户已经拿到结果/u);
   assert.match(createAppStarter?.welcomeMessage || '', /下载链接|导出入口|明确可达/u);
+  assert.match(createAppStarter?.welcomeMessage || '', /底层行为说明|配置项|分享方式/u);
   assert.match(createAppStarter?.welcomeMessage || '', /分享给别人的链接|分享方式|share/i);
 
   assert.equal(await getApp('feishu'), null);

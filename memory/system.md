@@ -280,9 +280,11 @@ Universal learnings and patterns that apply to all RemoteLab deployments, regard
 
 ### Git Workflow Defaults Belong In User-Level Memory, Not Shared Product Defaults (2026-03-25)
 - RemoteLab should not assume every deployment or every end user centers work around Git, GitHub, or code repositories.
+- Clean layer split: shared startup/product defaults are only for universal cross-user rules; user-level memory is for this user or machine's standing preferences; repo-local instructions and on-demand skills are for technical, project-specific, or domain-specific workflows.
 - Git-specific habits such as checkpoint-and-push defaults, branch conventions, or remote hygiene are operator-specific workflows; keep them in user-level memory, repo-local instructions, or on-demand skills rather than shared startup/product defaults.
 - User-facing replies should usually translate internal repo/checkpoint mechanics into task-level outcomes; mention repos, remotes, branches, or checkpoints only when the task is explicitly technical or the user asks.
 - Startup memory and scope routing should treat non-repo domains like email, scheduling, documents, forms, and media work as first-class scopes so ordinary users are not forced through developer abstractions.
+- Internal implementation labels such as `systemPrompt`, `welcomeMessage`, memory filenames, or API payload keys may still exist in product state, but default user-facing language should translate them into plain concepts like opening message, behavior instructions, background context, result, and next step.
 
 ### Existing RemoteLab Push State Can Power One-Off Reminders (2026-03-06)
 - If a deployment already has active web-push subscriptions, you can send ad hoc reminders without touching app code by reading `~/.config/remotelab/vapid-keys.json` and `~/.config/remotelab/push-subscriptions.json` from a local script and using the repo's `web-push` dependency directly.

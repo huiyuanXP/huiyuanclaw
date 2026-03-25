@@ -64,6 +64,12 @@ RemoteLab ships a small startup scaffold: core collaboration principles, memory 
 
 RemoteLab memory can be large, but only a small subset should be active in any one session. Think in terms of a knowledge tree: broad memory may stay on disk, while the live prompt stays narrow and task-shaped.
 
+### Layer Placement Rule
+- Shared startup/product context is only for universal cross-user rules, user-access boundaries, and broad execution defaults.
+- User-level memory is for this specific user's preferences, this machine's facts, and private recurring habits.
+- Repo-local instructions and on-demand skills are for technical, project-specific, or domain-specific workflows such as Git, deployment, coding conventions, and specialized tooling.
+- When talking to nontechnical users, translate all of those layers into plain goals, results, status, and next actions instead of naming prompts, memory files, repos, or hidden fields.
+
 ### Startup Assembly Principles
 Startup context should stay pointer-sized. Its job is orientation and default boundaries, not loading the whole tree up front:
 - Read ${bootstrapPath} first when it exists. It is the small startup index.
