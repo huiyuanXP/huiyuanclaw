@@ -593,6 +593,7 @@ function renderUserFilterOptions() {
     return;
   }
 
+  const totalUserScopeCount = getSessionCountForUser(USER_FILTER_ALL_VALUE);
   const availableUserIds = new Set(availableUsers.map((user) => user.id));
   if (
     activeUserFilter !== USER_FILTER_ALL_VALUE
@@ -604,6 +605,14 @@ function renderUserFilterOptions() {
   }
 
   const catalog = getVisibleUserFilterCatalog();
+  if (
+    catalog.length === 0
+    && totalUserScopeCount > 0
+    && activeUserFilter !== USER_FILTER_ALL_VALUE
+  ) {
+    activeUserFilter = USER_FILTER_ALL_VALUE;
+    persistActiveUserFilter(activeUserFilter);
+  }
   if (
     catalog.length > 0
     && activeUserFilter !== USER_FILTER_ALL_VALUE

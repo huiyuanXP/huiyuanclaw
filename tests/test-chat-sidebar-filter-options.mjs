@@ -277,6 +277,21 @@ function createHarness({
 }
 
 {
+  const { context, state } = createHarness({
+    userCounts: {
+      __all_users__: 4,
+      user_admin: 0,
+    },
+    availableUsers: [],
+    activeUserFilter: 'user_admin',
+  });
+  context.renderUserFilterOptions();
+  assert.equal(context.userFilterSelect.style.display, 'none', 'user filter should stay hidden when only visitor sessions exist');
+  assert.equal(context.activeUserFilter, '__all_users__', 'user filter should fall back to all users when visitor sessions are the only visible scope');
+  assert.deepEqual(state.persistedUser, ['__all_users__'], 'visitor-only user scope fallback should persist to local storage');
+}
+
+{
   const { context } = createHarness({
     userCounts: {
       __all_users__: 3,
