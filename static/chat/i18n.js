@@ -19,7 +19,7 @@
       "action.stop": "Stop",
       "action.readOnly": "Read-only",
       "action.queueFollowUp": "Queue follow-up",
-      "action.attachFiles": "Upload files",
+      "action.attachFiles": "Attach files",
       "action.download": "Download",
       "action.removeAttachment": "Remove attachment",
       "action.compact": "Compact",
