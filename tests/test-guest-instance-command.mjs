@@ -7,8 +7,11 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 import {
+  buildAccessUrl,
   buildGuestMailboxAddress,
+  buildMainlandBaseUrl,
   formatGuestInstance,
+  parseArgs,
   planGuestRuntimeDefaults,
   pickNextTrialInstanceName,
   syncGuestMailboxProvisioning,
@@ -72,6 +75,14 @@ assert.equal(
   'trial-16@jiujianian.dev',
 );
 assert.equal(buildGuestMailboxAddress('试用 用户', { localPart: 'rowan', domain: 'jiujianian.dev' }), '');
+assert.equal(buildAccessUrl('https://trial16.example.com', 'abc123'), 'https://trial16.example.com/?token=abc123');
+assert.equal(
+  buildMainlandBaseUrl('trial16', { mainlandBaseUrl: 'https://jojotry.nat100.top/' }),
+  'https://jojotry.nat100.top/trial16',
+);
+assert.equal(parseArgs(['create-trial', '--json']).json, true);
+assert.equal(parseArgs(['create-trial', '--json']).trial, true);
+assert.equal(parseArgs(['create-trial', '--json']).command, 'create');
 
 const syncedProvisioning = await syncGuestMailboxProvisioning({ name: 'trial16' }, {
   mailboxIdentity: {
@@ -172,6 +183,8 @@ const formatted = formatGuestInstance({
   port: 7710,
   localBaseUrl: 'http://127.0.0.1:7710',
   publicBaseUrl: 'https://trial16.example.com',
+  mainlandBaseUrl: 'https://jojotry.nat100.top/trial16',
+  mainlandAccessUrl: 'https://jojotry.nat100.top/trial16/?token=abc123',
   mailboxAddress: 'rowan+trial16@jiujianian.dev',
   mailboxRoutingStatus: 'synced',
   instanceRoot: '/Users/example/.remotelab/instances/trial16',
@@ -180,10 +193,13 @@ const formatted = formatGuestInstance({
   launchAgentPath: '/Users/example/Library/LaunchAgents/com.chatserver.trial16.plist',
   createdAt: '2026-03-24T00:00:00.000Z',
 }, {
+  token: 'abc123',
   localReachable: true,
 });
 assert.match(formatted, /mailbox: rowan\+trial16@jiujianian\.dev/);
 assert.match(formatted, /mailboxRouting: synced/);
+assert.match(formatted, /mainland: https:\/\/jojotry\.nat100\.top\/trial16/);
+assert.match(formatted, /mainlandAccess: https:\/\/jojotry\.nat100\.top\/trial16\/\?token=abc123/);
 
 const ownerMicroSelection = {
   selectedTool: 'micro-agent',

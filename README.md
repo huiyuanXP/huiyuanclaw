@@ -268,6 +268,16 @@ remotelab --help               Show help
 
 For the fixed trial-user flow, prefer `remotelab guest-instance create-trial`. It auto-picks the next standard `trialN` name, allocates the next safe port, wires the Cloudflare hostname/tunnel ingress, and syncs the instance mailbox when the mailbox worker is already configured. Use `remotelab guest-instance create <name>` only when you intentionally want a custom instance name. If the agent mailbox is initialized, `create`, `create-trial`, and `show` also print the default inbound mailbox for that instance, such as `rowan+trial4@example.com` or `trial4@example.com`, depending on the mailbox identity's `instanceAddressMode`. When the Cloudflare mailbox worker is already configured, creation attempts the Email Routing sync automatically so each new instance gets a live inbound address by default; pass `--no-mailbox-sync` only when you explicitly want to skip that step.
 
+If you keep a path-prefixed mainland mirror such as `https://jojotry.nat100.top/<instance>/`, store its shared base URL in `~/.config/remotelab/guest-instance-defaults.json`:
+
+```json
+{
+  "mainlandBaseUrl": "https://jojotry.nat100.top"
+}
+```
+
+After that, `remotelab guest-instance create`, `create-trial`, and `show` automatically print both the regular public link and the mainland-prefixed access link. To keep the path router itself versioned instead of living only in a home-directory script, use `scripts/natapp-dual-proxy.mjs` as the launch-agent target for the mainland bridge service.
+
 If you still have older instance-specific runtime copies such as `remotelab-trial-runtime`, run `remotelab guest-instance converge <name>` or `remotelab guest-instance converge --all`. It keeps the same port, hostname, auth, config, and memory directories, but repoints the launch agent back to the current `~/code/remotelab` source tree so future code updates land everywhere without changing the user-facing link.
 
 If you want public inbound email per guest instance, prefer Cloudflare Email Routing into the Email Worker rather than creating separate mailbox accounts. `node scripts/agent-mail-cloudflare-routing.mjs status` prints the desired routing shape, `sync` backfills older instances that predate automatic provisioning, and `probe --address <email>` verifies whether SMTP will currently accept a guest mailbox such as `trial6@example.com`.
