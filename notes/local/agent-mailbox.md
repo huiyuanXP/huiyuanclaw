@@ -109,7 +109,7 @@ Key design choices:
 - On this machine, the Cloudflare Email Routing API does not accept the OAuth token from `wrangler login`; use `CLOUDFLARE_API_TOKEN` or `CLOUDFLARE_GLOBAL_API_KEY`/`CLOUDFLARE_API_KEY` plus `CLOUDFLARE_EMAIL`.
 - `node scripts/agent-mail-cloudflare-routing.mjs status --live` prints the desired and live Cloudflare state, `sync` can push the routable shape, and `probe --address <email>` does a live SMTP RCPT check against the domain MX records.
 - Delivery state is written back into the mailbox item, so `approved/` items can show `processing_for_reply`, `reply_sent`, or `reply_failed`.
-- The preferred outbound path is the Cloudflare Worker fetch endpoint backed by Cloudflare `send_email`, with `apple_mail` still available for local fallback testing.
+- The preferred outbound path is the Cloudflare Worker fetch endpoint backed by Cloudflare `send_email` for verified internal destinations, with `resend_api` as the lowest-friction custom-domain option for arbitrary external recipients and `apple_mail` still available for local fallback testing.
 - The preferred inbound path is Cloudflare Email Routing -> thin Worker ingress -> local mailbox bridge -> local agent-mail-worker, so provider logic stays thin and business logic stays in RemoteLab-owned code.
 
 ## Public ingress architecture configured on this machine

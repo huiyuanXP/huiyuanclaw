@@ -84,6 +84,8 @@ The Worker should not carry RemoteLab login or session-orchestration config. Tha
 
 ## Local outbound config contract
 
+For Cloudflare-only outbound to verified Email Routing destination addresses:
+
 ```json
 {
   "provider": "cloudflare_worker",
@@ -99,11 +101,25 @@ The Worker should not carry RemoteLab login or session-orchestration config. Tha
 
 When `fallback.provider` is set to `apple_mail`, RemoteLab first tries Cloudflare and automatically falls back to Mail.app when Cloudflare rejects a recipient because it is not a verified Email Routing destination address on the account.
 
+For arbitrary external recipients while keeping a custom-domain sender identity, prefer `resend_api`:
+
+```json
+{
+  "provider": "resend_api",
+  "apiBaseUrl": "https://api.resend.com",
+  "apiKeyEnv": "RESEND_API_KEY",
+  "from": "agent@example.com"
+}
+```
+
+This keeps Cloudflare on inbound routing while delegating real outbound delivery to a provider that can send to the public internet from your domain.
+
 ## Success state
 
 - inbound routing sends the owner mailbox and intended guest mailbox aliases to the Worker according to the chosen address mode
 - once the owner mailbox stack is configured, `remotelab guest-instance create <name>` attempts to sync Email Routing automatically so new instances get their own accepted inbound address by default
 - RemoteLab completion targets can call `POST /api/send-email` for any verified Email Routing destination address on the account
+- or call the configured local outbound provider such as `resend_api` for arbitrary public recipients
 - `curl https://.../healthz` succeeds
 - mailbox bridge and reply tests pass when the AI runs them
 - SMTP probes accept both the owner mailbox and one guest mailbox such as `trial6@domain`
@@ -124,4 +140,5 @@ node tests/test-agent-mail-cloudflare-outbound-live.mjs --to verified@example.co
 
 - No Forward Email dependency
 - No SMTP setup
+- `resend_api` is the lowest-friction path for a product-owned custom-domain sender that needs to reach arbitrary external recipients
 - `apple_mail` can be configured as an automatic local fallback when Cloudflare rejects non-verified external recipients

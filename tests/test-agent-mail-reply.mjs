@@ -207,6 +207,108 @@ try {
   assert.equal(updatedCloudflare?.automation?.runId, cloudflareRun.id);
   assert.equal(updatedCloudflare?.automation?.delivery?.provider, 'cloudflare_worker');
 
+  saveOutboundConfig(mailboxRoot, {
+    provider: 'resend_api',
+    apiBaseUrl: 'https://api.resend.test',
+    from: 'rowan@example.com',
+    apiKey: 'resend-api-secret',
+  });
+
+  const ingestedResend = ingestRawMessage(
+    [
+      'From: owner@example.com',
+      'To: rowan@example.com',
+      'Subject: hello from resend api!',
+      'Date: Tue, 10 Mar 2026 03:02:00 +0800',
+      'Message-ID: <mail-resend-test@example.com>',
+      'References: <root-resend@example.com>',
+      'Content-Type: text/plain; charset=UTF-8',
+      '',
+      'please test the Resend sender!',
+    ].join('\n'),
+    'resend-api-test.eml',
+    mailboxRoot,
+    { text: 'please test the Resend sender!' },
+  );
+
+  const approvedResend = approveMessage(ingestedResend.id, mailboxRoot, 'tester');
+  const resendRequestId = `mailbox_reply_${approvedResend.id}`;
+  const resendSession = await createSession(workspace, 'codex', 'Resend API reply test', {
+    completionTargets: [{
+      type: 'email',
+      requestId: resendRequestId,
+      to: 'owner@example.com',
+      subject: 'Re: hello from resend api!',
+      inReplyTo: '<mail-resend-test@example.com>',
+      references: '<root-resend@example.com> <mail-resend-test@example.com>',
+      mailboxRoot,
+      mailboxItemId: approvedResend.id,
+    }],
+  });
+  const resendRun = await createRun({
+    status: {
+      sessionId: resendSession.id,
+      requestId: resendRequestId,
+      state: 'completed',
+      tool: 'codex',
+    },
+    manifest: {
+      sessionId: resendSession.id,
+      requestId: resendRequestId,
+      folder: workspace,
+      tool: 'codex',
+      prompt: 'reply to the email via Resend API',
+      options: {},
+    },
+  });
+
+  await appendEvent(resendSession.id, messageEvent('assistant', 'Received — Resend API test successful.', undefined, {
+    runId: resendRun.id,
+    requestId: resendRequestId,
+  }));
+
+  const resendRequests = [];
+  const resendDeliveries = await dispatchSessionEmailCompletionTargets(resendSession, resendRun, {
+    fetchImpl: async (url, init) => {
+      resendRequests.push({ url, init });
+      return new Response(JSON.stringify({ id: 're_123' }), {
+        status: 202,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+  });
+  assert.equal(resendDeliveries.length, 1);
+  assert.equal(resendDeliveries[0].state, 'sent');
+  assert.equal(resendDeliveries[0].delivery?.provider, 'resend_api');
+  assert.equal(resendDeliveries[0].delivery?.responseId, 're_123');
+  assert.equal(resendRequests.length, 1);
+  assert.equal(resendRequests[0].url, 'https://api.resend.test/emails');
+  assert.equal(resendRequests[0].init.method, 'POST');
+  assert.equal(resendRequests[0].init.headers.Authorization, 'Bearer resend-api-secret');
+  assert.deepEqual(JSON.parse(resendRequests[0].init.body), {
+    from: 'rowan@example.com',
+    to: 'owner@example.com',
+    subject: 'Re: hello from resend api!',
+    text: 'Received — Resend API test successful.',
+    headers: {
+      'In-Reply-To': '<mail-resend-test@example.com>',
+      References: '<root-resend@example.com> <mail-resend-test@example.com>',
+    },
+  });
+
+  const updatedResend = findQueueItem(approvedResend.id, mailboxRoot)?.item;
+  assert.equal(updatedResend?.status, 'reply_sent');
+  assert.equal(updatedResend?.automation?.status, 'reply_sent');
+  assert.equal(updatedResend?.automation?.runId, resendRun.id);
+  assert.equal(updatedResend?.automation?.delivery?.provider, 'resend_api');
+
+  saveOutboundConfig(mailboxRoot, {
+    provider: 'cloudflare_worker',
+    workerBaseUrl: `http://127.0.0.1:${port}`,
+    from: 'rowan@example.com',
+    workerToken: 'cloudflare-worker-secret',
+  });
+
   const ingestedBlankSubject = ingestRawMessage(
     [
       'From: owner@example.com',
