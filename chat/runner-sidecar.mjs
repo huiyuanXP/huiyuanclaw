@@ -29,7 +29,7 @@ function nowIso() {
 }
 
 async function cleanEnv(toolId, manifest = {}, options = {}) {
-  const env = buildToolProcessEnv();
+  const env = buildToolProcessEnv(options.envOverrides || {});
   delete env.CLAUDECODE;
   delete env.CLAUDE_CODE_ENTRYPOINT;
   env.REMOTELAB_CHAT_BASE_URL = `http://127.0.0.1:${CHAT_PORT}`;
@@ -124,7 +124,7 @@ async function main() {
   }
 
   const prompt = prependAttachmentPaths(manifest.prompt || '', materializedImages);
-  const { command, args, runtimeFamily } = await createToolInvocation(manifest.tool, prompt, {
+  const { command, args, runtimeFamily, envOverrides } = await createToolInvocation(manifest.tool, prompt, {
     dangerouslySkipPermissions: true,
     claudeSessionId: manifest.options?.claudeSessionId,
     codexThreadId: manifest.options?.codexThreadId,
@@ -136,7 +136,7 @@ async function main() {
   const proc = spawn(await resolveCommand(command), args, {
     cwd: resolveCwd(manifest.folder),
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: await cleanEnv(manifest.tool, manifest, { runtimeFamily }),
+    env: await cleanEnv(manifest.tool, manifest, { runtimeFamily, envOverrides }),
   });
 
   await updateRun(runId, (current) => ({

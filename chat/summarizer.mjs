@@ -98,7 +98,7 @@ async function runToolJsonPrompt(sessionMeta, prompt) {
     throw new Error('Session label suggestion requires an explicit tool');
   }
 
-  const { command, adapter, args } = await createToolInvocation(tool, prompt, {
+  const { command, adapter, args, envOverrides } = await createToolInvocation(tool, prompt, {
     dangerouslySkipPermissions: true,
     model,
     effort,
@@ -111,7 +111,7 @@ async function runToolJsonPrompt(sessionMeta, prompt) {
     `[summarizer] Calling tool=${tool} cmd=${resolvedCmd} model=${model || 'default'} effort=${effort || 'default'} thinking=${!!thinking} for session ${sessionId.slice(0, 8)}`
   );
 
-  const subEnv = buildToolProcessEnv();
+  const subEnv = buildToolProcessEnv(envOverrides || {});
   delete subEnv.CLAUDECODE;
   delete subEnv.CLAUDE_CODE_ENTRYPOINT;
 

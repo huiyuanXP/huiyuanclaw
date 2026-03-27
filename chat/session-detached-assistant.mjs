@@ -28,7 +28,7 @@ export async function runDetachedAssistantPrompt(sessionMeta, prompt, options = 
   });
   const resolvedCmd = await resolveCommand(invocation.command);
   const resolvedFolder = resolveCwd(folder);
-  const env = buildToolProcessEnv();
+  const env = buildToolProcessEnv(invocation.envOverrides || {});
   delete env.CLAUDECODE;
   delete env.CLAUDE_CODE_ENTRYPOINT;
 

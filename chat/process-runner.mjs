@@ -2,7 +2,12 @@ import { homedir } from 'os';
 import { resolve, join } from 'path';
 import { createClaudeAdapter, buildClaudeArgs } from './adapters/claude.mjs';
 import { createCodexAdapter, buildCodexArgs } from './adapters/codex.mjs';
-import { getToolDefinitionAsync, getToolCommandAsync, resolveToolCommandPathAsync } from '../lib/tools.mjs';
+import {
+  buildToolProcessEnvOverrides,
+  getToolDefinitionAsync,
+  getToolCommandAsync,
+  resolveToolCommandPathAsync,
+} from '../lib/tools.mjs';
 import {
   formatAttachmentContextReference,
   getAttachmentSavedPath,
@@ -33,6 +38,7 @@ export async function resolveCommand(cmd) {
 export async function createToolInvocation(toolId, prompt, options = {}) {
   const tool = await getToolDefinitionAsync(toolId);
   const command = tool?.command || await getToolCommandAsync(toolId);
+  const envOverrides = buildToolProcessEnvOverrides(tool || { id: toolId });
   const runtimeFamily = tool?.runtimeFamily
     || (toolId === 'claude' ? 'claude-stream-json' : toolId === 'codex' ? 'codex-json' : null);
   const isClaudeFamily = runtimeFamily === 'claude-stream-json';
@@ -77,6 +83,7 @@ export async function createToolInvocation(toolId, prompt, options = {}) {
     command,
     adapter,
     args,
+    envOverrides,
     isClaudeFamily,
     isCodexFamily,
     runtimeFamily,
