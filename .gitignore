@@ -42,3 +42,17 @@ node_modules/
 disconnect
 dogfood-output/
 shared/
+
+# Personal agent config (use setup-workspace.sh to create your own)
+AGENTS.md
+CLAUDE.md
+SOUL.md
+
+# Test files
+test-*.mjs
+
+# Personal notes
+notes/
+
+# Debug artifacts
+compact.json

@@ -1,7 +1,7 @@
 {
   "name": "huiyuanclaw",
   "version": "1.1.0",
-  "description": "Remote browser access to any CLI dev tool (Claude, Copilot, Codex, Cline and more) via HTTPS",
+  "description": "Orchestrate AI coding agents from your phone — multi-session, task dependencies, MCP-native, browser-based",
   "type": "module",
   "license": "MIT",
   "keywords": [
@@ -16,6 +16,10 @@
     "remote",
     "ttyd",
     "terminal",
+    "orchestrator",
+    "mcp",
+    "agent",
+    "task-dependency",
     "proxy",
     "ssh",
     "macos"
@@ -37,6 +41,7 @@
     "generate-token.mjs",
     "mcp-server.mjs",
     "setup.sh",
+    "setup-workspace.sh",
     "start.sh",
     "stop.sh",
     "claude-ttyd-session",
@@ -55,7 +60,7 @@
     "setup": "./setup.sh",
     "generate-token": "node generate-token.mjs",
     "mcp": "node mcp-server.mjs",
-    "prepublishOnly": "chmod +x cli.js setup.sh start.sh stop.sh claude-ttyd-session"
+    "prepublishOnly": "chmod +x cli.js setup.sh setup-workspace.sh start.sh stop.sh claude-ttyd-session"
   },
   "dependencies": {
     "ws": "^8.19.0"

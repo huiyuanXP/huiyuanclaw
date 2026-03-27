@@ -289,6 +289,7 @@ const TOOLS = [
         thinking: { type: 'boolean', description: 'Enable extended thinking mode.' },
         model: { type: 'string', description: 'Override the model to use.' },
         report_to: { type: 'string', description: 'Session ID to report back to when this session completes. The result will be sent as a chat message to that session, waking it up if idle or interrupting if busy.' },
+        is_system_notification: { type: 'boolean', description: 'If true, treat as a background system notification. Idle sessions receive the message via JSONL injection (not woken up). Active sessions receive it normally. Message is shown folded in UI. Use for patrol nudges, status updates, and non-urgent background info.' },
       },
       required: ['session_id', 'text'],
     },
@@ -422,6 +423,7 @@ async function executeTool(name, args) {
       if (args.tool) body.tool = args.tool;
       if (args.thinking) body.thinking = true;
       if (args.model) body.model = args.model;
+      if (args.is_system_notification) body.isSystemNotification = true;
       const effectiveReportTo = (!args.report_to || args.report_to === 'current') ? MY_SESSION_ID : args.report_to;
       if (effectiveReportTo) body.report_to = effectiveReportTo;
 

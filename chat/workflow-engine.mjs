@@ -46,8 +46,9 @@ async function runTask(task, runDir, sessionIds) {
     return runSessionMessageTask(task, runDir);
   }
   // Default: createAndRun (legacy task type)
-  console.log(`[Workflow] Running task "${task.id}" in ${task.workspace} (model: ${task.model})`);
-  const { output, sessionId } = await createAndRun(task.workspace, task.model, task.prompt);
+  const timeoutMs = task.timeoutMs || 5 * 60 * 1000;
+  console.log(`[Workflow] Running task "${task.id}" in ${task.workspace} (model: ${task.model}, timeout: ${timeoutMs / 1000}s)`);
+  const { output, sessionId } = await createAndRun(task.workspace, task.model, task.prompt, { timeoutMs });
   if (sessionId) sessionIds.push(sessionId);
   writeFileSync(join(runDir, `${task.id}.txt`), output, 'utf8');
   console.log(`[Workflow] Task "${task.id}" completed (${output.length} chars)`);

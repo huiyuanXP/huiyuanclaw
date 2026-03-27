@@ -3,6 +3,25 @@
 
   console.log("hello!");
 
+  // Inject copy buttons into all <pre> blocks inside a container
+  function addCopyButtons(container) {
+    container.querySelectorAll("pre").forEach(pre => {
+      if (pre.querySelector(".code-copy-btn")) return;
+      const btn = document.createElement("button");
+      btn.className = "code-copy-btn";
+      btn.textContent = "Copy";
+      btn.addEventListener("click", () => {
+        const code = pre.querySelector("code");
+        const text = (code || pre).textContent;
+        navigator.clipboard.writeText(text).then(() => {
+          btn.textContent = "Copied!";
+          setTimeout(() => { btn.textContent = "Copy"; }, 1500);
+        });
+      });
+      pre.appendChild(btn);
+    });
+  }
+
   // Reliable touch detection: add class to <html> so CSS can target it
   // More reliable than @media (hover: none) on real Android/iOS devices
   if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
@@ -319,12 +338,13 @@
 
   // ---- Inline model select ----
   const CLAUDE_MODELS = [
-    { id: "sonnet", name: "Sonnet" },
-    { id: "opus", name: "Opus" },
-    { id: "haiku", name: "Haiku" },
-    { id: "sonnet[1m]", name: "Sonnet 1M" },
     { id: "opus[1m]", name: "Opus 1M" },
+    { id: "sonnet[1m]", name: "Sonnet 1M" },
+    { id: "opus", name: "Opus" },
+    { id: "sonnet", name: "Sonnet" },
+    { id: "haiku", name: "Haiku" },
   ];
+  const CLAUDE_DEFAULT_MODEL = "opus[1m]";
 
   function populateModelSelect(models, tool, serverDefault, sessionModel) {
     const storageKey = `selectedModel_${tool || "claude"}`;
@@ -363,7 +383,7 @@
       } catch {}
     }
     // Claude (or codex fetch failed): use hardcoded list
-    populateModelSelect(CLAUDE_MODELS, activeTool, null, sessionModel);
+    populateModelSelect(CLAUDE_MODELS, activeTool, CLAUDE_DEFAULT_MODEL, sessionModel);
   }
 
   inlineModelSelect.addEventListener("change", () => {
@@ -381,6 +401,11 @@
       updateStatus("connected", "idle");
       const restartBanner = document.getElementById("restart-banner");
       if (restartBanner) restartBanner.remove();
+      // Check if there's still a pending restart after reconnect
+      fetch("/api/restart/pending").then(r => r.json()).then(data => {
+        if (data.pending) showPendingRestartBanner(null, data.requestedAt);
+        else removePendingRestartBanner();
+      }).catch(() => {});
       ws.send(JSON.stringify({ action: "list" }));
       if (currentSessionId) {
         ws.send(
@@ -430,6 +455,8 @@
         archivedSessions = (msg.sessions || []).filter(s => !s.hidden && s.archived);
         rebuildKnownFolders();
         renderSessionList();
+        // Handle ?open=<absolute_path> deep link to preview a file
+        handleOpenFileParam();
         break;
 
       case "session":
@@ -550,6 +577,14 @@
         showRestartBanner(msg.message);
         break;
 
+      case "pending_restart":
+        showPendingRestartBanner(msg.message, msg.requestedAt);
+        break;
+
+      case "pending_restart_cancelled":
+        removePendingRestartBanner();
+        break;
+
       case "error":
         console.error("WS error:", msg.message);
         break;
@@ -559,11 +594,61 @@
   function showRestartBanner(message) {
     const existing = document.getElementById("restart-banner");
     if (existing) existing.remove();
+    removePendingRestartBanner();
     const banner = document.createElement("div");
     banner.id = "restart-banner";
     banner.className = "restart-banner";
     banner.textContent = message || "Server is restarting...";
     document.body.appendChild(banner);
+  }
+
+  function showPendingRestartBanner(message, requestedAt) {
+    removePendingRestartBanner();
+    const banner = document.createElement("div");
+    banner.id = "pending-restart-banner";
+    banner.className = "pending-restart-banner";
+
+    const textSpan = document.createElement("span");
+    textSpan.textContent = message || "Waiting for all sessions to finish before restarting...";
+    banner.appendChild(textSpan);
+
+    const btnGroup = document.createElement("span");
+    btnGroup.className = "pending-restart-actions";
+
+    const restartBtn = document.createElement("button");
+    restartBtn.className = "pending-restart-btn restart-now";
+    restartBtn.textContent = "Restart Now";
+    restartBtn.onclick = async () => {
+      restartBtn.disabled = true;
+      restartBtn.textContent = "Restarting...";
+      try {
+        await fetch("/api/restart", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: "immediate" }),
+        });
+      } catch {}
+    };
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.className = "pending-restart-btn cancel-restart";
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.onclick = async () => {
+      try {
+        await fetch("/api/restart/pending", { method: "DELETE" });
+      } catch {}
+      removePendingRestartBanner();
+    };
+
+    btnGroup.appendChild(restartBtn);
+    btnGroup.appendChild(cancelBtn);
+    banner.appendChild(btnGroup);
+    document.body.appendChild(banner);
+  }
+
+  function removePendingRestartBanner() {
+    const existing = document.getElementById("pending-restart-banner");
+    if (existing) existing.remove();
   }
 
   function renderRestartDivider(text, extraClass) {
@@ -573,6 +658,30 @@
     div.innerHTML = `<span class="restart-divider-text">${text}</span>`;
     messagesInner.appendChild(div);
     scrollToBottom();
+  }
+
+  function renderSystemNotification(evt) {
+    if (inThinkingBlock) finalizeThinkingBlock();
+    const wrap = document.createElement("div");
+    wrap.className = "sys-notif collapsed";
+
+    const header = document.createElement("div");
+    header.className = "sys-notif-header";
+    // Show first line of content as preview
+    const preview = (evt.content || "").split("\n")[0].slice(0, 80);
+    header.innerHTML = `<span class="sys-notif-icon">&#x1F916;</span><span class="sys-notif-label">${escapeHtml(preview)}</span><span class="sys-notif-chevron">&#9660;</span>`;
+
+    const body = document.createElement("div");
+    body.className = "sys-notif-body";
+    body.textContent = evt.content || "";
+
+    header.addEventListener("click", () => {
+      wrap.classList.toggle("collapsed");
+    });
+
+    wrap.appendChild(header);
+    wrap.appendChild(body);
+    messagesInner.appendChild(wrap);
   }
 
   // ---- Status ----
@@ -737,6 +846,9 @@
       case "restart_resume":
         renderRestartDivider("\u2713 Server restarted \u2014 continuing your work...", "restart-resume-divider");
         break;
+      case "system_notification":
+        renderSystemNotification(evt);
+        break;
     }
 
     if (shouldScroll) scrollToBottom();
@@ -828,7 +940,10 @@
     } else {
       const div = document.createElement("div");
       div.className = "msg-assistant md-content";
-      if (evt.content) div.innerHTML = marked.parse(evt.content);
+      if (evt.content) {
+        div.innerHTML = marked.parse(evt.content);
+        addCopyButtons(div);
+      }
       messagesInner.appendChild(div);
     }
   }
@@ -1307,6 +1422,7 @@
       const planBody = document.createElement("div");
       planBody.className = "plan-body md-content";
       planBody.innerHTML = marked.parse(evt.plan);
+      addCopyButtons(planBody);
       card.appendChild(planBody);
     }
 
@@ -2319,6 +2435,11 @@
           <div style="font-size:11px;color:var(--text-muted)">Loading workflow…</div>`;
         body.appendChild(wfSection);
         loadWorkflowIntoPanel(sched.workflow, wfSection);
+      } else if (sched.inlineWorkflow) {
+        const wfSection = document.createElement("div");
+        wfSection.className = "tdp-section";
+        renderInlineWorkflow(sched.inlineWorkflow, wfSection);
+        body.appendChild(wfSection);
       }
 
       // ── Run History ──
@@ -2368,6 +2489,31 @@
     } catch (err) {
       console.error("Failed to open task detail:", err);
       workflowView.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-muted)">Failed to load task details.</div>';
+    }
+  }
+
+  function renderInlineWorkflow(inlineWf, container) {
+    container.innerHTML = `<div class="tdp-section-title">Workflow: ${escapeHtml(inlineWf.name || "inline")}</div>`;
+    const steps = inlineWf.steps || [];
+    for (const step of steps) {
+      const stepEl = document.createElement("div");
+      stepEl.className = "tdp-step";
+      const stepType = step.type || "sequential";
+      stepEl.innerHTML = `<div class="tdp-step-header">${escapeHtml(step.id || "step")} <span style="font-weight:400;color:var(--text-muted);font-size:11px">(${escapeHtml(stepType)})</span></div>`;
+      const tasks = step.tasks || [];
+      for (const task of tasks) {
+        const taskEl = document.createElement("div");
+        taskEl.className = "tdp-task";
+        const target = task.sessionId ? `session: ${task.sessionId.slice(0, 8)}…` : (task.workspace || "—");
+        const prompt = task.text || task.prompt || "";
+        taskEl.innerHTML = `
+          <div class="tdp-task-id">${escapeHtml(task.id || "task")}${task.type ? ` <span style="color:var(--text-muted);font-size:11px">(${escapeHtml(task.type)})</span>` : ""}</div>
+          <div class="tdp-task-meta">target: ${escapeHtml(target)}</div>
+          ${prompt ? `<div class="tdp-task-prompt">${escapeHtml(prompt)}</div>` : ""}
+        `;
+        stepEl.appendChild(taskEl);
+      }
+      container.appendChild(stepEl);
     }
   }
 
@@ -2577,6 +2723,77 @@
     }, 0);
   }
 
+  // ---- ?open= deep link handler ----
+  let openFileHandled = false;
+  function handleOpenFileParam() {
+    if (openFileHandled) return;
+    const params = new URLSearchParams(window.location.search);
+    const openPath = params.get("open");
+    if (!openPath) return;
+    openFileHandled = true;
+    // Clear the URL param without reload
+    const url = new URL(window.location);
+    url.searchParams.delete("open");
+    window.history.replaceState({}, "", url.pathname + url.search + url.hash);
+
+    // Find a session whose folder is a prefix of the absolute path
+    const allSess = [...sessions, ...archivedSessions, ...workflowSessions];
+    const match = allSess
+      .filter(s => s.folder && openPath.startsWith(s.folder + "/"))
+      .sort((a, b) => b.folder.length - a.folder.length)[0]; // longest match first
+    if (!match) {
+      alert("No session found for path: " + openPath);
+      return;
+    }
+    const relPath = openPath.slice(match.folder.length + 1);
+    attachSession(match.id, match);
+    // Wait for session attach to complete, then switch to Files and open the file
+    setTimeout(() => {
+      switchSessionTab("files");
+      // Give file tree time to load, then select the file
+      const waitForTree = () => {
+        if (fileTreeCache[match.folder]) {
+          selectedFilePath = relPath;
+          loadFileContent(match.folder, relPath);
+          // Auto-expand tree to the file
+          expandTreeToPath(relPath);
+        } else {
+          setTimeout(waitForTree, 200);
+        }
+      };
+      setTimeout(waitForTree, 300);
+    }, 100);
+  }
+
+  function expandTreeToPath(relPath) {
+    const parts = relPath.split("/");
+    let currentEl = filesTree;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const dirEls = currentEl.querySelectorAll(":scope > .files-tree-dir");
+      for (const d of dirEls) {
+        const nameEl = d.querySelector(":scope > .files-tree-item .files-tree-name");
+        if (nameEl && nameEl.textContent === parts[i]) {
+          d.classList.add("open");
+          const icon = d.querySelector(":scope > .files-tree-item .files-tree-icon");
+          if (icon) icon.textContent = "▼";
+          currentEl = d.querySelector(".files-tree-children") || d;
+          break;
+        }
+      }
+    }
+    // Highlight the file
+    const fileName = parts[parts.length - 1];
+    const fileItems = filesTree.querySelectorAll(".files-tree-item");
+    fileItems.forEach(item => {
+      item.classList.remove("selected");
+      const nameEl = item.querySelector(".files-tree-name");
+      if (nameEl && nameEl.textContent === fileName) {
+        item.classList.add("selected");
+        item.scrollIntoView({ block: "nearest" });
+      }
+    });
+  }
+
   // ---- Files tab: tree & content viewer ----
 
   function switchSessionTab(tab) {
@@ -2676,6 +2893,21 @@
     return map[ext] || "";
   }
 
+  function getFileType(filename) {
+    const ext = filename.split(".").pop().toLowerCase();
+    if (["mp4", "webm", "mov", "avi", "mkv"].includes(ext)) return "video";
+    if (["mp3", "wav", "aac", "ogg", "flac"].includes(ext)) return "audio";
+    if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico"].includes(ext)) return "image";
+    if (ext === "pdf") return "pdf";
+    if (ext === "md") return "markdown";
+    if (["tex", "latex"].includes(ext)) return "latex";
+    return "text";
+  }
+
+  function getAbsolutePath(folder, relPath) {
+    return folder + (folder.endsWith("/") ? "" : "/") + relPath;
+  }
+
   function checkUnsavedEdits() {
     if (isFileEditing) {
       const ta = filesContent.querySelector(".files-editor");
@@ -2689,16 +2921,101 @@
   }
 
   function renderFileReadonly(path, content) {
+    const fileType = getFileType(path);
+    const s = [...sessions, ...workflowSessions, ...archivedSessions].find(x => x.id === currentSessionId);
+    const absPath = s?.folder ? getAbsolutePath(s.folder, path) : path;
+    const downloadUrl = `/api/download?path=${encodeURIComponent(absPath)}`;
+
+    // Header with download button
+    const headerHtml = `<div class="files-content-header-row">
+      <span>${esc(path)}</span>
+      <div class="files-edit-actions">
+        ${fileType === "text" || fileType === "markdown" || fileType === "latex" ? '<button class="file-edit-btn">Edit</button><button class="file-save-btn" disabled>Save</button>' : ''}
+        <a class="file-download-btn" href="${esc(downloadUrl)}" title="Download">↓ Download</a>
+      </div>
+    </div>`;
+
+    if (fileType === "video") {
+      const inlineUrl = `/api/download?path=${encodeURIComponent(absPath)}&inline=1`;
+      filesContent.innerHTML = headerHtml +
+        `<div class="files-preview-media"><video controls playsinline preload="metadata" src="${esc(inlineUrl)}"></video></div>`;
+      return;
+    }
+
+    if (fileType === "audio") {
+      const inlineUrl = `/api/download?path=${encodeURIComponent(absPath)}&inline=1`;
+      filesContent.innerHTML = headerHtml +
+        `<div class="files-preview-media"><audio controls preload="metadata" src="${esc(inlineUrl)}"></audio></div>`;
+      return;
+    }
+
+    if (fileType === "image") {
+      const inlineUrl = `/api/download?path=${encodeURIComponent(absPath)}&inline=1`;
+      filesContent.innerHTML = headerHtml +
+        `<div class="files-preview-media"><img src="${esc(inlineUrl)}" alt="${esc(path)}" loading="lazy" /></div>`;
+      return;
+    }
+
+    if (fileType === "pdf") {
+      const inlineUrl = `/api/download?path=${encodeURIComponent(absPath)}&inline=1`;
+      filesContent.innerHTML = headerHtml +
+        `<div class="files-preview-pdf"><iframe src="${esc(inlineUrl)}" frameborder="0"></iframe></div>`;
+      return;
+    }
+
+    if (fileType === "markdown") {
+      const renderedHtml = typeof marked !== "undefined" ? marked.parse(content) : esc(content);
+      filesContent.innerHTML = headerHtml +
+        `<div class="files-preview-markdown">${renderedHtml}</div>`;
+      // Highlight code blocks within rendered markdown
+      if (typeof hljs !== "undefined") {
+        filesContent.querySelectorAll("pre code").forEach(el => hljs.highlightElement(el));
+      }
+      // Render LaTeX in markdown if KaTeX is available
+      if (typeof renderMathInElement !== "undefined") {
+        renderMathInElement(filesContent.querySelector(".files-preview-markdown"), {
+          delimiters: [
+            { left: "$$", right: "$$", display: true },
+            { left: "$", right: "$", display: false },
+            { left: "\\[", right: "\\]", display: true },
+            { left: "\\(", right: "\\)", display: false },
+          ],
+          throwOnError: false,
+        });
+      }
+      filesContent.querySelector(".file-edit-btn")?.addEventListener("click", () => enterEditMode());
+      filesContent.querySelector(".file-save-btn")?.addEventListener("click", () => saveFile());
+      return;
+    }
+
+    if (fileType === "latex") {
+      // Show rendered LaTeX if KaTeX available, otherwise show source
+      let latexHtml = `<pre><code class="language-latex">${esc(content)}</code></pre>`;
+      if (typeof katex !== "undefined") {
+        try {
+          latexHtml = `<div class="files-preview-latex">${katex.renderToString(content, { displayMode: true, throwOnError: false })}</div>`;
+        } catch { /* fall back to source */ }
+      }
+      filesContent.innerHTML = headerHtml + latexHtml;
+      if (typeof hljs !== "undefined") {
+        const codeEl = filesContent.querySelector("code");
+        if (codeEl) hljs.highlightElement(codeEl);
+      }
+      filesContent.querySelector(".file-edit-btn")?.addEventListener("click", () => enterEditMode());
+      filesContent.querySelector(".file-save-btn")?.addEventListener("click", () => saveFile());
+      return;
+    }
+
+    // Default: syntax-highlighted text
     const lang = extToLang(path);
-    filesContent.innerHTML =
-      `<div class="files-content-header-row"><span>${esc(path)}</span><div class="files-edit-actions"><button class="file-edit-btn">Edit</button><button class="file-save-btn" disabled>Save</button></div></div>` +
+    filesContent.innerHTML = headerHtml +
       `<pre><code class="${lang ? "language-" + lang : ""}">${esc(content)}</code></pre>`;
     if (typeof hljs !== "undefined") {
       const codeEl = filesContent.querySelector("code");
       if (codeEl) hljs.highlightElement(codeEl);
     }
-    filesContent.querySelector(".file-edit-btn").addEventListener("click", () => enterEditMode());
-    filesContent.querySelector(".file-save-btn").addEventListener("click", () => saveFile());
+    filesContent.querySelector(".file-edit-btn")?.addEventListener("click", () => enterEditMode());
+    filesContent.querySelector(".file-save-btn")?.addEventListener("click", () => saveFile());
   }
 
   function enterEditMode() {
@@ -2758,6 +3075,16 @@
 
   async function loadFileContent(folder, path) {
     filesContent.innerHTML = '<div class="files-loading">Loading...</div>';
+    const fileType = getFileType(path);
+
+    // Binary files (video, audio, image, pdf) — no need to fetch content, just render preview
+    if (["video", "audio", "image", "pdf"].includes(fileType)) {
+      rawFileContent = null;
+      isFileEditing = false;
+      renderFileReadonly(path, "");
+      return;
+    }
+
     try {
       const res = await fetch(`/api/folders/${encodeURIComponent(folder)}/file?path=${encodeURIComponent(path)}`);
       if (!res.ok) {
@@ -4065,9 +4392,9 @@
     reportPanel.classList.add("hidden");
     reportPanelBackdrop.classList.add("hidden");
   });
-  reportPanelBackdrop.addEventListener("click", (e) => {
-    e.stopPropagation();
-    // Intentionally does nothing — only the X button closes the panel
+  reportPanelBackdrop.addEventListener("click", () => {
+    reportPanel.classList.add("hidden");
+    reportPanelBackdrop.classList.add("hidden");
   });
   reportBack.addEventListener("click", () => reportManager.closeDetail());
   reportDetailClose.addEventListener("click", () =>

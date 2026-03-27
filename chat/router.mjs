@@ -1,4 +1,4 @@
-import { existsSync, statSync, readdirSync, readFileSync, mkdirSync, writeFileSync, renameSync } from 'fs';
+import { existsSync, statSync, readdirSync, readFileSync, mkdirSync, writeFileSync, renameSync, createReadStream } from 'fs';
 import { spawn } from 'child_process';
 import { readdir, stat } from 'fs/promises';
 import { createHash, randomBytes } from 'crypto';
@@ -12,10 +12,10 @@ import {
   parseCookies, setCookie, clearCookie,
 } from '../lib/auth.mjs';
 import { getAvailableTools } from '../lib/tools.mjs';
-import { listSessions, getSession, createSession, deleteSession, sendMessage, getHistory, waitForIdle, receiveHookRequest, getLabels, addLabel, removeLabel, updateLabel, setSessionLabel, archiveSession, restartServer, broadcastReportNew } from './session-manager.mjs';
+import { listSessions, getSession, createSession, deleteSession, sendMessage, getHistory, waitForIdle, receiveHookRequest, getLabels, addLabel, removeLabel, updateLabel, setSessionLabel, archiveSession, restartServer, broadcastReportNew, requestWaitRestart, cancelPendingRestart, getPendingRestart } from './session-manager.mjs';
 import { executeWorkflow, listWorkflowRuns } from './workflow-engine.mjs';
 import { reloadSchedule, updateLastRun } from './scheduler.mjs';
-import { getSidebarState } from './summarizer.mjs';
+import { getSidebarState, callHaiku } from './summarizer.mjs';
 import { listReports, getReport, getReportHtml, createReport, markAsRead, deleteReport } from './reports.mjs';
 import { initTaskManager, createTask, getTask, listTasks, updateTask, deleteTask } from './task-manager.mjs';
 import { readBody, readBodyBinary } from '../lib/utils.mjs';
@@ -37,8 +37,16 @@ function saveReportTo() {
 function registerReportTo(workerSessionId, reportToSessionId) {
   pendingReportTo.set(workerSessionId, reportToSessionId);
   saveReportTo();
-  waitForIdle(workerSessionId, 30 * 60 * 1000).then(() => {
+  waitForIdle(workerSessionId, 30 * 60 * 1000).then(async () => {
     sendReport(workerSessionId, reportToSessionId);
+    // After sending individual report, check if this was the last sibling
+    // (no other pending workers reporting to the same parent)
+    const remainingSiblings = [...pendingReportTo.entries()]
+      .filter(([wid, pid]) => pid === reportToSessionId && wid !== workerSessionId);
+    if (remainingSiblings.length === 0) {
+      // This was the last sibling — run conflict check on all siblings that reported
+      await runConflictCheck(workerSessionId, reportToSessionId);
+    }
   }).catch(err => {
     console.warn(`[router] report_to watcher failed for ${workerSessionId.slice(0,8)}: ${err.message}`);
   }).finally(() => {
@@ -59,6 +67,60 @@ function sendReport(workerSessionId, reportToSessionId) {
     lastMsg && `[Result] ${lastMsg}`,
   ].filter(Boolean).join('\n');
   sendMessage(reportToSessionId, report, undefined, {});
+}
+
+/**
+ * Find all sibling worker sessions that report to the same parent.
+ * Uses task-manager data (report_to field) to find siblings reliably,
+ * since pendingReportTo entries are cleaned up as workers finish.
+ */
+function findSiblingWorkers(reportToSessionId) {
+  const allTasks = listTasks();
+  return allTasks
+    .filter(t => t.report_to === reportToSessionId && t.assigned_session_id)
+    .map(t => t.assigned_session_id);
+}
+
+/**
+ * After the last sibling worker finishes, check if their outputs conflict.
+ * Sends a conflict summary to the parent session if conflicts are found.
+ */
+async function runConflictCheck(lastWorkerSessionId, reportToSessionId) {
+  try {
+    const siblingIds = findSiblingWorkers(reportToSessionId);
+    // Need at least 2 siblings for conflict to be possible
+    if (siblingIds.length <= 1) return;
+
+    const summaries = [];
+    for (const sid of siblingIds) {
+      const session = getSession(sid);
+      const name = session?.name || sid.slice(0, 8);
+      const history = getHistory(sid);
+      const lastMsg = [...history].reverse().find(e => e.role === 'assistant')?.content || '';
+      if (!lastMsg) continue;
+      const truncated = lastMsg.length > 500 ? lastMsg.slice(-500) : lastMsg;
+      summaries.push(`### Session "${name}"\n${truncated}`);
+    }
+
+    if (summaries.length <= 1) return;
+
+    console.log(`[router] Running conflict check for ${summaries.length} siblings reporting to ${reportToSessionId.slice(0, 8)}`);
+
+    const prompt = `以下是同一个父任务下 ${summaries.length} 个子 agent 的输出摘要。请检查是否存在相互矛盾、不一致或冲突的地方。
+如果有冲突：列出冲突点，简要说明。
+如果没有冲突：仅输出"无冲突"。
+
+${summaries.join('\n\n')}`;
+
+    const result = await callHaiku(prompt, { timeout: 30000 });
+    if (!result) return;
+
+    const conflictMsg = `[共识冲突检测] ${summaries.length} 个子任务输出对比结果：\n${result}`;
+    sendMessage(reportToSessionId, conflictMsg, undefined, { isSystemNotification: true });
+    console.log(`[router] Conflict check result sent to ${reportToSessionId.slice(0, 8)}: ${result.slice(0, 100)}`);
+  } catch (err) {
+    console.error(`[router] Conflict check failed (non-blocking): ${err.message}`);
+  }
 }
 
 export function recoverReportToWatchers() {
@@ -522,13 +584,13 @@ export async function handleRequest(req, res) {
         throw err;
       }
       try {
-        const { text, images, tool, thinking, model, report_to } = JSON.parse(body);
+        const { text, images, tool, thinking, model, report_to, isSystemNotification } = JSON.parse(body);
         if (!text) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'text is required' }));
           return;
         }
-        sendMessage(id, text.trim(), images, { tool, thinking: !!thinking, model });
+        sendMessage(id, text.trim(), images, { tool, thinking: !!thinking, model, isSystemNotification: !!isSystemNotification });
         res.writeHead(202, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, sessionId: id, status: 'running' }));
 
@@ -652,19 +714,43 @@ export async function handleRequest(req, res) {
     return;
   }
 
-  // POST /api/restart — restart the chat server
+  // POST /api/restart — restart the chat server (supports mode: "immediate" | "wait")
   if (pathname === '/api/restart' && req.method === 'POST') {
     try {
       const body = JSON.parse(await readBody(req));
       const triggerSessionId = body.session_id || null;
-      restartServer(triggerSessionId);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, message: 'Server restarting...' }));
+      const mode = body.mode || 'immediate';
+
+      if (mode === 'wait') {
+        const result = requestWaitRestart(triggerSessionId);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, ...result }));
+      } else {
+        restartServer(triggerSessionId);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, message: 'Server restarting...' }));
+      }
     } catch {
       restartServer(null);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, message: 'Server restarting...' }));
     }
+    return;
+  }
+
+  // GET /api/restart/pending — check if a restart is pending
+  if (pathname === '/api/restart/pending' && req.method === 'GET') {
+    const pending = getPendingRestart();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ pending: !!pending, ...(pending || {}) }));
+    return;
+  }
+
+  // DELETE /api/restart/pending — cancel a pending restart
+  if (pathname === '/api/restart/pending' && req.method === 'DELETE') {
+    const cancelled = cancelPendingRestart();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, cancelled }));
     return;
   }
 
@@ -1301,6 +1387,85 @@ export async function handleRequest(req, res) {
     return;
   }
 
+  // GET /api/download?path=<absolute_path>[&inline=1][&preview=1] — download/stream/preview a file
+  // ?preview=1 → redirect to /?open=<path> for rich file preview in Files tab
+  // ?inline=1 → serve inline (for embedding video/image/pdf in previews)
+  // Default → trigger browser download via Content-Disposition: attachment
+  if (pathname === '/api/download' && req.method === 'GET') {
+    const filePath = decodeURIComponent(parsedUrl.query.path || '');
+    const inline = parsedUrl.query.inline === '1';
+    const preview = parsedUrl.query.preview === '1';
+
+    if (preview && filePath) {
+      res.writeHead(302, { 'Location': `/?open=${encodeURIComponent(filePath)}` });
+      res.end();
+      return;
+    }
+
+    // Security: must be absolute, within /home/ally/, no traversal
+    if (!filePath || !filePath.startsWith('/home/ally/') || filePath.includes('..')) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Access denied' }));
+      return;
+    }
+    const resolvedPath = resolve(filePath);
+    if (!resolvedPath.startsWith('/home/ally/')) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Access denied' }));
+      return;
+    }
+    if (!existsSync(resolvedPath) || !statSync(resolvedPath).isFile()) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'File not found' }));
+      return;
+    }
+    const st = statSync(resolvedPath);
+    const ext = basename(resolvedPath).split('.').pop().toLowerCase();
+    const mimeMap = {
+      mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime',
+      mp3: 'audio/mpeg', wav: 'audio/wav', aac: 'audio/aac',
+      pdf: 'application/pdf',
+      png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml',
+      zip: 'application/zip', gz: 'application/gzip',
+      json: 'application/json', txt: 'text/plain', md: 'text/plain', html: 'text/html',
+    };
+    const contentType = mimeMap[ext] || 'application/octet-stream';
+    const filename = basename(resolvedPath);
+    const headers = {
+      'Content-Type': contentType,
+      'Content-Length': st.size,
+      'Cache-Control': 'no-store',
+    };
+    if (!inline) {
+      headers['Content-Disposition'] = `attachment; filename="${filename.replace(/"/g, '\\"')}"`;
+    } else {
+      headers['Content-Disposition'] = `inline; filename="${filename.replace(/"/g, '\\"')}"`;
+    }
+    // Range request support for video/audio seeking
+    const rangeHeader = req.headers.range;
+    if (rangeHeader && (contentType.startsWith('video/') || contentType.startsWith('audio/'))) {
+      const parts = rangeHeader.replace(/bytes=/, '').split('-');
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : st.size - 1;
+      const chunkSize = end - start + 1;
+      res.writeHead(206, {
+        'Content-Range': `bytes ${start}-${end}/${st.size}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': chunkSize,
+        'Content-Type': contentType,
+      });
+      createReadStream(resolvedPath, { start, end }).pipe(res);
+      return;
+    }
+    res.writeHead(200, headers);
+    const stream = createReadStream(resolvedPath);
+    stream.pipe(res);
+    stream.on('error', (err) => {
+      console.error(`[router] download stream error: ${err.message}`);
+    });
+    return;
+  }
+
   // Serve uploaded images
   if (pathname.startsWith('/api/images/') && req.method === 'GET') {
     const filename = pathname.slice('/api/images/'.length);
@@ -1414,10 +1579,135 @@ export async function handleRequest(req, res) {
     }
     // Mark as read
     markAsRead(id);
+    // Inject theme detection script into <head> so reports adapt to current theme
+    const themeScript = `<script>(function(){
+  var m;try{m=localStorage.getItem('themeMode')||'auto';}catch(e){m='auto';}
+  var h=new Date().getHours();
+  var dark=m==='dark'||(m==='auto'&&(h<7||h>=19));
+  if(dark)document.documentElement.setAttribute('data-theme','dark');
+  document.documentElement.setAttribute('data-rl-theme',dark?'dark':'light');
+}());</script>
+<style>
+:root{--rl-bg:#ffffff;--rl-bg-card:#f8f9fa;--rl-border:#dfe6e9;--rl-text:#2d3436;--rl-text-sec:#636e72;--rl-text-muted:#b2bec3;--rl-accent:#002fa7;--rl-accent-hover:#001f8a;--rl-accent-dim:rgba(0,47,167,0.08)}
+[data-theme="dark"]{--rl-bg:#0f0f0f;--rl-bg-card:#1a1a1a;--rl-border:#2a2a2a;--rl-text:#e8e8e8;--rl-text-sec:#999;--rl-text-muted:#5a5a5a;--rl-accent:#6b8aff;--rl-accent-hover:#8aa4ff;--rl-accent-dim:rgba(107,138,255,0.1)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--rl-bg:#0f0f0f;--rl-bg-card:#1a1a1a;--rl-border:#2a2a2a;--rl-text:#e8e8e8;--rl-text-sec:#999;--rl-text-muted:#5a5a5a;--rl-accent:#6b8aff;--rl-accent-hover:#8aa4ff;--rl-accent-dim:rgba(107,138,255,0.1)}}
+/* === Generic dark mode — works across all report templates === */
+[data-theme="dark"] body{background:var(--rl-bg)!important;color:var(--rl-text)!important}
+/* Headings */
+[data-theme="dark"] h1,[data-theme="dark"] h2,[data-theme="dark"] h3,[data-theme="dark"] h4,[data-theme="dark"] h5,[data-theme="dark"] h6{color:var(--rl-accent)!important}
+/* Text elements */
+[data-theme="dark"] p,[data-theme="dark"] li,[data-theme="dark"] td,[data-theme="dark"] th,[data-theme="dark"] dd,[data-theme="dark"] dt,[data-theme="dark"] figcaption{color:var(--rl-text-sec)!important}
+[data-theme="dark"] strong,[data-theme="dark"] b{color:var(--rl-text)!important}
+/* Links */
+[data-theme="dark"] a{color:var(--rl-accent)!important}
+[data-theme="dark"] a:hover{color:var(--rl-accent-hover)!important}
+/* Borders — universal */
+[data-theme="dark"] *{border-color:var(--rl-border)!important}
+/* Transparent containers — don't add bg, just fix text */
+[data-theme="dark"] .container,[data-theme="dark"] .section,[data-theme="dark"] .content-card{color:var(--rl-text)!important}
+/* Cards and elevated surfaces */
+[data-theme="dark"] .card,[data-theme="dark"] .section-card,[data-theme="dark"] .phase-card,[data-theme="dark"] .news-item,[data-theme="dark"] .highlight-card,[data-theme="dark"] .focus-card,[data-theme="dark"] .comparison-card{background:var(--rl-bg-card)!important;border-color:var(--rl-border)!important;color:var(--rl-text)!important}
+/* Callout / highlight blocks */
+[data-theme="dark"] .highlight,[data-theme="dark"] .highlight-green,[data-theme="dark"] .highlight-warn,[data-theme="dark"] .warning,[data-theme="dark"] .success,[data-theme="dark"] .warn,[data-theme="dark"] .verdict{background:var(--rl-bg-card)!important;color:var(--rl-text)!important}
+[data-theme="dark"] .highlight{border-left-color:var(--rl-accent)!important}
+[data-theme="dark"] .highlight-card{border-left-color:var(--rl-accent)!important}
+/* Diagrams and code blocks */
+[data-theme="dark"] .arch-diagram,[data-theme="dark"] .diagram,[data-theme="dark"] .code-block,[data-theme="dark"] pre,[data-theme="dark"] code{background:var(--rl-bg-card)!important;color:var(--rl-text)!important}
+/* Tags */
+[data-theme="dark"] .tag,[data-theme="dark"] [class*="tag-"]{background:var(--rl-accent-dim)!important;color:var(--rl-accent)!important}
+/* Buttons */
+[data-theme="dark"] .btn{border-color:var(--rl-accent)!important}
+[data-theme="dark"] .btn-primary{background:var(--rl-accent)!important;color:var(--rl-bg)!important}
+[data-theme="dark"] .btn-outline{color:var(--rl-accent)!important}
+[data-theme="dark"] .btn-send{background:var(--rl-accent)!important;color:var(--rl-bg)!important}
+[data-theme="dark"] .btn-cancel{background:var(--rl-bg-card)!important;color:var(--rl-text-sec)!important;border-color:var(--rl-border)!important}
+/* Secondary text classes */
+[data-theme="dark"] .subtitle,[data-theme="dark"] .summary,[data-theme="dark"] .meta,[data-theme="dark"] .footer,[data-theme="dark"] .video-links,[data-theme="dark"] .card-meta,[data-theme="dark"] .date,[data-theme="dark"] .source-tag,[data-theme="dark"] .comment{color:var(--rl-text-sec)!important}
+/* Field label/content (DailyNews) */
+[data-theme="dark"] .field-label{color:var(--rl-accent)!important}
+[data-theme="dark"] .field-content{color:var(--rl-text)!important}
+/* Section titles */
+[data-theme="dark"] .section-title,[data-theme="dark"] .section-subtitle{color:var(--rl-accent)!important}
+/* Modals */
+[data-theme="dark"] .modal-overlay{background:rgba(0,0,0,0.5)!important}
+[data-theme="dark"] .modal-card{background:var(--rl-bg)!important;border-color:var(--rl-border)!important}
+[data-theme="dark"] .modal-card textarea{background:var(--rl-bg-card)!important;color:var(--rl-text)!important;border-color:var(--rl-border)!important}
+/* Hero sections */
+[data-theme="dark"] .hero,[data-theme="dark"] .header{border-color:var(--rl-border)!important}
+/* Tables */
+[data-theme="dark"] table{background:var(--rl-bg-card)!important}
+[data-theme="dark"] thead,[data-theme="dark"] th{background:var(--rl-bg)!important;color:var(--rl-text)!important}
+[data-theme="dark"] tr:nth-child(even){background:rgba(255,255,255,0.02)!important}
+/* Comparison columns */
+[data-theme="dark"] .col,[data-theme="dark"] .two-col{color:var(--rl-text)!important}
+/* HR */
+[data-theme="dark"] hr{border-color:var(--rl-border)!important}
+/* Nav & reply widget */
+[data-theme="dark"] #report-nav{background:var(--rl-bg)!important;border-color:var(--rl-border)!important}
+[data-theme="dark"] #rl-reply-widget{background:var(--rl-bg)!important;border-color:var(--rl-border)!important}
+[data-theme="dark"] #rl-reply-text{background:var(--rl-bg-card)!important;color:var(--rl-text)!important;border-color:var(--rl-border)!important}
+</style>`;
+    html = html.replace(/(<head\b[^>]*>)/i, `$1${themeScript}`);
     // Inject sticky nav bar after <body>
     const title = report.title.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    const navHtml = `<div id="report-nav" style="position:sticky;top:0;z-index:9999;background:#ffffff;border-bottom:1px solid #dfe6e9;padding:10px 20px;display:flex;align-items:center;gap:16px;font-family:'PingFang SC','Microsoft YaHei',sans-serif;font-size:14px;color:#2d3436;"><a href="/reports" style="color:#002fa7;text-decoration:none;font-weight:500;">← Reports</a><span style="color:#636e72;">|</span><span style="color:#636e72;">${title}</span></div>`;
+    const navHtml = `<div id="report-nav" style="position:sticky;top:0;z-index:9999;background:var(--rl-bg,#161b22);border-bottom:1px solid var(--rl-border,#30363d);padding:10px 20px;display:flex;align-items:center;gap:16px;font-family:'PingFang SC','Microsoft YaHei',sans-serif;font-size:14px;color:var(--rl-text,#e6edf3);"><a href="/reports" style="color:var(--rl-accent,#58a6ff);text-decoration:none;font-weight:500;">← Reports</a><span style="color:var(--rl-text-muted,#8b949e);">|</span><span style="color:var(--rl-text-sec,#8b949e);">${title}</span></div>`;
     html = html.replace(/(<body\b[^>]*>)/i, `$1${navHtml}`);
+    // Inject quick-reply widget before </body> if report has a linked session
+    if (report.sessionId) {
+      const sessionIdSafe = report.sessionId.replace(/[^a-f0-9]/gi, '');
+      const sourceSafe = (report.source || 'Agent').replace(/[<>"'&]/g, '');
+      const replyWidget = `
+<div id="rl-reply-widget" style="position:fixed;bottom:0;left:0;right:0;z-index:9998;background:var(--rl-bg,#161b22);border-top:1px solid var(--rl-border,#30363d);padding:12px 20px;font-family:'PingFang SC','Microsoft YaHei',sans-serif;display:flex;gap:10px;align-items:flex-end;box-shadow:0 -2px 16px rgba(0,0,0,0.2);">
+  <div style="flex:1;display:flex;flex-direction:column;gap:6px;">
+    <label style="font-size:12px;color:var(--rl-text-muted,#8b949e);font-weight:500;">↩ 快速回复到 ${sourceSafe} session</label>
+    <textarea id="rl-reply-text" placeholder="输入回复…按 Ctrl+Enter 发送" rows="2" style="width:100%;padding:8px 12px;border:1px solid var(--rl-border,#30363d);border-radius:6px;font-size:14px;resize:vertical;box-sizing:border-box;font-family:inherit;outline:none;transition:border-color 0.15s;background:var(--rl-bg-card,#0d1117);color:var(--rl-text,#e6edf3);" onkeydown="if(event.ctrlKey&&event.key==='Enter')document.getElementById('rl-reply-send').click()"></textarea>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
+    <button id="rl-reply-send" style="padding:8px 20px;background:#238636;color:#fff;border:none;border-radius:6px;font-size:14px;cursor:pointer;white-space:nowrap;font-family:inherit;transition:background 0.15s;" onmouseover="this.style.background='#2ea043'" onmouseout="this.style.background='#238636'">发送回复</button>
+    <span id="rl-reply-status" style="font-size:12px;color:var(--rl-text-muted,#8b949e);min-height:16px;"></span>
+  </div>
+</div>
+<div style="height:100px;"></div>
+<script>
+(function(){
+  var btn = document.getElementById('rl-reply-send');
+  var textarea = document.getElementById('rl-reply-text');
+  var status = document.getElementById('rl-reply-status');
+  var SESSION_ID = '${sessionIdSafe}';
+  btn.addEventListener('click', function(){
+    var text = textarea.value.trim();
+    if (!text) { status.textContent = '请输入回复内容'; status.style.color='#e17055'; return; }
+    btn.disabled = true;
+    btn.textContent = '发送中…';
+    status.textContent = '';
+    fetch('/api/sessions/' + SESSION_ID + '/messages', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text: text})
+    }).then(function(r){ return r.json(); }).then(function(data){
+      if (data.ok) {
+        status.textContent = '✓ 已发送';
+        status.style.color = '#00b894';
+        textarea.value = '';
+        btn.disabled = false;
+        btn.textContent = '发送回复';
+      } else {
+        status.textContent = '失败: ' + (data.error || '未知错误');
+        status.style.color = '#e17055';
+        btn.disabled = false;
+        btn.textContent = '发送回复';
+      }
+    }).catch(function(e){
+      status.textContent = '网络错误: ' + e.message;
+      status.style.color = '#e17055';
+      btn.disabled = false;
+      btn.textContent = '发送回复';
+    });
+  });
+})();
+</script>`;
+      html = html.replace(/<\/body>/i, `${replyWidget}</body>`);
+    }
     res.writeHead(200, {
       'Content-Type': 'text/html',
       'Cache-Control': 'no-store',
@@ -1461,7 +1751,11 @@ export async function handleRequest(req, res) {
         ? readdirSync(workflowsDir).filter(f => f.endsWith('.json') && f !== 'schedules.json')
         : [];
       const workflows = files.map(f => {
-        try { return JSON.parse(readFileSync(join(workflowsDir, f), 'utf8')); } catch (err) { console.error('[router] Failed to parse workflow file:', f, err.message); return null; }
+        try {
+          const wf = JSON.parse(readFileSync(join(workflowsDir, f), 'utf8'));
+          if (!wf.id) wf.id = f.replace('.json', '');
+          return wf;
+        } catch (err) { console.error('[router] Failed to parse workflow file:', f, err.message); return null; }
       }).filter(Boolean);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ workflows }));

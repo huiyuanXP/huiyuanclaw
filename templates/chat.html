@@ -229,10 +229,11 @@ body {
   border-bottom: 1px solid var(--border);
   height: calc(48px + var(--safe-top));
   flex-shrink: 0;
+  overflow: hidden;
 }
 .header-left {
   display: flex; align-items: center; gap: 8px;
-  flex: 0 1 50%; max-width: 50%;
+  flex: 1 1 0;
   min-width: 0; overflow: hidden;
 }
 .header-right {
@@ -252,11 +253,11 @@ body {
 
 /* ---- Header context bar ---- */
 .header-ctx {
-  flex: 1;
+  flex: 1 1 30%;
   display: none;
   align-items: center;
   gap: 6px;
-  min-width: 0;
+  min-width: 30%;
   padding: 0 4px;
 }
 .header-ctx.visible { display: flex; }
@@ -347,7 +348,7 @@ body {
 /* ---- Header mobile responsive ---- */
 @media (max-width: 480px) {
   .header { gap: 4px; padding: 0 8px; padding-top: var(--safe-top); }
-  .header-left { flex: 0 1 0 !important; max-width: 30%; }
+  .header-left { flex: 0 1 auto; max-width: 30%; }
   .header h1 { font-size: 13px; }
   #statusText { display: none; }
   .header-ctx-detail { display: none; }
@@ -879,6 +880,20 @@ body {
   background: var(--bg-tertiary); border-radius: 8px;
   padding: 12px 14px; margin-bottom: 0.75em;
   overflow-x: auto; line-height: 1.5;
+  position: relative;
+}
+.md-content pre .code-copy-btn {
+  position: absolute; top: 6px; right: 6px;
+  background: var(--bg-secondary); border: 1px solid var(--border);
+  border-radius: 5px; padding: 3px 8px;
+  color: var(--text-secondary); font-size: 0.75em;
+  cursor: pointer; opacity: 0; transition: opacity 0.15s;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  z-index: 1;
+}
+.md-content pre:hover .code-copy-btn { opacity: 1; }
+.md-content pre .code-copy-btn:hover {
+  background: var(--bg-tertiary); color: var(--text);
 }
 .md-content pre code {
   background: none; padding: 0; font-size: 0.85em; border-radius: 0;
@@ -974,6 +989,31 @@ body {
   animation: fadeIn 0.2s ease;
 }
 
+/* Pending restart banner */
+.pending-restart-banner {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
+  background: #2563eb; color: #fff;
+  display: flex; align-items: center; justify-content: center; gap: 16px;
+  padding: 8px 16px; font-size: 13px; font-weight: 500;
+  animation: fadeIn 0.2s ease;
+}
+.pending-restart-actions {
+  display: flex; gap: 8px;
+}
+.pending-restart-btn {
+  border: none; border-radius: 4px; padding: 4px 12px;
+  font-size: 12px; font-weight: 600; cursor: pointer;
+  transition: opacity 0.15s;
+}
+.pending-restart-btn:hover { opacity: 0.85; }
+.pending-restart-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.pending-restart-btn.restart-now {
+  background: #fff; color: #2563eb;
+}
+.pending-restart-btn.cancel-restart {
+  background: rgba(255,255,255,0.2); color: #fff;
+}
+
 /* Restart divider in chat */
 .restart-divider {
   text-align: center; margin: 12px 0; padding: 8px 12px;
@@ -987,6 +1027,32 @@ body {
   background: rgba(34, 197, 94, 0.1); color: #16a34a;
   border: 1px dashed rgba(34, 197, 94, 0.4);
 }
+/* System notification — folded by default */
+.sys-notif {
+  margin: 6px 0; border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  font-size: 12px; overflow: hidden;
+}
+.sys-notif-header {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 10px; cursor: pointer;
+  color: var(--text-muted); user-select: none;
+}
+.sys-notif-header:hover { background: var(--bg-tertiary); }
+.sys-notif-icon { flex-shrink: 0; font-size: 11px; }
+.sys-notif-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sys-notif-chevron { flex-shrink: 0; font-size: 9px; transition: transform 0.15s; }
+.sys-notif.collapsed .sys-notif-chevron { transform: rotate(-90deg); }
+.sys-notif-body {
+  display: none; padding: 8px 12px;
+  white-space: pre-wrap; word-break: break-word; line-height: 1.5;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border);
+  max-height: 300px; overflow-y: auto;
+}
+.sys-notif:not(.collapsed) .sys-notif-body { display: block; }
+
 .compact-summary-details {
   margin-top: 6px; text-align: left;
 }
@@ -1714,9 +1780,71 @@ body {
 .files-error {
   padding: 16px; color: var(--error); font-size: 13px;
 }
+/* ---- File preview ---- */
+.files-preview-media {
+  display: flex; align-items: center; justify-content: center;
+  padding: 16px; min-height: 200px;
+}
+.files-preview-media video {
+  max-width: 100%; max-height: calc(100vh - 200px);
+  border-radius: 8px; background: #000;
+}
+.files-preview-media audio {
+  width: 90%; max-width: 600px;
+}
+.files-preview-media img {
+  max-width: 100%; max-height: calc(100vh - 200px);
+  border-radius: 4px; object-fit: contain;
+}
+.files-preview-pdf {
+  flex: 1; display: flex; height: 100%;
+}
+.files-preview-pdf iframe {
+  width: 100%; height: calc(100vh - 160px); border: none;
+}
+.files-preview-markdown {
+  padding: 16px 24px; line-height: 1.7; font-size: 14px;
+  color: var(--text); overflow-x: auto;
+}
+.files-preview-markdown h1, .files-preview-markdown h2, .files-preview-markdown h3 {
+  margin-top: 1.2em; margin-bottom: 0.4em; border-bottom: 1px solid var(--border);
+  padding-bottom: 0.3em;
+}
+.files-preview-markdown pre {
+  background: var(--bg-tertiary); padding: 12px 16px; border-radius: 6px;
+  overflow-x: auto; font-size: 13px;
+}
+.files-preview-markdown code {
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
+  background: var(--bg-tertiary); padding: 2px 5px; border-radius: 3px; font-size: 0.9em;
+}
+.files-preview-markdown pre code { background: transparent; padding: 0; }
+.files-preview-markdown blockquote {
+  border-left: 3px solid var(--accent); margin: 0.8em 0; padding: 0.4em 1em;
+  color: var(--text-secondary); background: var(--bg-tertiary); border-radius: 0 4px 4px 0;
+}
+.files-preview-markdown img { max-width: 100%; border-radius: 4px; }
+.files-preview-markdown table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+.files-preview-markdown th, .files-preview-markdown td {
+  border: 1px solid var(--border); padding: 6px 12px; text-align: left;
+}
+.files-preview-markdown th { background: var(--bg-tertiary); font-weight: 600; }
+.files-preview-latex {
+  padding: 24px; text-align: center; overflow-x: auto;
+}
+.file-download-btn {
+  display: inline-block; padding: 2px 10px; font-size: 11px; border-radius: 4px;
+  border: 1px solid var(--border); background: var(--bg-tertiary); color: var(--text);
+  text-decoration: none; cursor: pointer; font-family: inherit;
+  transition: background 0.15s, color 0.15s;
+}
+.file-download-btn:hover {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+}
 @media (max-width: 600px) {
   .files-tree { width: 180px; min-width: 140px; }
   .files-tree-item { font-size: 12px; }
+  .files-preview-markdown { padding: 12px 16px; font-size: 13px; }
 }
 
 /* ---- Git view ---- */
@@ -1893,6 +2021,7 @@ body {
 }
 </style>
 <link rel="stylesheet" href="/hljs-github-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
 </head>
 <body>
 
@@ -1914,7 +2043,7 @@ body {
     <button class="header-ctx-clear" id="headerCtxClear">Clear</button>
   </div>
   <div class="header-right">
-    <a class="header-btn" href="/reports" title="All Reports" style="text-decoration:none;font-size:12px;font-weight:500;color:var(--text-secondary);">
+    <a class="header-btn" href="/reports" target="_blank" title="All Reports" style="text-decoration:none;font-size:12px;font-weight:500;color:var(--text-secondary);">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
     </a>
     <button class="header-btn report-bell" id="reportBell" title="Reports">
@@ -2092,6 +2221,8 @@ body {
 
 <script src="/marked.min.js" nonce="{{NONCE}}"></script>
 <script src="/highlight.min.js" nonce="{{NONCE}}"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" nonce="{{NONCE}}"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" nonce="{{NONCE}}"></script>
 <script src="/themes.js" nonce="{{NONCE}}"></script>
 <script src="/chat.js" nonce="{{NONCE}}"></script>
 </body>

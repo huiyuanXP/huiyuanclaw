@@ -67,3 +67,7 @@ export function restartInterruptEvent() {
 export function restartResumeEvent() {
   return createEvent('restart_resume', { role: 'system', content: 'Server restarted. Continuing your work...' });
 }
+
+export function systemNotificationEvent(text) {
+  return createEvent('system_notification', { role: 'system', content: text });
+}

@@ -1,12 +1,12 @@
 import { randomBytes } from 'crypto';
-import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, readdirSync, unlinkSync } from 'fs';
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, statSync, readdirSync, unlinkSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
 import { CHAT_SESSIONS_FILE, CHAT_IMAGES_DIR, INTERRUPTED_SESSIONS_FILE, SESSION_LABELS_FILE } from '../lib/config.mjs';
 import { spawnTool } from './process-runner.mjs';
 import { loadHistory, appendEvent } from './history.mjs';
-import { messageEvent, statusEvent, compactEvent, restartInterruptEvent, restartResumeEvent } from './normalizer.mjs';
-import { triggerSummary, removeSidebarEntry, generateCompactSummary, generateAutoTitle } from './summarizer.mjs';
+import { messageEvent, statusEvent, compactEvent, restartInterruptEvent, restartResumeEvent, systemNotificationEvent } from './normalizer.mjs';
+import { triggerSummary, removeSidebarEntry, generateCompactSummary, generateAutoTitle, callHaiku } from './summarizer.mjs';
 
 const MIME_EXT = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif', 'image/webp': '.webp' };
 
@@ -212,16 +212,105 @@ export function updateLabel(labelId, updates) {
   return label;
 }
 
+/**
+ * Generate experience notes for a completed session using Haiku, then write
+ * directly to the workspace's memory/<today>.md file.
+ * Does NOT wake up the session — fully background operation.
+ */
+async function runAutoDistill(sessionId, sessionMeta) {
+  console.log(`[session-mgr] Auto-distill start for session ${sessionId.slice(0, 8)}`);
+
+  // Load recent history to give Haiku context about what the session did
+  const allEvents = loadHistory(sessionId);
+  if (allEvents.length === 0) {
+    console.log(`[session-mgr] Auto-distill: no history for ${sessionId.slice(0, 8)}, skipping`);
+    return;
+  }
+
+  // Build a condensed view of the session for Haiku
+  const lines = [];
+  for (const evt of allEvents.slice(-60)) { // last 60 events
+    if (evt.type === 'message' && evt.role === 'user') {
+      lines.push(`USER: ${(evt.content || '').slice(0, 300)}`);
+    } else if (evt.type === 'message' && evt.role === 'assistant') {
+      lines.push(`ASSISTANT: ${(evt.content || '').slice(0, 400)}`);
+    } else if (evt.type === 'file_change') {
+      lines.push(`FILE ${(evt.changeType || 'changed').toUpperCase()}: ${evt.filePath}`);
+    }
+  }
+  const historyText = lines.join('\n').slice(0, 8000);
+
+  const today = new Date().toISOString().slice(0, 10);
+  const folder = sessionMeta.folder || '';
+  const memoryPath = join(folder, 'memory', `${today}.md`);
+
+  const prompt = [
+    `Session folder: ${folder}`,
+    `Session name: ${sessionMeta.name || '(unnamed)'}`,
+    '',
+    'Recent activity:',
+    historyText,
+    '',
+    `Write 3-5 concise experience notes in Chinese to append to ${memoryPath}.`,
+    'Format (plain markdown, no frontmatter):',
+    '',
+    `## Auto-distill ${sessionMeta.name || sessionId.slice(0, 8)}（${today}）`,
+    '',
+    '1. **做了什么**：一句话',
+    '2. **踩了什么坑**：如无则省略',
+    '3. **可复用的模式**：',
+    '4. **遗留问题**：如无则省略',
+    '',
+    'Reply ONLY with the markdown block. No explanation.',
+  ].join('\n');
+
+  const result = await callHaiku(prompt, { timeout: 45000 });
+  if (!result || !result.trim()) {
+    console.log(`[session-mgr] Auto-distill: Haiku returned empty for ${sessionId.slice(0, 8)}`);
+    return;
+  }
+
+  // Ensure memory directory exists
+  const memDir = dirname(memoryPath);
+  if (!existsSync(memDir)) mkdirSync(memDir, { recursive: true });
+
+  // Dedup: check if an identical distill heading already exists in the file
+  const heading = result.trim().split('\n')[0];
+  if (existsSync(memoryPath)) {
+    const existing = readFileSync(memoryPath, 'utf8');
+    if (existing.includes(heading)) {
+      console.log(`[session-mgr] Auto-distill: skipping duplicate for ${sessionId.slice(0, 8)} (heading already exists)`);
+      return;
+    }
+  }
+
+  appendFileSync(memoryPath, '\n' + result.trim() + '\n');
+  console.log(`[session-mgr] Auto-distill: wrote to ${memoryPath} for session ${sessionId.slice(0, 8)}`);
+}
+
 export function setSessionLabel(sessionId, labelId) {
   const metas = loadSessionsMeta();
   const idx = metas.findIndex(m => m.id === sessionId);
   if (idx === -1) return null;
+  const oldLabel = metas[idx].label;
   if (labelId === null || labelId === undefined) {
     delete metas[idx].label;
   } else {
     metas[idx].label = labelId;
   }
   saveSessionsMeta(metas);
+
+  // Auto-distill: when label transitions to done/pending-review, generate experience notes via Haiku
+  const triggerLabels = ['done', 'pending-review'];
+  if (triggerLabels.includes(labelId) && !triggerLabels.includes(oldLabel)) {
+    const distillSession = metas[idx];
+    setTimeout(() => {
+      runAutoDistill(sessionId, distillSession).catch(e => {
+        console.error(`[session-mgr] Auto-distill failed for session ${sessionId.slice(0, 8)}:`, e.message);
+      });
+    }, 2000);
+  }
+
   const live = liveSessions.get(sessionId);
   const updated = { ...metas[idx], status: live ? live.status : 'idle' };
   broadcast(sessionId, { type: 'session', session: updated });
@@ -285,6 +374,69 @@ export function getSession(id) {
     ...meta,
     status: live ? live.status : 'idle',
   };
+}
+
+/**
+ * Inject a user message directly into Claude's JSONL conversation file.
+ * Used for system notifications to idle sessions — no Claude process is spawned.
+ * Returns true on success, false if the file can't be found.
+ */
+function injectSystemMessageToJSONL(claudeSessionId, folder, text) {
+  const home = process.env.HOME || homedir();
+  // Convert absolute folder path to Claude project dir name: /home/ally/foo → -home-ally-foo
+  const projectDirName = folder.replace(/\//g, '-');
+  const jsonlPath = join(home, '.claude', 'projects', projectDirName, `${claudeSessionId}.jsonl`);
+
+  if (!existsSync(jsonlPath)) {
+    console.warn(`[session-mgr] JSONL inject: file not found at ${jsonlPath}`);
+    return false;
+  }
+
+  // Parse last lines to find parentUuid and metadata
+  const content = readFileSync(jsonlPath, 'utf8');
+  const lines = content.split('\n').filter(l => l.trim());
+  let parentUuid = null;
+  let slug = null;
+  let cwd = folder;
+  let version = '2.1.81';
+
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const d = JSON.parse(lines[i]);
+      if (d.uuid && (d.type === 'assistant' || d.type === 'user')) {
+        parentUuid = d.uuid;
+        if (d.slug) slug = d.slug;
+        if (d.cwd) cwd = d.cwd;
+        if (d.version) version = d.version;
+        break;
+      }
+    } catch {}
+  }
+
+  // Generate UUID in standard format
+  const b = randomBytes(16);
+  const uuid = `${b.slice(0,4).toString('hex')}-${b.slice(4,6).toString('hex')}-${b.slice(6,8).toString('hex')}-${b.slice(8,10).toString('hex')}-${b.slice(10,16).toString('hex')}`;
+
+  const entry = {
+    parentUuid,
+    isSidechain: false,
+    type: 'user',
+    message: { role: 'user', content: [{ type: 'text', text }] },
+    isMeta: true,
+    uuid,
+    timestamp: new Date().toISOString(),
+    userType: 'external',
+    entrypoint: 'cli',
+    cwd,
+    sessionId: claudeSessionId,
+    version,
+    gitBranch: 'HEAD',
+    ...(slug ? { slug } : {}),
+  };
+
+  appendFileSync(jsonlPath, '\n' + JSON.stringify(entry));
+  console.log(`[session-mgr] JSONL inject: ${jsonlPath.slice(-60)} uuid=${uuid.slice(0, 8)}`);
+  return true;
 }
 
 export function createSession(folder, tool, name = '', options = {}) {
@@ -408,6 +560,28 @@ export function sendMessage(sessionId, text, images, options = {}) {
   let session = getSession(sessionId);
   if (!session) throw new Error('Session not found');
 
+  // Fast path: system notifications to idle sessions — inject into JSONL, don't spawn Claude
+  if (options.isSystemNotification) {
+    const live0 = liveSessions.get(sessionId);
+    const isIdle = !live0 || !live0.runner;
+    if (isIdle) {
+      const meta0 = loadSessionsMeta().find(m => m.id === sessionId);
+      const existingClaudeId = live0?.claudeSessionId || meta0?.claudeSessionId;
+      if (existingClaudeId) {
+        const ok = injectSystemMessageToJSONL(existingClaudeId, session.folder, text);
+        if (ok) {
+          const notifEvt = systemNotificationEvent(text);
+          appendEvent(sessionId, notifEvt);
+          broadcast(sessionId, { type: 'event', event: notifEvt });
+          console.log(`[session-mgr] System notification → JSONL inject for ${sessionId.slice(0, 8)}`);
+          return;
+        }
+      }
+      // No claudeSessionId or inject failed — fall through to normal spawn
+    }
+    // Session is active — fall through to normal spawn (message will interrupt/append)
+  }
+
   // Determine effective tool: per-message override or session default
   const effectiveTool = options.tool || session.tool;
   console.log(`[session-mgr] sendMessage session=${sessionId.slice(0,8)} tool=${effectiveTool} (session.tool=${session.tool}) thinking=${!!options.thinking} text="${text.slice(0,80)}" images=${images?.length || 0}`);
@@ -417,8 +591,10 @@ export function sendMessage(sessionId, text, images, options = {}) {
   // For history/display: store filenames (not base64) so history files stay small
   const imageRefs = savedImages.map(img => ({ filename: img.filename, mimeType: img.mimeType }));
 
-  // Store user message in history
-  const userEvt = messageEvent('user', text, imageRefs.length > 0 ? imageRefs : undefined);
+  // Store user message in history (system notifications use a distinct event type for UI folding)
+  const userEvt = options.isSystemNotification
+    ? systemNotificationEvent(text)
+    : messageEvent('user', text, imageRefs.length > 0 ? imageRefs : undefined);
   appendEvent(sessionId, userEvt);
   broadcast(sessionId, { type: 'event', event: userEvt });
 
@@ -562,6 +738,8 @@ export function sendMessage(sessionId, text, images, options = {}) {
     broadcastGlobal({ type: 'session', session: { ...freshSession, status: 'idle' } });
     // Trigger async sidebar summary (non-blocking, does not affect session flow)
     triggerSummary({ id: sessionId, folder: freshSession.folder, name: freshSession.name || '' });
+    // Check if a pending restart is waiting for all sessions to be idle
+    checkPendingRestartOnIdle();
 
   };
 
@@ -782,13 +960,13 @@ export function waitForIdle(sessionId, timeoutMs = 300000) {
  * Create a session, send a prompt, wait for completion, return last assistant message.
  * Used by the workflow engine to run tasks headlessly.
  */
-export async function createAndRun(folder, model, prompt) {
+export async function createAndRun(folder, model, prompt, { timeoutMs = 5 * 60 * 1000 } = {}) {
   const home = homedir();
   const normalizedFolder = folder.startsWith(home + '/') ? folder.slice(home.length + 1) : folder;
   const session = createSession(normalizedFolder, 'claude', `workflow-${Date.now()}`, { hidden: true });
 
   // Register waiter BEFORE sendMessage to avoid a race where onExit fires synchronously
-  const idlePromise = waitForIdle(session.id, 5 * 60 * 1000);
+  const idlePromise = waitForIdle(session.id, timeoutMs);
 
   sendMessage(session.id, prompt, undefined, { model });
 
@@ -870,4 +1048,95 @@ export function killAll() {
     }
   }
   liveSessions.clear();
+}
+
+// ---- Pending restart (wait-for-idle) ----
+
+let pendingRestartState = null; // { requestedBy, requestedAt, checkInterval }
+
+/**
+ * Request a "wait and restart": monitor all sessions, restart when all are idle.
+ */
+export function requestWaitRestart(triggerSessionId) {
+  if (pendingRestartState) {
+    return { alreadyPending: true, requestedAt: pendingRestartState.requestedAt };
+  }
+
+  // Check if all sessions are already idle
+  if (areAllSessionsIdle()) {
+    console.log('[session-mgr] All sessions already idle, restarting immediately');
+    restartServer(triggerSessionId);
+    return { immediate: true };
+  }
+
+  pendingRestartState = {
+    requestedBy: triggerSessionId,
+    requestedAt: Date.now(),
+    // Poll every 5s as a safety net (primary trigger is onExit hook)
+    checkInterval: setInterval(() => {
+      if (areAllSessionsIdle()) {
+        console.log('[session-mgr] All sessions idle (poll), executing pending restart');
+        executePendingRestart();
+      }
+    }, 5000),
+  };
+
+  console.log(`[session-mgr] Pending restart requested by session ${triggerSessionId || 'unknown'}`);
+  broadcastGlobal({
+    type: 'pending_restart',
+    message: 'Waiting for all sessions to finish before restarting...',
+    requestedBy: triggerSessionId,
+    requestedAt: pendingRestartState.requestedAt,
+  });
+
+  return { pending: true, requestedAt: pendingRestartState.requestedAt };
+}
+
+/**
+ * Cancel a pending restart.
+ */
+export function cancelPendingRestart() {
+  if (!pendingRestartState) return false;
+  clearInterval(pendingRestartState.checkInterval);
+  pendingRestartState = null;
+  console.log('[session-mgr] Pending restart cancelled');
+  broadcastGlobal({ type: 'pending_restart_cancelled' });
+  return true;
+}
+
+/**
+ * Get pending restart info (for API).
+ */
+export function getPendingRestart() {
+  if (!pendingRestartState) return null;
+  return {
+    requestedBy: pendingRestartState.requestedBy,
+    requestedAt: pendingRestartState.requestedAt,
+  };
+}
+
+function areAllSessionsIdle() {
+  for (const [, live] of liveSessions) {
+    if (live.status === 'running') return false;
+  }
+  return true;
+}
+
+function executePendingRestart() {
+  if (!pendingRestartState) return;
+  const triggerSessionId = pendingRestartState.requestedBy;
+  clearInterval(pendingRestartState.checkInterval);
+  pendingRestartState = null;
+  restartServer(triggerSessionId);
+}
+
+/**
+ * Called when any session transitions to idle. Checks pending restart.
+ */
+export function checkPendingRestartOnIdle() {
+  if (!pendingRestartState) return;
+  if (areAllSessionsIdle()) {
+    console.log('[session-mgr] All sessions idle, executing pending restart');
+    executePendingRestart();
+  }
 }

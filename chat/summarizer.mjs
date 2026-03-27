@@ -394,6 +394,59 @@ export async function generateAutoTitle(userMessage) {
   }
 }
 
+/**
+ * One-shot Haiku call. Returns the model's text response, or null on failure.
+ * Reusable for lightweight AI checks (conflict detection, classification, etc.)
+ */
+export async function callHaiku(prompt, { timeout = 30000 } = {}) {
+  const claudeCmd = resolveClaudeCmd();
+  const subEnv = { ...process.env, PATH: fullPath };
+  delete subEnv.CLAUDECODE;
+  delete subEnv.CLAUDE_CODE_ENTRYPOINT;
+
+  try {
+    const modelText = await new Promise((resolve, reject) => {
+      const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose',
+        '--dangerously-skip-permissions', '--model', 'haiku'];
+      const proc = spawn(claudeCmd, args, {
+        env: subEnv,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      proc.stdin.end();
+
+      const adapter = createClaudeAdapter();
+      const rl = createInterface({ input: proc.stdout });
+      const textParts = [];
+
+      rl.on('line', (line) => {
+        const events = adapter.parseLine(line);
+        for (const evt of events) {
+          if (evt.type === 'message' && evt.role === 'assistant') {
+            textParts.push(evt.content || '');
+          }
+        }
+      });
+
+      proc.stderr.on('data', () => {});
+      proc.on('error', reject);
+      proc.on('exit', (code) => {
+        const remaining = adapter.flush();
+        for (const evt of remaining) {
+          if (evt.type === 'message' && evt.role === 'assistant') textParts.push(evt.content || '');
+        }
+        resolve(textParts.join(''));
+      });
+
+      setTimeout(() => { try { proc.kill(); } catch {} }, timeout);
+    });
+
+    return modelText.trim() || null;
+  } catch (err) {
+    console.error(`[summarizer] callHaiku failed: ${err.message}`);
+    return null;
+  }
+}
+
 export function removeSidebarEntry(sessionId) {
   const state = loadSidebarState();
   if (state.sessions[sessionId]) {
