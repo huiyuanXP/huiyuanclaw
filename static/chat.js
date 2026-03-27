@@ -130,6 +130,7 @@
   let selectedFilePath = null;
   let isFileEditing = false;
   let rawFileContent = null; // original content for edit mode
+  let suppressHashPush = false; // flag to prevent pushState during popstate restore
 
   // ---- Git tab state & elements ----
   const sessionTabGit = document.getElementById("sessionTabGit");
@@ -457,6 +458,8 @@
         renderSessionList();
         // Handle ?open=<absolute_path> deep link to preview a file
         handleOpenFileParam();
+        // Handle #s/<sessionId>[/files/<path>] hash on initial load
+        handleHashOnLoad();
         break;
 
       case "session":
@@ -2723,6 +2726,111 @@
     }, 0);
   }
 
+  // ---- URL hash state management (browser back/forward support) ----
+  // Hash format: #s/<sessionId>  |  #s/<sessionId>/files/<path>  |  #s/<sessionId>/git
+  function buildHash(sessionId, tab, filePath) {
+    if (!sessionId) return "";
+    let h = "#s/" + sessionId;
+    if (tab === "files" && filePath) {
+      h += "/files/" + filePath;
+    } else if (tab === "files") {
+      h += "/files";
+    } else if (tab === "git") {
+      h += "/git";
+    }
+    // "chat" is the default, no suffix needed
+    return h;
+  }
+
+  function parseHash(hash) {
+    if (!hash || !hash.startsWith("#s/")) return null;
+    const rest = hash.slice(3); // remove "#s/"
+    // Pattern: <sessionId>[/files[/<path>]] or <sessionId>/git
+    const slashIdx = rest.indexOf("/");
+    if (slashIdx === -1) return { sessionId: rest, tab: "chat", filePath: null };
+    const sessionId = rest.slice(0, slashIdx);
+    const suffix = rest.slice(slashIdx + 1);
+    if (suffix === "git") return { sessionId, tab: "git", filePath: null };
+    if (suffix === "files") return { sessionId, tab: "files", filePath: null };
+    if (suffix.startsWith("files/")) {
+      return { sessionId, tab: "files", filePath: suffix.slice(6) };
+    }
+    return { sessionId, tab: "chat", filePath: null };
+  }
+
+  function pushHashState() {
+    if (suppressHashPush) return;
+    const hash = buildHash(currentSessionId, activeSessionTab, selectedFilePath);
+    if (hash && window.location.hash !== hash) {
+      window.history.pushState({ rl: true }, "", hash);
+    }
+  }
+
+  function replaceHashState() {
+    const hash = buildHash(currentSessionId, activeSessionTab, selectedFilePath);
+    if (hash) {
+      window.history.replaceState({ rl: true }, "", hash);
+    }
+  }
+
+  window.addEventListener("popstate", function (e) {
+    const parsed = parseHash(window.location.hash);
+    if (!parsed) {
+      // No hash = no session selected, show empty state
+      if (currentSessionId) {
+        currentSessionId = null;
+        showEmpty();
+        headerTitle.textContent = "Remote Lab";
+        sessionTabs.classList.remove("visible");
+        messagesEl.style.display = "";
+        document.getElementById("inputArea").style.display = "";
+        filesView.classList.remove("visible");
+        gitView.classList.remove("visible");
+        renderSessionList();
+      }
+      return;
+    }
+    suppressHashPush = true;
+
+    const needsSessionSwitch = parsed.sessionId !== currentSessionId;
+    if (needsSessionSwitch) {
+      const allSess = [...sessions, ...workflowSessions, ...archivedSessions];
+      const s = allSess.find(x => x.id === parsed.sessionId);
+      if (s) attachSession(parsed.sessionId, s);
+    }
+
+    const restoreTabAndFile = () => {
+      if (parsed.tab !== activeSessionTab) {
+        switchSessionTab(parsed.tab);
+      }
+      if (parsed.tab === "files" && parsed.filePath) {
+        const s = [...sessions, ...workflowSessions, ...archivedSessions].find(x => x.id === currentSessionId);
+        if (s?.folder) {
+          const waitForTree = () => {
+            if (fileTreeCache[s.folder]) {
+              selectedFilePath = parsed.filePath;
+              loadFileContent(s.folder, parsed.filePath);
+              expandTreeToPath(parsed.filePath);
+              suppressHashPush = false;
+            } else {
+              setTimeout(waitForTree, 200);
+            }
+          };
+          setTimeout(waitForTree, 100);
+          return; // suppressHashPush cleared in waitForTree
+        }
+      }
+      suppressHashPush = false;
+    };
+
+    // If session changed, wait for attach to settle before restoring tab
+    if (needsSessionSwitch) {
+      setTimeout(restoreTabAndFile, 100);
+    } else {
+      restoreTabAndFile();
+    }
+  });
+
   // ---- ?open= deep link handler ----
   let openFileHandled = false;
   function handleOpenFileParam() {
@@ -2731,10 +2839,10 @@
     const openPath = params.get("open");
     if (!openPath) return;
     openFileHandled = true;
-    // Clear the URL param without reload
+    // Clear the URL param — will be replaced with hash-based state after file opens
     const url = new URL(window.location);
     url.searchParams.delete("open");
-    window.history.replaceState({}, "", url.pathname + url.search + url.hash);
+    window.history.replaceState({ rl: true }, "", url.pathname + url.search);
 
     // Find a session whose folder is a prefix of the absolute path
     const allSess = [...sessions, ...archivedSessions, ...workflowSessions];
@@ -2755,13 +2863,49 @@
         if (fileTreeCache[match.folder]) {
           selectedFilePath = relPath;
           loadFileContent(match.folder, relPath);
-          // Auto-expand tree to the file
           expandTreeToPath(relPath);
+          replaceHashState(); // Update URL to reflect file view
         } else {
           setTimeout(waitForTree, 200);
         }
       };
       setTimeout(waitForTree, 300);
+    }, 100);
+  }
+
+  // ---- Hash-based deep link handler (on initial page load) ----
+  let hashOnLoadHandled = false;
+  function handleHashOnLoad() {
+    if (hashOnLoadHandled) return;
+    const parsed = parseHash(window.location.hash);
+    if (!parsed) return;
+    hashOnLoadHandled = true;
+    suppressHashPush = true;
+    const allSess = [...sessions, ...archivedSessions, ...workflowSessions];
+    const s = allSess.find(x => x.id === parsed.sessionId);
+    if (!s) { suppressHashPush = false; return; }
+    attachSession(parsed.sessionId, s);
+    if (parsed.tab === "chat") {
+      suppressHashPush = false;
+      return;
+    }
+    setTimeout(() => {
+      switchSessionTab(parsed.tab);
+      if (parsed.tab === "files" && parsed.filePath && s.folder) {
+        const waitForTree = () => {
+          if (fileTreeCache[s.folder]) {
+            selectedFilePath = parsed.filePath;
+            loadFileContent(s.folder, parsed.filePath);
+            expandTreeToPath(parsed.filePath);
+            suppressHashPush = false;
+          } else {
+            setTimeout(waitForTree, 200);
+          }
+        };
+        setTimeout(waitForTree, 300);
+      } else {
+        suppressHashPush = false;
+      }
     }, 100);
   }
 
@@ -2814,6 +2958,7 @@
       const s = [...sessions, ...workflowSessions, ...archivedSessions].find(x => x.id === currentSessionId);
       if (s?.folder) loadGitSubTab(s.folder, activeGitSubTab);
     }
+    pushHashState();
   }
 
   sessionTabChat.addEventListener("click", () => switchSessionTab("chat"));
@@ -2881,6 +3026,7 @@
           item.classList.add("selected");
           selectedFilePath = fullPath;
           loadFileContent(folder, fullPath);
+          pushHashState();
         });
         parent.appendChild(item);
       }
@@ -3505,6 +3651,7 @@
     loadQuickReplies(session?.folder);
     msgInput.focus();
     renderSessionList();
+    pushHashState();
   }
 
   // ---- Sidebar ----
@@ -4403,6 +4550,70 @@
   reportGotoSession.addEventListener("click", () =>
     reportManager.gotoSession(),
   );
+
+  // ---- Intercept file preview links for SPA navigation ----
+  // Links like /api/download?path=...&preview=1 would cause a full page reload.
+  // Instead, navigate within the SPA by opening the file in the Files tab.
+  document.addEventListener("click", function (e) {
+    const a = e.target.closest("a[href]");
+    if (!a) return;
+    const href = a.getAttribute("href");
+    if (!href) return;
+
+    // Match /api/download?path=<abs_path>&preview=1 (or &preview=1 anywhere in query)
+    let match;
+    try {
+      const url = new URL(href, window.location.origin);
+      if (url.pathname === "/api/download" && url.searchParams.get("preview") === "1") {
+        match = url.searchParams.get("path");
+      }
+    } catch (_) {}
+
+    // Also match /?open=<abs_path> links
+    if (!match) {
+      try {
+        const url = new URL(href, window.location.origin);
+        if ((url.pathname === "/" || url.pathname === "") && url.searchParams.get("open")) {
+          match = url.searchParams.get("open");
+        }
+      } catch (_) {}
+    }
+
+    if (!match) return;
+
+    e.preventDefault();
+    // Navigate to the file within the SPA — single history entry for the whole jump
+    const allSess = [...sessions, ...archivedSessions, ...workflowSessions];
+    const sess = allSess
+      .filter(s => s.folder && match.startsWith(s.folder + "/"))
+      .sort((a, b) => b.folder.length - a.folder.length)[0];
+    if (!sess) {
+      alert("No session found for path: " + match);
+      return;
+    }
+    const relPath = match.slice(sess.folder.length + 1);
+    // Suppress all intermediate pushState calls; we push once at the very end
+    suppressHashPush = true;
+    if (sess.id !== currentSessionId) {
+      attachSession(sess.id, sess);
+    }
+    setTimeout(() => {
+      switchSessionTab("files");
+      const waitForTree = () => {
+        if (fileTreeCache[sess.folder]) {
+          selectedFilePath = relPath;
+          loadFileContent(sess.folder, relPath);
+          expandTreeToPath(relPath);
+          // Now push exactly one history entry for the final state
+          suppressHashPush = false;
+          pushHashState();
+        } else {
+          setTimeout(waitForTree, 200);
+        }
+      };
+      setTimeout(waitForTree, 300);
+    }, sess.id !== currentSessionId ? 100 : 0);
+  });
 
   // ---- Init ----
   applyTheme();
