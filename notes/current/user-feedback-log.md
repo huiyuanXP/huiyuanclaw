@@ -21,6 +21,16 @@ Directional synthesis: `notes/directional/product-vision.md`
 
 ## Current carried-forward signals
 
+### 2026-03-27 — background turn-completion checks should stay collapsed by default
+
+- Source: direct product feedback during mobile transcript review
+- User slice: mobile-first owner reading a live session transcript
+- Observed friction or ask: visible `Assistant self-check` / automatic continuation cards expose internal turn-completion logic that most users cannot act on and do not care about; the exposed check feels louder than the actual decision it represents.
+- Signal: background review that only decides whether the assistant can stop or continue should default to collapsed, low-emphasis disclosure rather than full inline explanation.
+- Product implication: group reply self-check and automatic continuation artifacts into a subtle collapsed drawer by default so the transcript stays focused on user-visible work while still preserving inspectability.
+- Promote to: transcript UI defaults, internal-vs-user-facing disclosure guidelines
+- Follow-up: watch whether other internal housekeeping states should use the same collapsed pattern or remain explicit
+
 ### 2026-03-27 — mobile session entry must be visually primary, not hint-dependent
 
 - Source: direct product feedback during phone-first chat-shell review
