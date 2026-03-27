@@ -629,11 +629,13 @@ function normalizeStoredToolId(value) {
 function derivePreferredToolId(storedPreferredTool, storedLegacySelectedTool) {
   const preferred = normalizeStoredToolId(storedPreferredTool);
   const legacySelected = normalizeStoredToolId(storedLegacySelectedTool);
-  if (preferred && !(LEGACY_AUTO_PREFERRED_TOOL_IDS.has(preferred) && !legacySelected)) {
-    return preferred;
+  const normalizedPreferred = preferred === "claude" ? "" : preferred;
+  const normalizedLegacySelected = legacySelected === "claude" ? "" : legacySelected;
+  if (normalizedPreferred && !(LEGACY_AUTO_PREFERRED_TOOL_IDS.has(normalizedPreferred) && !normalizedLegacySelected)) {
+    return normalizedPreferred;
   }
-  if (legacySelected) {
-    return legacySelected;
+  if (normalizedLegacySelected) {
+    return normalizedLegacySelected;
   }
   return null;
 }

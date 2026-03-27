@@ -54,13 +54,16 @@ try {
   const tools = getAvailableTools();
   const publicTool = tools.find((tool) => tool.id === 'public-helper');
   const privateTool = tools.find((tool) => tool.id === 'private-helper');
+  const builtinClaude = tools.find((tool) => tool.id === 'claude');
 
   assert.ok(publicTool, 'public tool should be returned');
   assert.ok(privateTool, 'private tool should still be returned to the owner runtime');
+  assert.ok(builtinClaude, 'builtin Claude tool should still be returned to the owner runtime');
   assert.equal(publicTool?.available, true);
   assert.equal(privateTool?.available, true);
   assert.equal(publicTool?.visibility || '', '', 'public tools should not be forced private');
   assert.equal(privateTool?.visibility, 'private', 'private visibility should survive normalization');
+  assert.equal(builtinClaude?.visibility, 'private', 'builtin Claude should stay hidden from public pickers');
 } finally {
   rmSync(tempHome, { recursive: true, force: true });
 }
