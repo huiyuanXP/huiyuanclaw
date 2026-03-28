@@ -48,6 +48,23 @@
   overflow: hidden;
   transition: border-color 0.15s;
 }
+.session-mode-banner {
+  display: none;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+.session-mode-banner-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.session-mode-banner-body {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
 .input-wrapper:focus-within { border-color: var(--focus-border); }
 .input-config-row {
   display: flex; align-items: center; gap: 10px;

@@ -554,6 +554,10 @@ function buildTemplateReplacements(buildInfo) {
     BUILD_LABEL: buildInfo.label,
     BUILD_TITLE: buildInfo.title,
     BUILD_JSON: serializeJsonForScript(buildInfo),
+    STATUS_I18N_KEY: 'status.disconnected',
+    STATUS_TEXT: 'disconnected',
+    INPUT_PLACEHOLDER_I18N_KEY: 'input.placeholder.message',
+    INPUT_PLACEHOLDER_TEXT: 'Message...',
   };
 }
 
@@ -990,6 +994,10 @@ function buildShareSnapshotPageReplacements(req, shareId, snapshot) {
   const escapedShareUrl = shareUrl ? escapeHtml(shareUrl) : '';
   return {
     PAGE_TITLE: escapeHtml(pageTitle),
+    STATUS_I18N_KEY: 'status.readOnlySnapshot',
+    STATUS_TEXT: 'read-only snapshot',
+    INPUT_PLACEHOLDER_I18N_KEY: 'input.placeholder.readOnlySnapshot',
+    INPUT_PLACEHOLDER_TEXT: 'Read-only snapshot',
     PAGE_HEAD_TAGS: [
       `<meta name="description" content="${escapedDescription}">`,
       `<meta property="og:type" content="website">`,

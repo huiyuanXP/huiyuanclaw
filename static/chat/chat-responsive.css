@@ -92,12 +92,16 @@ body.visitor-mode .sidebar-overlay { display: none !important; }
 body.visitor-mode .header #menuBtn { display: none !important; }
 body.visitor-mode .gesture-pill { display: none !important; }
 body.share-snapshot-mode .input-area {
-  opacity: 0.72;
+  opacity: 1;
 }
-body.share-snapshot-mode .input-row textarea:disabled {
-  color: var(--text-muted);
-  -webkit-text-fill-color: var(--text-muted);
-  cursor: not-allowed;
+body.share-snapshot-mode .session-mode-banner {
+  display: block;
+}
+body.share-snapshot-mode .input-resize-handle,
+body.share-snapshot-mode .input-config-row,
+body.share-snapshot-mode .input-row,
+body.share-snapshot-mode .composer-pending-state {
+  display: none;
 }
 
 @media (max-width: 640px) {

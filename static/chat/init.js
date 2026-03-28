@@ -31,7 +31,14 @@ function applyShareSnapshotMode(snapshot) {
   shareSnapshotPayload = snapshot;
   applyVisitorMode();
   document.body.classList.add("share-snapshot-mode");
-  if (statusText) statusText.textContent = "read-only snapshot";
+  if (statusText) {
+    statusText.dataset.i18n = "status.readOnlySnapshot";
+    statusText.textContent = t("status.readOnlySnapshot");
+  }
+  if (msgInput) {
+    msgInput.dataset.i18nPlaceholder = "input.placeholder.readOnlySnapshot";
+    msgInput.placeholder = t("input.placeholder.readOnlySnapshot");
+  }
 }
 
 // ---- Init ----

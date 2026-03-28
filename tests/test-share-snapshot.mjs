@@ -270,6 +270,9 @@ async function main() {
   assert.ok(!publicShareRes.body.includes('Please review this snippet.'), 'share shell should not inline conversation bodies');
   assert.ok(!publicShareRes.body.includes('<section class="hero">'), 'share page should not fall back to the legacy snapshot hero shell');
   assert.match(publicShareRes.body, /<div class="messages-inner" id="messagesInner">/, 'share page should render the shared chat timeline shell');
+  assert.match(publicShareRes.body, /<span id="statusText" data-i18n="status\.readOnlySnapshot">read-only snapshot<\/span>/, 'share page should present a read-only status label instead of disconnected by default');
+  assert.match(publicShareRes.body, /<textarea id="msgInput" placeholder="Read-only snapshot" data-i18n-placeholder="input\.placeholder\.readOnlySnapshot" disabled><\/textarea>/, 'share page should present a read-only placeholder instead of an editable message box hint');
+  assert.match(publicShareRes.body, /<div class="session-mode-banner" id="sessionModeBanner">/, 'share page should render a read-only guidance banner');
   assert.ok(!publicShareRes.body.includes('/api/auth/me'), 'share page should not bootstrap owner auth UI');
   assert.ok(!publicShareRes.body.includes('/ws'), 'share page should not connect to live websocket');
   const publicShare304Res = await request('GET', sharePayload.share.url, {
