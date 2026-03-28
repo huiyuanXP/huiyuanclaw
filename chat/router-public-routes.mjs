@@ -12,6 +12,7 @@ import {
   clearVisitorCookie,
 } from '../lib/auth.mjs';
 import { readBody } from '../lib/utils.mjs';
+import { buildAttachmentContentDisposition } from './file-assets.mjs';
 import { getShareAsset, getShareSnapshot } from './shares.mjs';
 import {
   getClientIp,
@@ -186,9 +187,18 @@ if (shareAssetRoute && req.method === 'GET') {
     return true;
   }
   try {
+    const downloadRequested = String(parsedUrl?.query?.download || '') === '1';
     const content = await readFile(asset.filepath);
     writeFileCached(req, res, asset.mimeType, content, {
       cacheControl: SHARE_RESOURCE_CACHE_CONTROL,
+      headers: downloadRequested
+        ? {
+          'Content-Disposition': buildAttachmentContentDisposition(
+            asset.originalName || asset.filename || 'attachment',
+            { attachment: true },
+          ),
+        }
+        : undefined,
     });
   } catch {
     res.writeHead(404, buildHeaders({

@@ -154,6 +154,17 @@ assert.equal(resultAssetNode.children[0].children[1].children[0].textContent, 'r
 assert.equal(resultAssetNode.children[0].children[1].children[1].textContent, 'MP4 · 4 KB', 'result attachment row should show file size metadata');
 assert.equal(resultAssetNode.children[1].href, '/api/assets/fasset_result_video/download?download=1', 'result attachment row should request an explicit download for file assets');
 
+const sharedAssetNode = context.createMessageAttachmentNode({
+  assetId: 'asset_shared_attachment',
+  url: '/share-asset/snap_demo/asset_shared_attachment',
+  originalName: 'shared-report.csv',
+  mimeType: 'text/csv',
+  sizeBytes: 1024,
+  renderAs: 'file',
+});
+assert.equal(sharedAssetNode.tagName, 'DIV', 'shared snapshot file attachments should render as attachment rows');
+assert.equal(sharedAssetNode.children[1].href, '/share-asset/snap_demo/asset_shared_attachment?download=1', 'shared snapshot file downloads should stay on the public share asset route');
+
 const imageAssetNode = context.createMessageAttachmentNode({
   assetId: 'fasset_preview_png',
   originalName: 'shot.png',
@@ -161,6 +172,15 @@ const imageAssetNode = context.createMessageAttachmentNode({
 });
 assert.equal(imageAssetNode.tagName, 'IMG', 'image file assets should still render inline previews');
 assert.equal(imageAssetNode.src, '/api/assets/fasset_preview_png/download', 'image previews should keep the plain asset route');
+
+const sharedImageNode = context.createMessageAttachmentNode({
+  assetId: 'asset_shared_image',
+  url: '/share-asset/snap_demo/asset_shared_image',
+  originalName: 'share-shot.png',
+  mimeType: 'image/png',
+});
+assert.equal(sharedImageNode.tagName, 'IMG', 'shared snapshot images should still render inline previews');
+assert.equal(sharedImageNode.src, '/share-asset/snap_demo/asset_shared_image', 'shared snapshot image previews should use the public share asset route');
 
 const genericComposerPreview = context.createComposerAttachmentPreviewNode({
   objectUrl: 'blob:report',

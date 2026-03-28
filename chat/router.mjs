@@ -858,6 +858,7 @@ function createSessionSummaryRef(session) {
 function writeFileCached(req, res, contentType, body, {
   cacheControl = 'public, no-cache',
   vary,
+  headers,
 } = {}) {
   writeCachedResponse(req, res, {
     statusCode: 200,
@@ -865,6 +866,7 @@ function writeFileCached(req, res, contentType, body, {
     body,
     cacheControl,
     vary,
+    headers,
   });
 }
 

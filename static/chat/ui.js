@@ -84,6 +84,9 @@ function getAttachmentSource(attachment) {
   if (typeof attachment?.downloadUrl === "string" && attachment.downloadUrl) {
     return attachment.downloadUrl;
   }
+  if (typeof attachment?.url === "string" && attachment.url) {
+    return attachment.url;
+  }
   if (typeof attachment?.assetId === "string" && attachment.assetId) {
     return `/api/assets/${encodeURIComponent(attachment.assetId)}/download`;
   }
@@ -98,13 +101,25 @@ function getAttachmentDownloadSource(attachment) {
     ? attachment.downloadUrl.trim()
     : "";
   if (downloadUrl) {
-    if (!/^\/api\/assets\/[^/]+\/download(?:[?#]|$)/.test(downloadUrl)) {
+    if (!/^\/(?:api\/assets\/[^/]+\/download|share-asset\/[^/]+\/[^/?#]+)(?:[?#]|$)/.test(downloadUrl)) {
       return downloadUrl;
     }
     if (/[?&]download=1(?:&|$)/.test(downloadUrl)) {
       return downloadUrl;
     }
     return downloadUrl.includes("?") ? `${downloadUrl}&download=1` : `${downloadUrl}?download=1`;
+  }
+  const shareUrl = typeof attachment?.url === "string"
+    ? attachment.url.trim()
+    : "";
+  if (shareUrl) {
+    if (!/^\/share-asset\/[^/]+\/[^/?#]+(?:[?#]|$)/.test(shareUrl)) {
+      return shareUrl;
+    }
+    if (/[?&]download=1(?:&|$)/.test(shareUrl)) {
+      return shareUrl;
+    }
+    return shareUrl.includes("?") ? `${shareUrl}&download=1` : `${shareUrl}?download=1`;
   }
   const assetId = typeof attachment?.assetId === "string"
     ? attachment.assetId.trim()

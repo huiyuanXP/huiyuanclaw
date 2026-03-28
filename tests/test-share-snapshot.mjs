@@ -303,6 +303,9 @@ async function main() {
   assert.ok(assetRes.headers.etag, 'share asset should expose an ETag');
   assert.strictEqual(assetRes.headers['content-type'], 'image/png', 'share asset should retain its attachment MIME type');
   assert.ok(assetRes.buffer.length > 0, 'share asset should return binary content');
+  const assetDownloadRes = await request('GET', `${storedAttachment.url}?download=1`);
+  assert.strictEqual(assetDownloadRes.status, 200, 'public share attachment download should work without auth');
+  assert.match(assetDownloadRes.headers['content-disposition'] || '', /^attachment; filename="inline\.png"; filename\*=UTF-8''/u, 'public share downloads should request an attachment filename');
   const asset304Res = await request('GET', storedAttachment.url, {
     headers: {
       'If-None-Match': assetRes.headers.etag,
