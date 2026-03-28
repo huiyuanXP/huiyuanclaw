@@ -31,12 +31,14 @@ const server = http.createServer((req, res) => {
 });
 
 ws.attachWebSocket(server);
-try {
-  await sessionManager.startDetachedRunObservers();
-} catch (error) {
-  console.error('Failed to rehydrate detached runs on startup:', error);
-}
 triggers.startTriggerScheduler();
+void (async () => {
+  try {
+    await sessionManager.startDetachedRunObservers();
+  } catch (error) {
+    console.error('Failed to rehydrate detached runs on startup:', error);
+  }
+})();
 
 async function shutdown() {
   console.log('Shutting down chat server...');
