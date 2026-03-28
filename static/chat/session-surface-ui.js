@@ -238,6 +238,7 @@ function createActiveSessionItem(session) {
       ${metaHtml ? `<div class="session-item-meta">${metaHtml}</div>` : ""}
     </div>
     <div class="session-item-actions">
+      <button class="session-action-btn label-btn" type="button" title="Label" aria-label="Label" data-id="${session.id}">◆</button>
       <button class="session-action-btn pin${session.pinned ? " pinned" : ""}" type="button" title="${pinTitle}" aria-label="${pinTitle}" data-id="${session.id}">${renderUiIcon(session.pinned ? "pinned" : "pin")}</button>
       <button class="session-action-btn rename" type="button" title="${esc(t("action.rename"))}" aria-label="${esc(t("action.rename"))}" data-id="${session.id}">${renderUiIcon("edit")}</button>
       <button class="session-action-btn archive" type="button" title="${esc(t("action.archive"))}" aria-label="${esc(t("action.archive"))}" data-id="${session.id}">${renderUiIcon("archive")}</button>
@@ -266,5 +267,61 @@ function createActiveSessionItem(session) {
     dispatchAction({ action: "archive", sessionId: session.id });
   });
 
+  div.querySelector(".label-btn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    showLabelPicker(e.target, session);
+  });
+
   return div;
+}
+
+// ---- Label picker dropdown ----
+function showLabelPicker(anchor, session) {
+  const existing = document.querySelector(".label-picker-dropdown");
+  if (existing) existing.remove();
+
+  const labels = window._sessionLabelDefs || [];
+  const dropdown = document.createElement("div");
+  dropdown.className = "label-picker-dropdown";
+
+  const currentLabel = session.label || null;
+  let html = labels.map((l) => {
+    const active = l.id === currentLabel ? " active" : "";
+    return `<div class="label-picker-item${active}" data-label="${esc(l.id)}" style="color:${esc(l.color)}">◆ ${esc(l.name)}</div>`;
+  }).join("");
+  html += `<div class="label-picker-item label-picker-clear" data-label="">${currentLabel ? "✕ Clear" : "—"}</div>`;
+  dropdown.innerHTML = html;
+
+  const rect = anchor.getBoundingClientRect();
+  dropdown.style.position = "fixed";
+  dropdown.style.top = (rect.bottom + 2) + "px";
+  dropdown.style.left = rect.left + "px";
+  dropdown.style.zIndex = "9999";
+  document.body.appendChild(dropdown);
+
+  dropdown.addEventListener("click", async (e) => {
+    const item = e.target.closest(".label-picker-item");
+    if (!item) return;
+    const labelId = item.dataset.label || null;
+    dropdown.remove();
+    try {
+      await fetch(`/api/sessions/${session.id}/label`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label: labelId }),
+      });
+      session.label = labelId;
+      if (typeof renderSessionList === "function") renderSessionList();
+    } catch (err) {
+      console.error("[label] Failed to set label:", err);
+    }
+  });
+
+  const dismiss = (e) => {
+    if (!dropdown.contains(e.target)) {
+      dropdown.remove();
+      document.removeEventListener("click", dismiss, true);
+    }
+  };
+  setTimeout(() => document.addEventListener("click", dismiss, true), 0);
 }
