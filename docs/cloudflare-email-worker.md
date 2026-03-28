@@ -114,6 +114,28 @@ For arbitrary external recipients while keeping a custom-domain sender identity,
 
 This keeps Cloudflare on inbound routing while delegating real outbound delivery to a provider that can send to the public internet from your domain.
 
+## Direct outbound sender command
+
+Once the local mailbox outbound config is set, the stable agent-facing entry point is:
+
+```bash
+remotelab mail send --to someone@example.com --subject "RemoteLab update" --text "Hello from RemoteLab"
+```
+
+For longer bodies, use stdin or a file:
+
+```bash
+cat draft.txt | remotelab mail send --to someone@example.com --subject "Weekly update" --stdin
+remotelab mail send --to someone@example.com --subject "Weekly update" --text-file ./draft.txt
+```
+
+Provider setup examples:
+
+```bash
+remotelab mail outbound configure-resend-api --from agent@example.com --api-key-env RESEND_API_KEY
+remotelab mail outbound configure-cloudflare-worker --from agent@example.com --worker-base-url https://remotelab-email-worker.example.workers.dev
+```
+
 ## Success state
 
 - inbound routing sends the owner mailbox and intended guest mailbox aliases to the Worker according to the chosen address mode

@@ -57,8 +57,15 @@ The CLI supports:
 - `ingest` — import `.eml` files or a directory of emails
 - `queue` — inspect `review`, `quarantine`, or `approved`
 - `approve` — mark a reviewed email as AI-eligible
-- `outbound status|configure-cloudflare-worker|configure-apple-mail` — configure the outbound sender
+- `send` — send a direct outbound email through the configured provider
+- `outbound status|configure-cloudflare-worker|configure-resend-api|configure-apple-mail` — configure the outbound sender
 - `automation status|configure` — configure the chat-server-backed session/reply worker
+
+Recommended low-cost outbound path:
+
+- use `remotelab mail send --to ... --subject ... --text ...` as the stable agent-facing send entry
+- prefer `remotelab mail outbound configure-resend-api` for arbitrary public recipients on a custom sender domain
+- keep `configure-cloudflare-worker` for verified internal Email Routing destinations and `configure-apple-mail` as a local fallback path
 
 Queue layout:
 
