@@ -28,7 +28,7 @@ Evidence log: `notes/current/user-feedback-log.md`
 - Optimize for one concrete automation win: take one recurring digital chore from a vague description to a trusted result on a real machine.
 - Let repeated user evidence outrank internally elegant abstractions when the two conflict.
 - Keep knowledge layering and execution connectors separate: shared toolchains and connectors may stay common, while domain knowledge stays retrievable and user context stays private.
-- When local domain coverage is thin, prefer a replaceable external solution-provider adapter over baking a temporary vendor into core knowledge or memory.
+- When local domain coverage is thin, prefer a replaceable external solution-provider adapter under local routing and upload control over baking a temporary vendor into core knowledge, memory, or workflow policy.
 - Prefer owner sessions plus read-only share snapshots over product-facing `App` / `User` abstractions during the current simplification phase.
 - Treat multi-session orchestration, context carry, reusable packaging, and other higher-order capabilities as support layers unless user evidence clearly pulls them forward again.
 

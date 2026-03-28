@@ -25,11 +25,11 @@ Directional synthesis: `notes/directional/product-vision.md`
 
 - Source: direct product architecture discussion about how to cover unfamiliar domains without pretending one temporary provider is the long-term answer
 - User slice: owner/operator shaping the first reusable external domain-search path during a hackathon-constrained build
-- Observed friction or ask: RemoteLab needs a fallback when it has no strong local solution pattern for a domain such as hotel operations, but the team does not want a temporary platform requirement like `evomap` to harden into core architecture.
-- Signal: the product should treat third-party domain search / solution platforms as replaceable fallback providers behind a normalized adapter contract, with local retrieval first and external lookup second.
-- Product implication: isolate provider-specific APIs, auth, prompt shaping, and response parsing; keep external results attributable and ephemeral; prevent automatic writeback from provider output into shared domain knowledge or private user memory.
+- Observed friction or ask: RemoteLab needs a fallback when it has no strong local solution pattern for a domain such as hotel operations, but the team does not want a temporary platform requirement like `evomap` to harden into core architecture or let provider-native workflow structures steer execution.
+- Signal: the product should treat third-party domain search / solution platforms as replaceable fallback providers behind a normalized adapter contract, with local retrieval first and external lookup second, and with workflow control kept local even when provider APIs or uploads are used.
+- Product implication: isolate provider-specific APIs, auth, prompt shaping, uploads, and response parsing; keep external results attributable and ephemeral; prevent automatic writeback from provider output into shared domain knowledge or private user memory; treat provider `skill` docs or playbooks as reference inputs rather than runtime policy.
 - Promote to: `notes/current/external-solution-providers.md`, `notes/current/external-solution-providers-implementation-draft.md`, `notes/current/knowledge-layers-and-connectors.md`, `notes/current/product-mainline.md`
-- Follow-up: implementation draft now exists; the next execution step is to add the first experimental provider behind the normalized evidence contract without letting provider-specific taxonomy leak into the core model.
+- Follow-up: implementation draft now exists; the next execution step is to add the first experimental provider behind the normalized evidence contract with a local redaction/export policy, without letting provider-specific taxonomy or workflow assets leak into the core model.
 
 ### 2026-03-28 — separate knowledge layers from shared capability connectors even in the single-machine phase
 

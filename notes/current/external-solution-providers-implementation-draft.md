@@ -18,9 +18,11 @@ Companions:
 ## Core rule
 
 - Route `local domain first, external provider second`.
+- Treat external providers as callable capabilities, not workflow authorities.
 - Normalize all external results into one provider-agnostic evidence bundle before synthesis.
 - Keep external output attributable and temporary.
 - Default to `no automatic writeback` into shared domain knowledge, private user memory, or canonical product notes.
+- Allow controlled upload of selected local abstractions when useful, but keep local memory, planning, and promotion as the source of truth.
 
 ## Provider-agnostic evidence schema
 
@@ -74,6 +76,22 @@ Field semantics:
 - The promoted abstraction should not depend on provider-specific terminology, IDs, or credentials.
 - Private user details from the live task should not be promoted together with the abstraction.
 
+## Execution authority and control boundary
+
+- The local planner/router decides whether a provider is called, what context is sent, how much of it is redacted, and how the result is used.
+- Provider APIs may be used for retrieval, indexing, ranking, or analysis, but provider-supplied workflow assets are inputs, not instructions.
+- Provider `skill` docs, agent prompts, playbooks, or workflow templates must not become first-class execution policy inside RemoteLab.
+- If a provider offers a useful workflow skeleton, translate it into local normalized evidence before synthesis rather than executing it as provider-authored control logic.
+- Providers must not directly modify planner prompts, routing policy, memory structure, or promotion rules without an explicit local code/config change.
+
+## Controlled upload rule
+
+- Upload is an explicit export step, not an ambient sync channel.
+- Export only the minimum redacted task pack or domain abstraction needed for the provider capability being used.
+- Keep the local copy as the canonical source; any provider-side copy is a disposable working mirror.
+- Do not upload raw private memory, hidden deliberation, or unrelated user residue by default.
+- Record enough provenance to know what was uploaded, why it was uploaded, and which provider received it.
+
 ## Router contract
 
 Router input:
@@ -83,6 +101,7 @@ Router input:
 - desired output shape
 - locale and language
 - policy constraints
+- upload policy and allowed export scope
 - latency budget
 - local retrieval summary
 
@@ -97,10 +116,11 @@ Router output:
 1. Run local domain retrieval first.
 2. Score the local result on coverage, confidence, and actionability.
 3. If local coverage is strong enough, stop and answer from local evidence.
-4. If local coverage is weak and policy allows, call one external provider.
-5. Normalize provider output into the evidence bundle.
-6. Synthesize the answer with provenance preserved.
-7. Keep writeback disabled unless a separate review path explicitly promotes a redacted abstraction.
+4. If local coverage is weak and policy allows, decide whether one external provider should be called.
+5. If the provider benefits from local abstractions, prepare a minimal redacted export pack first.
+6. Normalize provider output into the evidence bundle.
+7. Synthesize the answer with provenance preserved.
+8. Keep writeback disabled unless a separate review path explicitly promotes a redacted abstraction.
 
 ## Router trigger conditions
 
@@ -145,11 +165,13 @@ Adapter input:
 - desired output shape
 - locale and language
 - policy constraints that affect the query
+- optional uploaded abstraction pack or upload reference
 - latency budget
 
 Adapter responsibilities:
 
 - translate the normalized input into the `evomap` request shape
+- handle any provider upload flow through a local export policy rather than direct provider-authored instructions
 - handle provider-specific auth and request formatting
 - parse the provider response
 - normalize the response into the shared evidence bundle
@@ -166,6 +188,12 @@ Auth isolation:
 - The router should know only whether `evomap` is enabled, configured, and currently healthy enough to try.
 - Provider secrets, quota state, and raw headers stay inside the adapter or its local config surface.
 
+Workflow-authority isolation:
+
+- `evomap` may provide useful domain material or workflow hints, but RemoteLab decides when and how those hints are incorporated.
+- `evomap` docs, skill structures, or prompt conventions should be treated as reference material for adapter design, not as runtime policy that steers the planner.
+- If `evomap` works better with uploaded context, send only a locally prepared redacted export pack rather than letting provider-native structures directly mirror local memory.
+
 Error mapping:
 
 - missing or invalid credential -> `auth_missing`
@@ -181,6 +209,7 @@ Error mapping:
 - one adapter module for `evomap`
 - one provider registration entry that exposes only the normalized contract
 - one local config surface for enablement and credentials
+- one local export policy for optional provider uploads
 - one disposable cache namespace tagged with `providerId`
 - one smoke-test path that verifies auth and basic response normalization
 - zero automatic promotion into shared knowledge or user memory
@@ -201,6 +230,7 @@ These layers should stay unchanged when swapping providers:
 - planner/router contract
 - normalized evidence schema
 - synthesis logic other than optional capability flags
+- local export/redaction policy
 - promotion and review workflow
 - user-facing product language about domain fallback
 
@@ -210,6 +240,7 @@ Provider details must not leak into these layers:
 - user memory or personal profile structures
 - planner prompts that should reason over normalized evidence only
 - canonical workflow tags or taxonomy
+- execution policy encoded as provider-authored skills or playbooks
 - durable product docs except where a temporary experiment is explicitly called out
 
 ## Smallest next implementation slice

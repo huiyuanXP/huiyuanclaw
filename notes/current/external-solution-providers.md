@@ -20,14 +20,16 @@ Companions:
 - An external solution provider is a fallback retrieval adapter, not the shared `domain layer` itself.
 - It lives on the capability side, but its output contributes temporary evidence for the current task.
 - Its output is not canonical truth and should not automatically write into shared knowledge, user memory, or product docs.
+- Its APIs may be useful, including optional upload-backed retrieval, but the workflow control plane stays local.
 
 ## Routing rule
 
 1. Check the local domain layer first.
 2. If local coverage is weak and policy allows, query one or more external providers.
-3. Normalize the result into one provider-agnostic evidence bundle.
-4. Synthesize the answer with source/provenance visible to the agent and, when appropriate, to the user.
-5. Promote only redacted abstractions through a separate review path.
+3. If a provider needs local context, send only a minimal redacted export pack under local policy.
+4. Normalize the result into one provider-agnostic evidence bundle.
+5. Synthesize the answer with source/provenance visible to the agent and, when appropriate, to the user.
+6. Promote only redacted abstractions through a separate review path.
 
 ## Minimum provider contract
 
@@ -58,12 +60,15 @@ Normalized output:
 - Keep provider credentials, toggles, and quotas outside shared knowledge notes.
 - Keep provider-specific taxonomies or schemas from leaking into the core product model unless they survive a later abstraction pass.
 - Allow caching if useful, but keep cache disposable and provider-tagged.
+- Treat provider `skill` docs, workflow guides, and prompt structures as reference material for adapter design, not as runtime control policy.
+- Keep local export/redaction policy separate from provider-specific upload formats so we can use provider capabilities without surrendering execution authority.
 
 ## `evomap` stance
 
 - `evomap` is acceptable as a near-term experimental provider or hackathon requirement.
 - Wrap it exactly like any future provider: one adapter, one config surface, one normalized output contract.
 - Do not make shared memory, domain storage, or planner behavior depend on `evomap`-specific concepts.
+- Do not let `evomap`-native skill/playbook structures directly steer our planner, prompts, or memory writes.
 - A future swap should mostly mean changing routing config or adding another adapter, not rewriting the knowledge architecture.
 
 ## Smallest useful MVP
@@ -71,6 +76,7 @@ Normalized output:
 - one router decision: `local domain first, external fallback second`
 - one normalized evidence schema
 - one `evomap` adapter behind that schema
+- one local redaction/export policy for optional provider uploads
 - one explicit provenance field on returned evidence
 - no automatic promotion into domain knowledge or user memory
 - one place to flip or replace the provider later
