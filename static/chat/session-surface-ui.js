@@ -142,8 +142,20 @@ function isSessionCompleteAndReviewed(session) {
     : false;
 }
 
+function renderSessionLabelHtml(session) {
+  if (!session?.label) return "";
+  const labelId = session.label;
+  const labelDefs = window._sessionLabelDefs || [];
+  const def = labelDefs.find((l) => l.id === labelId);
+  const name = def ? def.name : labelId;
+  const color = def ? def.color : "var(--text-muted)";
+  return `<span class="session-label-badge" style="color:${esc(color)}" title="${esc(name)}">◆ ${esc(name)}</span>`;
+}
+
 function buildSessionMetaParts(session) {
   const parts = [];
+  const labelHtml = renderSessionLabelHtml(session);
+  if (labelHtml) parts.push(labelHtml);
   const reviewHtml = renderSessionStatusHtml(getSessionReviewStatusInfo(session));
   if (reviewHtml) parts.push(reviewHtml);
   const liveStatus = getSessionStatusSummary(session).primary;
