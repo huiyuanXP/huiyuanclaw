@@ -150,7 +150,10 @@ async function initApp() {
   }
 
   if (shouldOpenMobileInstallFlow(authInfo)) {
-    window.location.replace("m/install?source=auto");
+    const installUrl = typeof window.remotelabResolveProductPath === "function"
+      ? window.remotelabResolveProductPath("/m/install?source=auto")
+      : "m/install?source=auto";
+    window.location.replace(installUrl);
     return;
   }
 

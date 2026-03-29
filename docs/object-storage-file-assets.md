@@ -33,6 +33,43 @@ export REMOTELAB_ASSET_STORAGE_PRESIGN_TTL_SECONDS="3600"
 export REMOTELAB_ASSET_DIRECT_UPLOAD_ENABLED="1"
 ```
 
+## Minimal presets
+
+Use one of these smallest working env sets as a starting point.
+
+### Cloudflare R2
+
+```bash
+export REMOTELAB_ASSET_STORAGE_PROVIDER="s3"
+export REMOTELAB_ASSET_STORAGE_BASE_URL="https://<accountid>.r2.cloudflarestorage.com/<bucket>"
+export REMOTELAB_ASSET_STORAGE_REGION="auto"
+export REMOTELAB_ASSET_STORAGE_ACCESS_KEY_ID="..."
+export REMOTELAB_ASSET_STORAGE_SECRET_ACCESS_KEY="..."
+export REMOTELAB_ASSET_DIRECT_UPLOAD_ENABLED="1"
+```
+
+### AWS S3
+
+```bash
+export REMOTELAB_ASSET_STORAGE_PROVIDER="s3"
+export REMOTELAB_ASSET_STORAGE_BASE_URL="https://s3.<region>.amazonaws.com/<bucket>"
+export REMOTELAB_ASSET_STORAGE_REGION="<region>"
+export REMOTELAB_ASSET_STORAGE_ACCESS_KEY_ID="..."
+export REMOTELAB_ASSET_STORAGE_SECRET_ACCESS_KEY="..."
+export REMOTELAB_ASSET_DIRECT_UPLOAD_ENABLED="1"
+```
+
+### Volcengine TOS
+
+```bash
+export REMOTELAB_ASSET_STORAGE_PROVIDER="tos"
+export REMOTELAB_ASSET_STORAGE_BASE_URL="https://<bucket>.tos-<region>.volces.com"
+export REMOTELAB_ASSET_STORAGE_REGION="<region>"
+export REMOTELAB_ASSET_STORAGE_ACCESS_KEY_ID="..."
+export REMOTELAB_ASSET_STORAGE_SECRET_ACCESS_KEY="..."
+export REMOTELAB_ASSET_DIRECT_UPLOAD_ENABLED="1"
+```
+
 Examples:
 
 - Cloudflare R2: `https://<accountid>.r2.cloudflarestorage.com/<bucket>`

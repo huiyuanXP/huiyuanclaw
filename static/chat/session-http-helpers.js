@@ -11,8 +11,12 @@ function urlBase64ToUint8Array(base64String) {
 }
 
 function redirectToLogin() {
-  if (window.location.pathname !== "/login") {
-    window.location.href = "/login";
+  const loginPath = typeof window.remotelabResolveProductPath === "function"
+    ? window.remotelabResolveProductPath("/login")
+    : "/login";
+  const loginUrl = new URL(loginPath, window.location.href);
+  if (window.location.pathname !== loginUrl.pathname) {
+    window.location.href = `${loginUrl.pathname}${loginUrl.search}${loginUrl.hash}`;
   }
 }
 
@@ -145,7 +149,10 @@ function enhanceRenderedContentLinks(root) {
 
 function buildJsonCacheKey(url) {
   try {
-    const resolved = new URL(url, window.location.origin);
+    const resolvedUrl = typeof window.remotelabResolveProductUrl === "function"
+      ? window.remotelabResolveProductUrl(url)
+      : new URL(url, window.location.origin).toString();
+    const resolved = new URL(resolvedUrl, window.location.origin);
     return `${resolved.pathname}${resolved.search}`;
   } catch {
     return String(url);
@@ -162,6 +169,9 @@ function getSessionSidebarUrl(sessionId) {
 function resolveRequestUrl(url) {
   if (typeof withVisitorModeUrl === "function") {
     return withVisitorModeUrl(url);
+  }
+  if (typeof window.remotelabResolveProductPath === "function") {
+    return window.remotelabResolveProductPath(url);
   }
   return typeof url === "string" ? url : String(url || "");
 }
@@ -338,8 +348,11 @@ async function fetchJsonOrRedirect(url, options = {}) {
     method,
     headers,
   });
+  const loginPath = typeof window.remotelabResolveProductPath === "function"
+    ? new URL(window.remotelabResolveProductPath("/login"), window.location.href).pathname
+    : "/login";
   const redirectedToLogin =
-    res.redirected && new URL(res.url, window.location.href).pathname === "/login";
+    res.redirected && new URL(res.url, window.location.href).pathname === loginPath;
 
   if (res.status === 401 || redirectedToLogin) {
     redirectToLogin();

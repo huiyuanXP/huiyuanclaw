@@ -396,9 +396,14 @@ async function main() {
     assert.equal(initAsset.status, 200, 'chat init asset should load');
     assert.match(
       initAsset.text,
-      /window\.location\.replace\("m\/install\?source=auto"\);/,
-      'mobile install redirects should stay relative to the current product base path',
+      /window\.remotelabResolveProductPath\("\/m\/install\?source=auto"\)/,
+      'mobile install redirects should resolve through the shared product-path helper',
     );
+
+    const productPathsAsset = await request(port, 'GET', '/chat/product-paths.js');
+    assert.equal(productPathsAsset.status, 200, 'product path helper asset should load');
+    assert.match(productPathsAsset.text, /function resolveProductPath\(/);
+    assert.match(productPathsAsset.text, /remotelabResolveProductPath = resolveProductPath/);
 
     const sessionHttpHelpersAsset = await request(port, 'GET', '/chat/session-http-helpers.js');
     assert.equal(sessionHttpHelpersAsset.status, 200, 'session http helpers asset should load');

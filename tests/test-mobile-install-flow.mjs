@@ -166,18 +166,23 @@ async function main() {
     assert.match(installPage.text, /window\.__REMOTELAB_BOOTSTRAP__ = /, 'install page should inline bootstrap data');
     assert.match(
       installPage.text,
-      new RegExp(`\.\./manifest\\.install\\.json\\?h=${handoffToken}`),
+      new RegExp(`/manifest\\.install\\.json\\?h=${handoffToken}`),
       'install page should point installable browsers at the handoff-aware manifest',
     );
     assert.match(
       installPage.text,
-      /\.\.\/api\/install\/handoff\/redeem/,
-      'install page should redeem the handoff through a product-root relative API path',
+      /resolveProductPath\('\/api\/install\/handoff\/redeem'\)/,
+      'install page should redeem the handoff through the shared product-path resolver',
     );
     assert.match(
       installPage.text,
-      /\.\.\/sw\.js\?v=/,
-      'install page should register the service worker through a product-root relative path',
+      /resolveProductPath\(`\/sw\.js\?v=\$\{encodeURIComponent\(buildInfo\.assetVersion \|\| 'dev'\)\}`\)/,
+      'install page should register the service worker through the shared product-path resolver',
+    );
+    assert.match(
+      installPage.text,
+      /\/chat\/product-paths\.js\?v=/,
+      'install page should load the shared product-path helper before runtime redirects',
     );
 
     const installManifest = await request(port, 'GET', `/manifest.install.json?h=${encodeURIComponent(handoffToken)}`);

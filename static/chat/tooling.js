@@ -355,6 +355,9 @@ function buildShareSnapshotShareText(session, shareUrl) {
 }
 
 function getShareSnapshotBaseUrl() {
+  if (typeof window.remotelabGetProductBaseUrl === "function") {
+    return window.remotelabGetProductBaseUrl();
+  }
   if (typeof document === "object" && typeof document.baseURI === "string" && document.baseURI) {
     return document.baseURI;
   }
@@ -371,7 +374,10 @@ async function shareCurrentSessionSnapshot() {
   shareSnapshotBtn.disabled = true;
 
   try {
-    const res = await fetch(`/api/sessions/${encodeURIComponent(currentSessionId)}/share`, {
+    const shareEndpoint = typeof window.remotelabResolveProductPath === "function"
+      ? window.remotelabResolveProductPath(`/api/sessions/${encodeURIComponent(currentSessionId)}/share`)
+      : `/api/sessions/${encodeURIComponent(currentSessionId)}/share`;
+    const res = await fetch(shareEndpoint, {
       method: "POST",
     });
 

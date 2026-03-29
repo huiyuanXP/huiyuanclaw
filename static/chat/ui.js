@@ -2,6 +2,13 @@ function t(key, vars) {
   return window.remotelabT ? window.remotelabT(key, vars) : key;
 }
 
+function resolveUiProductPath(path) {
+  if (typeof window.remotelabResolveProductPath === "function") {
+    return window.remotelabResolveProductPath(path);
+  }
+  return typeof path === "string" ? path : String(path || "");
+}
+
 function formatFileChangeTypeLabel(kind) {
   switch (kind) {
     case "add":
@@ -88,10 +95,10 @@ function getAttachmentSource(attachment) {
     return attachment.url;
   }
   if (typeof attachment?.assetId === "string" && attachment.assetId) {
-    return `/api/assets/${encodeURIComponent(attachment.assetId)}/download`;
+    return resolveUiProductPath(`/api/assets/${encodeURIComponent(attachment.assetId)}/download`);
   }
   if (typeof attachment?.filename === "string" && attachment.filename) {
-    return `/api/media/${encodeURIComponent(attachment.filename)}`;
+    return resolveUiProductPath(`/api/media/${encodeURIComponent(attachment.filename)}`);
   }
   return "";
 }
@@ -125,7 +132,7 @@ function getAttachmentDownloadSource(attachment) {
     ? attachment.assetId.trim()
     : "";
   if (assetId) {
-    return `/api/assets/${encodeURIComponent(assetId)}/download?download=1`;
+    return resolveUiProductPath(`/api/assets/${encodeURIComponent(assetId)}/download?download=1`);
   }
   return getAttachmentSource(attachment);
 }

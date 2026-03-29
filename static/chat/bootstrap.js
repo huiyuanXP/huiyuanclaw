@@ -607,7 +607,10 @@ function shouldUseVisitorRequests() {
 }
 
 function withVisitorModeUrl(url) {
-  const parsed = new URL(String(url || ""), window.location.href);
+  const resolvedUrl = typeof window.remotelabResolveProductUrl === "function"
+    ? window.remotelabResolveProductUrl(url)
+    : new URL(String(url || ""), window.location.href).toString();
+  const parsed = new URL(resolvedUrl, window.location.href);
   if (shouldUseVisitorRequests()) {
     parsed.searchParams.set("visitor", "1");
   }

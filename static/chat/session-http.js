@@ -1245,7 +1245,10 @@ async function setupPushNotifications() {
     const persistSubscription = async (subscription) => {
       const payload = subscription?.toJSON ? subscription.toJSON() : subscription;
       if (!payload?.endpoint) return;
-      await fetch("/api/push/subscribe", {
+      const subscribeUrl = typeof window.remotelabResolveProductPath === "function"
+        ? window.remotelabResolveProductPath("/api/push/subscribe")
+        : "/api/push/subscribe";
+      await fetch(subscribeUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -1258,7 +1261,10 @@ async function setupPushNotifications() {
       await persistSubscription(existing);
       return;
     }
-    const res = await fetch("/api/push/vapid-public-key");
+    const vapidPublicKeyUrl = typeof window.remotelabResolveProductPath === "function"
+      ? window.remotelabResolveProductPath("/api/push/vapid-public-key")
+      : "/api/push/vapid-public-key";
+    const res = await fetch(vapidPublicKeyUrl);
     if (!res.ok) return;
     const { publicKey } = await res.json();
     const sub = await reg.pushManager.subscribe({
@@ -1275,8 +1281,11 @@ async function setupPushNotifications() {
 async function ensureServiceWorkerRegistration() {
   if (!("serviceWorker" in navigator)) return null;
   try {
+    const serviceWorkerUrl = typeof window.remotelabResolveProductPath === "function"
+      ? window.remotelabResolveProductPath(`/sw.js?v=${encodeURIComponent(buildAssetVersion)}`)
+      : `/sw.js?v=${encodeURIComponent(buildAssetVersion)}`;
     const reg = await navigator.serviceWorker.register(
-      `/sw.js?v=${encodeURIComponent(buildAssetVersion)}`,
+      serviceWorkerUrl,
       { updateViaCache: "none" },
     );
     await reg.update().catch(() => {});
