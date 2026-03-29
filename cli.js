@@ -38,6 +38,7 @@ Usage:
   remotelab assistant-message        Append an assistant message with optional local-file attachments
   remotelab trigger                  Manage durable session triggers
   remotelab solution-provider        Run external solution-provider smoke checks
+  remotelab evomap-gep               Publish a minimal EvoMap Gene Recipe
   remotelab usage-summary            Summarize local Codex token usage
   remotelab session-spawn            Spawn a focused parallel session from a source session
   remotelab generate-token           Generate a new access token
@@ -143,6 +144,18 @@ switch (command) {
     const { runSolutionProviderCommand } = await import(scriptPath('lib/solution-provider-command.mjs'));
     try {
       process.exitCode = await runSolutionProviderCommand(args);
+    } catch (error) {
+      console.error(error.message || String(error));
+      process.exit(1);
+    }
+    break;
+  }
+
+  case 'evomap-gep':
+  case 'evomap-gene-recipe': {
+    const { runEvomapGepCommand } = await import(scriptPath('lib/evomap-gep-command.mjs'));
+    try {
+      process.exitCode = await runEvomapGepCommand(args);
     } catch (error) {
       console.error(error.message || String(error));
       process.exit(1);
