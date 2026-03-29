@@ -39,12 +39,8 @@ import {
 } from './file-assets.mjs';
 import { createShareSnapshot } from './shares.mjs';
 import {
-  addLabel,
-  getLabels,
-  removeLabel,
-  setSessionLabel,
-} from './session-labels.mjs';
-import { pathExists } from './fs-utils.mjs';
+  pathExists,
+} from './fs-utils.mjs';
 import {
   applyTemplateToSession,
   appendAssistantMessage,
@@ -302,36 +298,6 @@ export async function handleControlRoutes({
     } catch (error) {
       writeJson(res, error?.statusCode || 400, { error: error.message || 'Failed to build asset download link' });
     }
-    return true;
-  }
-
-  if (pathname.startsWith('/api/sessions/') && pathname.endsWith('/label') && req.method === 'PATCH') {
-    const parts = pathname.split('/').filter(Boolean);
-    const sessionId = parts[2];
-    if (parts.length !== 4 || parts[0] !== 'api' || parts[1] !== 'sessions' || parts[3] !== 'label' || !sessionId) {
-      writeJson(res, 400, { error: 'Invalid session label path' });
-      return true;
-    }
-    if (!requireSessionAccess(res, authSession, sessionId)) return true;
-    let payload = {};
-    try {
-      const body = await readBody(req, 4096);
-      payload = body ? JSON.parse(body) : {};
-    } catch {
-      writeJson(res, 400, { error: 'Invalid request body' });
-      return true;
-    }
-    const labelId = payload.label !== undefined ? payload.label : undefined;
-    if (labelId !== null && labelId !== undefined && typeof labelId !== 'string') {
-      writeJson(res, 400, { error: 'label must be a string or null' });
-      return true;
-    }
-    const meta = await setSessionLabel(sessionId, labelId || null);
-    if (!meta) {
-      writeJson(res, 404, { error: 'Session not found' });
-      return true;
-    }
-    writeJson(res, 200, { ok: true, label: meta.label || null });
     return true;
   }
 
@@ -926,63 +892,6 @@ export async function handleControlRoutes({
 
   if (pathname === '/api/push/vapid-public-key' && req.method === 'GET') {
     writeJsonCached(req, res, { publicKey: await getPublicKey() });
-    return true;
-  }
-
-  // ---- Session Labels ----
-
-  if (pathname === '/api/session-labels' && req.method === 'GET') {
-    const labels = await getLabels();
-    writeJson(res, 200, { labels });
-    return true;
-  }
-
-  if (pathname === '/api/session-labels' && req.method === 'POST') {
-    if (authSession?.role !== 'owner') {
-      writeJson(res, 403, { error: 'Owner access required' });
-      return true;
-    }
-    let payload = {};
-    try {
-      const body = await readBody(req, 4096);
-      payload = body ? JSON.parse(body) : {};
-    } catch {
-      writeJson(res, 400, { error: 'Invalid request body' });
-      return true;
-    }
-    if (!payload.id || typeof payload.id !== 'string') {
-      writeJson(res, 400, { error: 'id is required and must be a string' });
-      return true;
-    }
-    if (!payload.name || typeof payload.name !== 'string') {
-      writeJson(res, 400, { error: 'name is required and must be a string' });
-      return true;
-    }
-    const label = await addLabel({
-      id: payload.id.trim(),
-      name: payload.name.trim(),
-      color: typeof payload.color === 'string' ? payload.color.trim() : '#6b7280',
-    });
-    writeJson(res, 201, { label });
-    return true;
-  }
-
-  if (pathname.startsWith('/api/session-labels/') && req.method === 'DELETE') {
-    if (authSession?.role !== 'owner') {
-      writeJson(res, 403, { error: 'Owner access required' });
-      return true;
-    }
-    const labelId = pathname.slice('/api/session-labels/'.length);
-    if (!labelId) {
-      writeJson(res, 400, { error: 'Label id is required' });
-      return true;
-    }
-    const removed = await removeLabel(decodeURIComponent(labelId));
-    if (!removed) {
-      writeJson(res, 404, { error: 'Label not found' });
-      return true;
-    }
-    writeJson(res, 200, { ok: true });
     return true;
   }
 
