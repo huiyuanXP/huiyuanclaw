@@ -318,11 +318,12 @@ const TOOLS = [
   },
   {
     name: 'restart_server',
-    description: 'Restart all RemoteLab services (chat-server, proxy, tunnel). The triggering session is labeled "asked-for-restart" (yellow) during the restart, then restored to "started" after boot. Includes daemon-reload, service restart, tunnel health check, and status verification. If session_id is omitted, the current session (self) is used as the trigger.',
+    description: 'Restart all RemoteLab services (chat-server, proxy, tunnel). Supports two modes: `immediate` restarts now, and `wait` (planned restart) waits until all sessions are idle before restarting. The triggering session is labeled "asked-for-restart" during the actual restart, then restored to "started" after boot. If session_id is omitted, the current session (self) is used as the trigger.',
     inputSchema: {
       type: 'object',
       properties: {
         session_id: { type: 'string', description: 'The session ID that triggered the restart. If omitted, uses the current session (self).' },
+        mode: { type: 'string', description: 'Restart mode: `immediate` for restart-now, or `wait` / `planned` to schedule restart after all sessions become idle. Default: `immediate`.' },
       },
       required: [],
     },
@@ -551,6 +552,27 @@ async function executeTool(name, args) {
 
     case 'restart_server': {
       const triggerId = args.session_id || MY_SESSION_ID;
+      const mode = args.mode === 'wait' || args.mode === 'planned' ? 'wait' : 'immediate';
+
+      if (mode === 'wait') {
+        const res = await apiRequest('POST', '/api/restart', {
+          session_id: triggerId || null,
+          mode: 'wait',
+        });
+        if (res.status !== 200) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `Error ${res.status}: ${JSON.stringify(res.data)}` }],
+          };
+        }
+        return {
+          content: [{
+            type: 'text',
+            text: `Planned restart requested.\n${JSON.stringify(res.data, null, 2)}`,
+          }],
+        };
+      }
+
       const XDG = `XDG_RUNTIME_DIR=/run/user/${process.getuid()}`;
       const log = [];
 

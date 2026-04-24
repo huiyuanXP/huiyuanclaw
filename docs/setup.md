@@ -399,7 +399,9 @@ lsof -i :7690   # chat server
 lsof -i :7681   # auth proxy
 ```
 
-### Restart a single service
+### Restart services from an operator shell
+
+For agents, prefer the RemoteLab MCP tool `restart_server` so restart intent is tracked and the interrupted chat can resume automatically. The commands below are operator fallback commands.
 
 ```bash
 remotelab restart chat

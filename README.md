@@ -113,7 +113,7 @@ huiyuanClaw exposes its full API as MCP tools, enabling programmatic orchestrati
 **System tools:**
 - `set_label` / `list_labels` — Tag sessions with status labels (e.g., `pending-review`, `done`)
 - `schedule_message` — Schedule one-shot or recurring messages
-- `restart_server` — Graceful or immediate server restart
+- `restart_server` — Restart all services via MCP with `mode: "wait"` (planned restart) or `mode: "immediate"` (restart now)
 - `submit_report` — Submit HTML reports
 
 #### Two-Tier MCP Architecture
