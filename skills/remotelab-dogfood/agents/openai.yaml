@@ -1,0 +1,4 @@
+interface:
+  display_name: "RemoteLab Dogfood"
+  short_description: "Dogfood and QA web apps in this repo with reproducible evidence."
+  default_prompt: "Use this skill when asked to dogfood, QA, or exploratory-test a web app related to RemoteLab or a local dev server."

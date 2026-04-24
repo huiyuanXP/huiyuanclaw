@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import { randomBytes } from 'crypto';
 import { homedir } from 'os';
 import { createAndRun, archiveSession, sendMessage, waitForIdle } from './session-manager.mjs';
+import { getAutomationSettings, getAutomationOverrides } from '../lib/runtime-settings.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WORKFLOWS_DIR = join(__dirname, '..', 'workflows');
@@ -32,8 +33,17 @@ function resolvePlaceholders(prompt, results) {
 // ---- Single task runner ----
 
 async function runSessionMessageTask(task, runDir) {
+  const effectiveTool = task._sessionMessageTool && task._sessionMessageTool !== 'inherit'
+    ? task._sessionMessageTool
+    : undefined;
+  const effectiveModel = task._sessionMessageForceModel && task._sessionMessageModel
+    ? task._sessionMessageModel
+    : undefined;
   console.log(`[Workflow] Sending message to session "${task.sessionId}"`);
-  sendMessage(task.sessionId, task.text);
+  sendMessage(task.sessionId, task.text, undefined, {
+    ...(effectiveTool ? { tool: effectiveTool } : {}),
+    ...(effectiveModel ? { model: effectiveModel } : {}),
+  });
   await waitForIdle(task.sessionId);
   const output = `Message sent to session ${task.sessionId}`;
   writeFileSync(join(runDir, `${task.id}.txt`), output, 'utf8');
@@ -47,8 +57,15 @@ async function runTask(task, runDir, sessionIds) {
   }
   // Default: createAndRun (legacy task type)
   const timeoutMs = task.timeoutMs || 5 * 60 * 1000;
-  console.log(`[Workflow] Running task "${task.id}" in ${task.workspace} (model: ${task.model}, timeout: ${timeoutMs / 1000}s)`);
-  const { output, sessionId } = await createAndRun(task.workspace, task.model, task.prompt, { timeoutMs });
+  const effectiveTool = task.tool || task._workflowTool || 'codex';
+  const effectiveModel = task._workflowForceModel
+    ? (task._workflowModel || task.model)
+    : (task.model || task._workflowModel);
+  console.log(`[Workflow] Running task "${task.id}" in ${task.workspace} (tool: ${effectiveTool}, model: ${effectiveModel}, timeout: ${timeoutMs / 1000}s)`);
+  const { output, sessionId } = await createAndRun(task.workspace, effectiveModel, task.prompt, {
+    timeoutMs,
+    tool: effectiveTool,
+  });
   if (sessionId) sessionIds.push(sessionId);
   writeFileSync(join(runDir, `${task.id}.txt`), output, 'utf8');
   console.log(`[Workflow] Task "${task.id}" completed (${output.length} chars)`);
@@ -104,6 +121,55 @@ function handleRunCount(schedule) {
   return 'updated';
 }
 
+function getWorkflowIdentity(workflowName, workflow) {
+  return workflowName || workflow?.id || workflow?.name || null;
+}
+
+function getResolvedAutomationContext(workflowName, workflow, schedule) {
+  const automation = getAutomationSettings();
+  const overrides = getAutomationOverrides();
+  const workflowId = getWorkflowIdentity(workflowName, workflow);
+  const rawWorkflowOverride = workflowId
+    ? (overrides.workflowOverrides?.[workflowId] || {})
+    : {};
+  const rawScheduleOverride = schedule?.id
+    ? (overrides.scheduleOverrides?.[schedule.id] || {})
+    : {};
+  const workflowOverride = rawWorkflowOverride.enabled ? rawWorkflowOverride : {};
+  const scheduleOverride = rawScheduleOverride.enabled ? rawScheduleOverride : {};
+
+  const workflowTool = scheduleOverride.workflowTool
+    || workflowOverride.tool
+    || automation.workflowTool
+    || 'codex';
+  const workflowModel = scheduleOverride.workflowModel
+    || workflowOverride.model
+    || automation.workflowModel;
+  const workflowForceModel = scheduleOverride.workflowForceModel !== undefined
+    ? !!scheduleOverride.workflowForceModel
+    : (workflowOverride.forceModel !== undefined
+      ? !!workflowOverride.forceModel
+      : !!automation.workflowForceModel);
+  const sessionMessageTool = scheduleOverride.sessionMessageTool
+    || automation.sessionMessageTool
+    || 'inherit';
+  const sessionMessageModel = scheduleOverride.sessionMessageModel
+    || automation.sessionMessageModel;
+  const sessionMessageForceModel = scheduleOverride.sessionMessageForceModel !== undefined
+    ? !!scheduleOverride.sessionMessageForceModel
+    : !!automation.sessionMessageForceModel;
+
+  return {
+    workflowId,
+    workflowTool,
+    workflowModel,
+    workflowForceModel,
+    sessionMessageTool,
+    sessionMessageModel,
+    sessionMessageForceModel,
+  };
+}
+
 // ---- Main export ----
 
 export async function executeWorkflow(workflowName, options = {}) {
@@ -123,6 +189,7 @@ export async function executeWorkflow(workflowName, options = {}) {
   const runId = options.runId || randomBytes(8).toString('hex');
   const runDir = join(RUNS_DIR, runId);
   mkdirSync(runDir, { recursive: true });
+  const automationContext = getResolvedAutomationContext(workflowName, workflow, schedule);
 
   console.log(`[Workflow] Starting "${workflowName || workflow.name}" run=${runId}`);
 
@@ -145,6 +212,12 @@ export async function executeWorkflow(workflowName, options = {}) {
 
       const resolvedTasks = step.tasks.map(task => ({
         ...task,
+        _workflowTool: automationContext.workflowTool,
+        _workflowModel: automationContext.workflowModel,
+        _workflowForceModel: automationContext.workflowForceModel,
+        _sessionMessageTool: automationContext.sessionMessageTool,
+        _sessionMessageModel: automationContext.sessionMessageModel,
+        _sessionMessageForceModel: automationContext.sessionMessageForceModel,
         ...(task.prompt ? { prompt: resolvePlaceholders(task.prompt, results) } : {}),
       }));
 

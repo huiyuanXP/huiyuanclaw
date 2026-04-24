@@ -1,7 +1,7 @@
 import { spawn, execFileSync } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync, statSync } from 'fs';
 import { homedir } from 'os';
-import { resolve, join } from 'path';
+import { resolve, join, extname } from 'path';
 import { createInterface } from 'readline';
 import { createClaudeAdapter, buildClaudeArgs } from './adapters/claude.mjs';
 import { createCodexAdapter, buildCodexArgs } from './adapters/codex.mjs';
@@ -35,6 +35,45 @@ function resolveCwd(folder) {
 }
 
 const TAG = '[process-runner]';
+const ATTACHMENT_INLINE_TEXT_MAX_BYTES = 128 * 1024;
+const ATTACHMENT_INLINE_TEXT_MAX_CHARS = 12000;
+const ATTACHMENT_PREVIEW_HEAD_CHARS = 8000;
+const ATTACHMENT_PREVIEW_TAIL_CHARS = 2000;
+const ATTACHMENT_TRUNCATED_MARKER = '\n[... truncated by RemoteLab attachment preview ...]\n';
+const TEXT_ATTACHMENT_EXTENSIONS = new Set([
+  '.c', '.cc', '.cpp', '.css', '.csv', '.go', '.h', '.hpp', '.html', '.java', '.js', '.json',
+  '.jsx', '.mjs', '.md', '.php', '.py', '.rb', '.rs', '.sh', '.sql', '.svg', '.toml', '.ts',
+  '.tsx', '.txt', '.xml', '.yaml', '.yml',
+]);
+
+// ---- Global concurrency limiter ----
+// Prevents burst API rate limit errors when multiple sessions start simultaneously.
+// Configurable via REMOTELAB_MAX_CONCURRENT env var (default: 3).
+const MAX_CONCURRENT = parseInt(process.env.REMOTELAB_MAX_CONCURRENT || '3', 10);
+let _activeCount = 0;
+const _spawnQueue = [];
+
+function _releaseSlot() {
+  _activeCount--;
+  if (_spawnQueue.length > 0 && _activeCount < MAX_CONCURRENT) {
+    const next = _spawnQueue.shift();
+    next();
+  }
+}
+
+function _acquireSlot(doSpawn, onQueued) {
+  if (_activeCount < MAX_CONCURRENT) {
+    _activeCount++;
+    doSpawn();
+  } else {
+    console.log(`${TAG} Concurrency limit (${MAX_CONCURRENT}) reached — queuing spawn`);
+    if (onQueued) onQueued();
+    _spawnQueue.push(() => {
+      _activeCount++;
+      doSpawn();
+    });
+  }
+}
 
 /**
  * Resolve a command name to its full absolute path.
@@ -42,26 +81,6 @@ const TAG = '[process-runner]';
 function resolveCommand(cmd) {
   const home = process.env.HOME || '';
   const isMac = process.platform === 'darwin';
-  const preferred = [
-    `${home}/.local/bin/${cmd}`,
-    // macOS-specific paths
-    ...(isMac ? [
-      `${home}/Library/pnpm/${cmd}`,
-      `/opt/homebrew/bin/${cmd}`,
-    ] : [
-      // Linux-specific paths
-      `/snap/bin/${cmd}`,
-    ]),
-    `/usr/local/bin/${cmd}`,
-    `/usr/bin/${cmd}`,
-  ];
-  for (const p of preferred) {
-    if (p && existsSync(p)) {
-      console.log(`${TAG} Resolved "${cmd}" → ${p} (preferred path)`);
-      return p;
-    }
-  }
-
   try {
     const resolved = execFileSync('which', [cmd], {
       encoding: 'utf8',
@@ -71,19 +90,118 @@ function resolveCommand(cmd) {
     console.log(`${TAG} Resolved "${cmd}" → ${resolved} (which)`);
     return resolved;
   } catch {
+    const preferred = [
+      `${home}/.local/bin/${cmd}`,
+      ...(isMac ? [
+        `${home}/Library/pnpm/${cmd}`,
+        `/opt/homebrew/bin/${cmd}`,
+      ] : [
+        `/snap/bin/${cmd}`,
+      ]),
+      `/usr/local/bin/${cmd}`,
+      `/usr/bin/${cmd}`,
+    ];
+    for (const p of preferred) {
+      if (p && existsSync(p)) {
+        console.log(`${TAG} Resolved "${cmd}" → ${p} (fallback path)`);
+        return p;
+      }
+    }
     console.log(`${TAG} Could not resolve "${cmd}", using bare name`);
     return cmd;
   }
 }
 
-/**
- * Build a prompt with image file paths prepended.
- */
-function prependImagePaths(prompt, images) {
-  const paths = (images || []).map(img => img.savedPath).filter(Boolean);
-  if (paths.length === 0) return prompt;
-  const refs = paths.map(p => `[User attached image: ${p}]`).join('\n');
-  return `${refs}\n\n${prompt}`;
+function clipAttachmentText(text) {
+  if (!text) return '';
+  if (text.length <= ATTACHMENT_INLINE_TEXT_MAX_CHARS) return text;
+  return `${text.slice(0, ATTACHMENT_PREVIEW_HEAD_CHARS).trimEnd()}${ATTACHMENT_TRUNCATED_MARKER}${text.slice(-ATTACHMENT_PREVIEW_TAIL_CHARS).trimStart()}`;
+}
+
+function looksBinary(buffer) {
+  const sample = buffer.subarray(0, Math.min(buffer.length, 4096));
+  if (sample.length === 0) return false;
+  for (const byte of sample) {
+    if (byte === 0) return true;
+  }
+  const decoded = sample.toString('utf8');
+  const replacementCount = [...decoded].filter((char) => char === '\uFFFD').length;
+  return replacementCount > 0 && replacementCount / Math.max(decoded.length, 1) > 0.02;
+}
+
+function isTextLikeAttachment(attachment, filepath) {
+  const mimeType = typeof attachment?.mimeType === 'string' ? attachment.mimeType.toLowerCase() : '';
+  if (mimeType.startsWith('text/')) return true;
+  if ([
+    'application/json',
+    'application/ld+json',
+    'application/javascript',
+    'application/typescript',
+    'application/xml',
+    'image/svg+xml',
+  ].includes(mimeType)) return true;
+  return TEXT_ATTACHMENT_EXTENSIONS.has(extname(filepath || '').toLowerCase());
+}
+
+function buildAttachmentPromptSection(attachment) {
+  const filepath = attachment?.savedPath;
+  if (!filepath || !existsSync(filepath)) return '';
+  const displayName = attachment.originalName || attachment.filename || 'attachment';
+  const mimeType = attachment.mimeType || 'application/octet-stream';
+  const label = mimeType.startsWith('image/') ? 'image' : 'file';
+  const metaLines = [
+    `[User attached ${label}: ${displayName} -> ${filepath}]`,
+    `- MIME type: ${mimeType}`,
+  ];
+
+  try {
+    const sizeBytes = statSync(filepath).size;
+    metaLines.push(`- Size: ${sizeBytes} bytes`);
+    if (!isTextLikeAttachment(attachment, filepath)) {
+      metaLines.push('- Note: binary or non-text attachment; inspect the file path directly if needed.');
+      return metaLines.join('\n');
+    }
+    if (sizeBytes > ATTACHMENT_INLINE_TEXT_MAX_BYTES) {
+      metaLines.push(`- Note: text-like attachment exceeds ${ATTACHMENT_INLINE_TEXT_MAX_BYTES} bytes; inspect the file path directly if you need the full content.`);
+      return metaLines.join('\n');
+    }
+    const raw = readFileSync(filepath);
+    if (looksBinary(raw)) {
+      metaLines.push('- Note: attachment appears binary despite its extension; inspect the file path directly if needed.');
+      return metaLines.join('\n');
+    }
+    const text = clipAttachmentText(raw.toString('utf8').replace(/\r\n/g, '\n').trim());
+    if (!text) {
+      metaLines.push('- Note: attachment is empty.');
+      return metaLines.join('\n');
+    }
+    return [
+      ...metaLines,
+      '- RemoteLab extracted a preview below so you can use the file without first opening it manually.',
+      `--- BEGIN ATTACHMENT PREVIEW: ${displayName} ---`,
+      text,
+      `--- END ATTACHMENT PREVIEW: ${displayName} ---`,
+    ].join('\n');
+  } catch (error) {
+    metaLines.push(`- Note: failed to read attachment preview (${error.message || error}); inspect the file path directly if needed.`);
+    return metaLines.join('\n');
+  }
+}
+
+export function prependAttachmentPaths(prompt, attachments) {
+  const sections = (attachments || [])
+    .filter((attachment) => attachment?.savedPath)
+    .map((attachment) => buildAttachmentPromptSection(attachment))
+    .filter(Boolean);
+  if (sections.length === 0) return prompt;
+  const attachmentInstructions = [
+    '[RemoteLab attachment context]',
+    'Use the attachment metadata and previews below as part of the user request.',
+    'If a preview is truncated or omitted, read the file from its saved path before answering.',
+    '',
+    sections.join('\n\n'),
+  ].join('\n');
+  return `${attachmentInstructions}\n\n${prompt}`;
 }
 
 /**
@@ -121,10 +239,10 @@ export function spawnTool(toolId, folder, prompt, onEvent, onExit, options = {})
   const command = getToolCommand(toolId);
   const isClaudeFamily = ['claude'].includes(toolId);
   const isCodexFamily = ['codex'].includes(toolId);
-  const hasImages = options.images && options.images.length > 0;
+  const hasAttachments = options.attachments && options.attachments.length > 0;
+  const resolvedFolder = resolveCwd(folder);
 
-  // For all tools: prepend image file paths to prompt
-  const effectivePrompt = hasImages ? prependImagePaths(prompt, options.images) : prompt;
+  const effectivePrompt = hasAttachments ? prependAttachmentPaths(prompt, options.attachments) : prompt;
 
   let adapter;
   let args;
@@ -136,6 +254,7 @@ export function spawnTool(toolId, folder, prompt, onEvent, onExit, options = {})
       resume: options.claudeSessionId,
       thinking: options.thinking,
       model: options.model,
+      folder: resolvedFolder,
       hookSettingsJson: buildHookSettings(CHAT_PORT),
     });
   } else if (isCodexFamily) {
@@ -143,17 +262,18 @@ export function spawnTool(toolId, folder, prompt, onEvent, onExit, options = {})
     args = buildCodexArgs(effectivePrompt, {
       threadId: options.codexThreadId,
       model: options.model,
+      folder: resolvedFolder,
     });
   } else {
     adapter = createClaudeAdapter({ prompt });
     args = buildClaudeArgs(effectivePrompt, {
       dangerouslySkipPermissions: true,
       thinking: options.thinking,
+      folder: resolvedFolder,
     });
   }
 
   const resolvedCmd = resolveCommand(command);
-  const resolvedFolder = resolveCwd(folder);
 
   // Clean env: remove CLAUDECODE markers so nested Claude Code sessions work
   const cleanEnv = { ...process.env, PATH: fullPath };
@@ -167,8 +287,23 @@ export function spawnTool(toolId, folder, prompt, onEvent, onExit, options = {})
     capturedClaudeSessionId: null,
     capturedCodexThreadId: null,
     cancelled: false,
+    queued: false,
+    exitCalled: false,
+    slotReleased: false,
     autoContinueCount: 0,
   };
+
+  function safeOnExit(code) {
+    if (state.exitCalled) return;
+    state.exitCalled = true;
+    onExit(code);
+  }
+
+  function releaseSlotOnce() {
+    if (state.slotReleased) return;
+    state.slotReleased = true;
+    _releaseSlot();
+  }
 
   function spawnProcess(spawnArgs) {
     const spawnStart = Date.now();
@@ -176,7 +311,7 @@ export function spawnTool(toolId, folder, prompt, onEvent, onExit, options = {})
     console.log(`${TAG}   args: ${JSON.stringify(spawnArgs)}`);
     console.log(`${TAG}   cwd: ${folder} → ${resolvedFolder}`);
     console.log(`${TAG}   prompt: ${prompt?.slice(0, 100)}`);
-    if (hasImages) console.log(`${TAG}   images: ${options.images.length}`);
+    if (hasAttachments) console.log(`${TAG}   attachments: ${options.attachments.length}`);
     const hasResume = spawnArgs.includes('--resume');
     if (hasResume) {
       const resumeIdx = spawnArgs.indexOf('--resume');
@@ -266,9 +401,11 @@ export function spawnTool(toolId, folder, prompt, onEvent, onExit, options = {})
     });
 
     proc.on('error', (err) => {
+      clearInterval(waitTimer);
       console.error(`${TAG} Process error: ${err.message} (code=${err.code})`);
       onEvent(statusEvent(`process error: ${err.message}`));
-      onExit(1);
+      releaseSlotOnce();
+      safeOnExit(1);
     });
 
     proc.on('exit', (code, signal) => {
@@ -302,19 +439,38 @@ export function spawnTool(toolId, folder, prompt, onEvent, onExit, options = {})
 
         const continueArgs = buildCodexArgs('Continue. Complete all remaining work now.', {
           threadId: state.capturedCodexThreadId,
+          folder: resolvedFolder,
         });
         spawnProcess(continueArgs);
         return;
       }
 
-      onExit(code ?? 1);
+      releaseSlotOnce();
+      safeOnExit(code ?? 1);
     });
 
     proc.stdin.end();
   }
 
-  // Initial spawn
-  spawnProcess(args);
+  // Initial spawn — go through concurrency limiter.
+  // If cancelled while queued, the entry checks state.cancelled and skips spawning.
+  state.queued = false;
+  _acquireSlot(
+    () => {
+      state.queued = false;
+      if (state.cancelled) {
+        // Was cancelled while waiting in queue — release slot and bail
+        _releaseSlot();
+        safeOnExit(1);
+        return;
+      }
+      spawnProcess(args);
+    },
+    () => {
+      state.queued = true;
+      onEvent(statusEvent('Queued — waiting for available API slot...'));
+    },
+  );
 
   return {
     get proc() { return state.proc; },
@@ -323,6 +479,12 @@ export function spawnTool(toolId, folder, prompt, onEvent, onExit, options = {})
     get codexThreadId() { return state.capturedCodexThreadId; },
     cancel() {
       state.cancelled = true;
+      if (state.queued) {
+        // Still in queue — notify exit immediately; queue entry will self-skip via state.cancelled
+        state.queued = false;
+        safeOnExit(1);
+        return;
+      }
       console.log(`${TAG} Killing process pid=${state.proc?.pid}`);
       try {
         state.proc?.kill('SIGTERM');

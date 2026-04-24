@@ -483,67 +483,57 @@ body {
 .sidebar-tab:hover:not(.active) { color: var(--text-secondary); }
 
 /* Progress panel */
+/* Task Flow panel (kanban board) */
 .progress-panel {
   flex: 1; overflow-y: auto; padding: 8px;
-  display: none; flex-direction: column; gap: 6px;
+  display: none; flex-direction: column; gap: 0;
 }
 .progress-panel.visible { display: flex; }
-.progress-card {
-  padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border);
-  background: var(--bg-secondary); cursor: default;
-}
-.progress-card-header {
-  display: flex; align-items: center; gap: 6px; margin-bottom: 5px;
-}
-.progress-card-name {
-  font-size: 12px; font-weight: 600; color: var(--text); flex: 1;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.progress-card-folder {
-  font-size: 10px; color: var(--text-muted);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.progress-card-bg {
-  font-size: 12px; color: var(--text-secondary); line-height: 1.45; margin-bottom: 5px;
-}
-.progress-card-action {
-  font-size: 11px; color: var(--text-muted); line-height: 1.4;
-  border-top: 1px solid var(--border); padding-top: 5px; margin-top: 2px;
-}
-.progress-card-time {
-  font-size: 10px; color: var(--text-muted); margin-top: 4px;
-}
-.progress-empty {
-  padding: 32px 16px; text-align: center; color: var(--text-muted);
-  font-size: 12px; line-height: 1.6;
-}
-.progress-running-dot {
-  width: 6px; height: 6px; border-radius: 50%; background: var(--success);
-  flex-shrink: 0; animation: pulse 1.5s infinite;
-}
-.progress-card-footer {
-  display: flex; align-items: center; justify-content: space-between; margin-top: 4px;
-}
-.progress-summarizing {
-  font-size: 10px; color: var(--text-muted); font-style: italic;
-  animation: pulse 1.5s infinite; margin-top: 4px;
-}
-.progress-section-header {
+.tf-board { display: flex; flex-direction: column; gap: 2px; flex: 1; }
+.tf-column { margin-bottom: 2px; }
+.tf-column-header {
   font-size: 10px; font-weight: 600; text-transform: uppercase;
   letter-spacing: 0.07em; color: var(--text-muted);
-  padding: 10px 4px 4px; margin-top: 2px;
+  padding: 6px 4px 4px; display: flex; align-items: center; gap: 6px;
 }
-.progress-section-header:first-child { padding-top: 4px; }
-.progress-section-header.is-pending-review { color: #f59e0b; }
-.progress-section-header.is-running { color: var(--success); }
-.progress-archive-toggle { cursor: pointer; user-select: none; }
-.progress-archive-toggle:hover { color: var(--text-secondary); }
-.progress-archive-chevron { display: inline-block; width: 10px; }
-.progress-archived-section { margin-top: 4px; }
-.progress-archive-body { display: flex; flex-direction: column; gap: 6px; }
-.progress-card-label {
-  font-size: 10px; font-weight: 500; padding: 1px 6px; border-radius: 3px;
-  border: 1px solid; white-space: nowrap; flex-shrink: 0; margin-left: auto;
+.tf-column-header .tf-count {
+  font-size: 9px; font-weight: 500; background: var(--bg-tertiary, var(--border));
+  color: var(--text-muted); padding: 0 5px; border-radius: 8px; line-height: 16px;
+}
+.tf-column-header.status-blocked { color: #ef4444; }
+.tf-column-header.status-pending { color: #f59e0b; }
+.tf-column-header.status-in_progress { color: #3b82f6; }
+.tf-column-header.status-completed { color: #22c55e; }
+.tf-card {
+  padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--bg-secondary); cursor: pointer; margin-bottom: 4px;
+  transition: border-color 0.15s;
+}
+.tf-card:hover { border-color: var(--text-muted); }
+.tf-card-title {
+  font-size: 12px; font-weight: 600; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 3px;
+}
+.tf-card-meta {
+  font-size: 10px; color: var(--text-muted); display: flex; align-items: center; gap: 6px;
+}
+.tf-card-session {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px;
+}
+.tf-card-deps {
+  font-size: 10px; color: #ef4444; margin-top: 3px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tf-status-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; display: inline-block;
+}
+.tf-status-dot.blocked { background: #ef4444; }
+.tf-status-dot.pending { background: #f59e0b; }
+.tf-status-dot.in_progress { background: #3b82f6; animation: pulse 1.5s infinite; }
+.tf-status-dot.completed { background: #22c55e; }
+.tf-empty {
+  padding: 32px 16px; text-align: center; color: var(--text-muted);
+  font-size: 12px; line-height: 1.6;
 }
 
 /* Folder groups */
@@ -642,6 +632,8 @@ body {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .session-item-meta .status-running { color: var(--success); }
+.session-item-meta .queued-count,
+.session-item-meta .queued-count-sep { color: var(--text-muted); }
 .session-item-actions { display: flex; gap: 2px; align-items: center; flex-shrink: 0; }
 .session-action-btn {
   background: none; border: none; color: var(--text-muted); cursor: pointer;
@@ -822,6 +814,9 @@ body {
   margin-bottom: 16px;
   animation: fadeIn 0.15s ease;
 }
+.msg-user.pending {
+  margin-bottom: 12px;
+}
 .msg-user-bubble {
   background: var(--user-bubble);
   border-radius: 18px;
@@ -834,10 +829,93 @@ body {
   max-width: 80%;
   color: var(--text);
 }
+.msg-user-bubble.pending {
+  border: 1px dashed var(--border-strong);
+  background: var(--user-bubble);
+  opacity: 0.92;
+}
+.queued-followups {
+  margin-top: 6px;
+}
+.queued-followup-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.message-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.message-toolbar-btn {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1.2;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.message-toolbar-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text);
+}
+.message-toolbar-btn:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
 .msg-images { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 8px; }
 .msg-images img {
   max-width: 200px; max-height: 150px; border-radius: 8px; cursor: pointer;
   object-fit: cover;
+}
+.attachment-file-card {
+  min-width: 180px;
+  max-width: 240px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  text-decoration: none;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.attachment-file-card:hover {
+  background: var(--bg-tertiary);
+}
+.attachment-file-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attachment-file-card-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Assistant message — no bubble, plain text */
@@ -849,6 +927,9 @@ body {
   color: var(--text);
   word-wrap: break-word;
   white-space: pre-wrap;
+}
+.msg-assistant .message-toolbar {
+  justify-content: flex-start;
 }
 
 /* Markdown rendered content */
@@ -1225,6 +1306,17 @@ body {
 .question-submit-btn:disabled { opacity: 0.4; cursor: default; }
 
 /* Plan approval */
+.plan-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px;
+}
+.plan-expand-btn {
+  background: none; border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text-muted); cursor: pointer; padding: 4px 8px;
+  font-size: 11px; font-family: inherit; display: flex; align-items: center; gap: 4px;
+  transition: color 0.1s, border-color 0.1s;
+}
+.plan-expand-btn:hover { color: var(--text); border-color: var(--border-strong); }
 .plan-body {
   max-height: 300px; overflow-y: auto;
   margin-bottom: 12px; font-size: 13px; line-height: 1.55;
@@ -1239,7 +1331,7 @@ body {
   font-size: 13px; font-weight: 500; cursor: pointer;
   font-family: inherit; transition: opacity 0.1s;
 }
-.plan-btn:disabled { opacity: 0.4; cursor: default; }
+.plan-btn:disabled { opacity: 0.4; cursor: default; pointer-events: none; }
 .plan-btn.approve {
   background: var(--success); color: white;
 }
@@ -1250,6 +1342,32 @@ body {
 }
 .plan-btn.reject.selected {
   background: var(--error-bg); color: var(--error); border-color: var(--error);
+}
+/* Resolved state */
+.plan-approval-card.resolved .plan-actions { pointer-events: none; }
+.plan-approval-card.resolved .interactive-other { pointer-events: none; }
+/* Fullscreen overlay */
+.plan-fullscreen-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  background: var(--bg); display: flex; flex-direction: column;
+  animation: fadeIn 0.15s ease;
+}
+.plan-fullscreen-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 24px; border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.plan-fullscreen-header .interactive-tag { margin-bottom: 0; }
+.plan-fullscreen-close {
+  background: none; border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text-muted); cursor: pointer; padding: 6px 12px;
+  font-size: 12px; font-family: inherit; display: flex; align-items: center; gap: 4px;
+  transition: color 0.1s, border-color 0.1s;
+}
+.plan-fullscreen-close:hover { color: var(--text); border-color: var(--border-strong); }
+.plan-fullscreen-body {
+  flex: 1; overflow-y: auto; padding: 24px;
+  font-size: 14px; line-height: 1.6;
 }
 
 /* ---- Quick reply chips ---- */
@@ -1677,6 +1795,236 @@ body {
   flex: 1; overflow-y: auto; padding: 20px 24px; display: flex; flex-direction: column; gap: 12px;
 }
 
+/* ---- Settings main view ---- */
+.settings-view {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+}
+.settings-shell {
+  width: min(1120px, 100%);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.settings-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px 24px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: linear-gradient(135deg, var(--bg-secondary), var(--bg));
+}
+.settings-hero-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.settings-kicker {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.settings-hero h2 {
+  font-size: 28px;
+  line-height: 1.1;
+}
+.settings-hero p {
+  max-width: 720px;
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.6;
+}
+.settings-hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.settings-primary-btn, .settings-secondary-btn {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+.settings-primary-btn {
+  background: var(--text);
+  color: var(--bg);
+  border-color: var(--text);
+}
+.settings-secondary-btn {
+  background: var(--bg);
+  color: var(--text-secondary);
+}
+.settings-save-status {
+  font-size: 12px;
+  color: var(--text-muted);
+  min-width: 96px;
+  text-align: right;
+}
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.settings-section-card {
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--bg);
+  overflow: hidden;
+}
+.settings-section-card.full {
+  grid-column: 1 / -1;
+}
+.settings-section-head {
+  padding: 18px 20px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+.settings-section-head h3 {
+  font-size: 16px;
+  margin-bottom: 4px;
+}
+.settings-section-head p {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.55;
+}
+.settings-section-body {
+  padding: 18px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.settings-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.settings-field.hidden {
+  display: none;
+}
+.settings-form-grid .span-2 {
+  grid-column: span 2;
+}
+.settings-field.span-2 {
+  grid-column: span 2;
+}
+.settings-field label,
+.settings-card-label {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.settings-field input,
+.settings-field select,
+.settings-card-grid input,
+.settings-card-grid select {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 10px 12px;
+  outline: none;
+}
+.settings-field input:focus,
+.settings-field select:focus,
+.settings-card-grid input:focus,
+.settings-card-grid select:focus {
+  border-color: var(--border-strong);
+}
+.settings-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.settings-check input {
+  width: 16px;
+  height: 16px;
+}
+.settings-card-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.settings-override-card {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px;
+  background: linear-gradient(180deg, var(--bg), var(--bg-secondary));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.settings-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.settings-card-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+.settings-card-meta {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.settings-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.settings-card-grid .span-2 {
+  grid-column: span 2;
+}
+.settings-card-empty {
+  padding: 20px;
+  border: 1px dashed var(--border);
+  border-radius: 14px;
+  color: var(--text-muted);
+  text-align: center;
+  font-size: 13px;
+}
+@media (max-width: 900px) {
+  .settings-grid,
+  .settings-card-list,
+  .settings-form-grid,
+  .settings-card-grid {
+    grid-template-columns: 1fr;
+  }
+  .settings-field.span-2,
+  .settings-card-grid .span-2 {
+    grid-column: span 1;
+  }
+  .settings-hero {
+    flex-direction: column;
+  }
+  .settings-hero-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+}
+
 /* ---- Session detail tabs (Chat / Files) ---- */
 .session-tabs {
   display: none; /* shown when a session is active */
@@ -2050,6 +2398,7 @@ body {
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
       <span class="report-badge hidden" id="reportBadge">0</span>
     </button>
+    <button class="header-btn" id="settingsBtn" title="Settings" style="width:auto;padding:0 10px;font-size:12px;font-weight:600;">Settings</button>
     <div class="theme-picker-wrap">
       <button class="header-btn" id="themeBtn" title="主题"></button>
       <div class="theme-picker" id="themePicker"></div>
@@ -2080,7 +2429,7 @@ body {
       </div>
       <div class="sidebar-tabs">
         <button class="sidebar-tab active" id="tabSessions">Sessions</button>
-        <button class="sidebar-tab" id="tabProgress">Progress</button>
+        <button class="sidebar-tab" id="tabProgress">Task Flow</button>
         <button class="sidebar-tab" id="tabTasks">Tasks</button>
       </div>
       <div class="sidebar-list" id="sessionList"></div>
@@ -2101,6 +2450,120 @@ body {
 
     <!-- Workflow detail view (replaces messages when a workflow is selected) -->
     <div id="workflowView" class="workflow-view" style="display:none"></div>
+
+    <!-- Settings view -->
+    <div id="settingsView" class="settings-view" style="display:none">
+      <div class="settings-shell">
+        <div class="settings-hero">
+          <div class="settings-hero-copy">
+            <div class="settings-kicker">RemoteLab Control Center</div>
+            <h2>Settings</h2>
+            <p>统一管理默认聊天模型、workflow 执行模型，以及每个 workflow 和 schedule 的单独覆盖策略。这里保存后，新的自动任务和后续会话都会按同一套配置执行。</p>
+          </div>
+          <div class="settings-hero-actions">
+            <button class="settings-secondary-btn" id="settingsBackBtn">Back</button>
+            <div class="settings-save-status" id="settingsSaveStatus"></div>
+            <button class="settings-primary-btn" id="automationSave">Save Settings</button>
+          </div>
+        </div>
+
+        <div class="settings-grid">
+          <section class="settings-section-card">
+            <div class="settings-section-head">
+              <h3>Chat Defaults</h3>
+              <p>新建会话默认使用的 CLI 和模型。首次发消息后，会话会持久化为当次实际发送的工具和模型。</p>
+            </div>
+            <div class="settings-section-body">
+              <div class="settings-form-grid">
+                <div class="settings-field">
+                  <label for="automationChatTool">Default Tool</label>
+                  <select id="automationChatTool"></select>
+                </div>
+                <div class="settings-field" id="automationChatCodexModelField">
+                  <label for="automationChatCodexModel">Codex Model</label>
+                  <select id="automationChatCodexModel"></select>
+                </div>
+                <div class="settings-field span-2" id="automationChatClaudeModelField">
+                  <label for="automationChatClaudeModel">Claude Model</label>
+                  <select id="automationChatClaudeModel"></select>
+                </div>
+                <div class="settings-field">
+                  <label for="automationChatNamingTool">Chat Naming Tool</label>
+                  <select id="automationChatNamingTool"></select>
+                </div>
+                <div class="settings-field">
+                  <label for="automationChatNamingModel">Chat Naming Model</label>
+                  <select id="automationChatNamingModel"></select>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-section-card">
+            <div class="settings-section-head">
+              <h3>Automation Defaults</h3>
+              <p>当 workflow JSON 或 schedule 没有显式指定模型时，执行链路会回落到这里。下面的 workflow/schedule 覆盖层优先级更高。</p>
+            </div>
+            <div class="settings-section-body">
+              <div class="settings-form-grid">
+                <div class="settings-field">
+                  <label for="automationWorkflowTool">Workflow Tool</label>
+                  <select id="automationWorkflowTool"></select>
+                </div>
+                <div class="settings-field">
+                  <label for="automationWorkflowModel">Workflow Model</label>
+                  <select id="automationWorkflowModel"></select>
+                </div>
+                <label class="settings-check span-2">
+                  <input type="checkbox" id="automationWorkflowForceModel">
+                  Force workflow model override
+                </label>
+                <div class="settings-field">
+                  <label for="automationSessionMessageTool">Scheduled Message Tool</label>
+                  <select id="automationSessionMessageTool">
+                    <option value="inherit">Inherit session tool</option>
+                    <option value="codex">OpenAI Codex</option>
+                    <option value="claude">Claude Code</option>
+                  </select>
+                </div>
+                <div class="settings-field">
+                  <label for="automationSessionMessageModel">Scheduled Message Model</label>
+                  <select id="automationSessionMessageModel"></select>
+                </div>
+                <label class="settings-check span-2">
+                  <input type="checkbox" id="automationSessionMessageForceModel">
+                  Force scheduled message model override
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-section-card full">
+            <div class="settings-section-head">
+              <h3>Workflow Overrides</h3>
+              <p>内置 workflow 默认不再在 JSON 里硬编码模型。这里可以按 workflow 单独指定 CLI、模型，或强制覆盖 JSON 中的显式模型。</p>
+            </div>
+            <div class="settings-section-body">
+              <div class="settings-card-list" id="workflowOverrideList">
+                <div class="settings-card-empty">Loading workflows…</div>
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-section-card full">
+            <div class="settings-section-head">
+              <h3>Schedule Overrides</h3>
+              <p>按具体 schedule 设置运行策略。workflow schedule 会影响 headless 任务执行；sessionMessage schedule 会影响发消息时是否切换工具或强制模型。</p>
+            </div>
+            <div class="settings-section-body">
+              <div class="settings-card-list" id="scheduleOverrideList">
+                <div class="settings-card-empty">Loading schedules…</div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
 
     <!-- Files view -->
     <div class="files-view" id="filesView">
@@ -2151,12 +2614,10 @@ body {
           <select class="tool-select" id="inlineToolSelect" disabled></select>
           <select class="tool-select" id="inlineModelSelect" disabled></select>
           <button class="thinking-toggle" id="thinkingToggle" disabled>Thinking</button>
-          <button class="img-btn" id="imgBtn" disabled title="Attach image">&#128247;</button>
-          <button class="img-btn" id="fileAttachBtn" disabled title="Attach file">&#128206;</button>
+          <button class="img-btn" id="imgBtn" disabled title="Upload attachment">&#128206;</button>
         </div>
         <div class="input-row">
-          <input type="file" id="imgFileInput" accept="image/*" multiple hidden>
-          <input type="file" id="fileAttachInput" multiple hidden>
+          <input type="file" id="imgFileInput" accept="*/*" multiple hidden>
           <textarea id="msgInput" placeholder="Message..." disabled></textarea>
           <button class="send-btn" id="sendBtn" disabled title="Send">&#9654;</button>
           <button class="cancel-btn" id="cancelBtn" title="Stop" style="display:none">&#9632;</button>

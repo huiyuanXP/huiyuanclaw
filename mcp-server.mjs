@@ -335,10 +335,82 @@ const TOOLS = [
       properties: {
         title: { type: 'string', description: 'Report title (e.g., "惠远早报 — 2026-03-18")' },
         file_path: { type: 'string', description: 'Absolute path to the HTML file to submit' },
-        session_id: { type: 'string', description: 'Session ID of the submitting agent (for permission check and linking)' },
+        session_id: { type: 'string', description: 'Session ID of the submitting agent. If omitted, uses the current session (self) when available.' },
         source: { type: 'string', description: 'Source agent name (e.g., "DailyNews", "RLOrchestrator")' },
       },
-      required: ['title', 'file_path', 'session_id', 'source'],
+      required: ['title', 'file_path', 'source'],
+    },
+  },
+  // ---- Task tools ----
+  {
+    name: 'list_tasks',
+    description: 'List all tasks, optionally filtered by status and/or assigned session.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        status: { type: 'string', description: 'Filter by status: pending, blocked, in_progress, completed.' },
+        assigned_session_id: { type: 'string', description: 'Filter by assigned session ID.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'create_task',
+    description: 'Create a new task with optional dependencies, session assignment, and worktree config. Status is auto-set to "blocked" if blocked_by is non-empty, else "pending".',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        subject: { type: 'string', description: 'Task title/subject.' },
+        description: { type: 'string', description: 'Detailed task description.' },
+        assigned_session_id: { type: 'string', description: 'Session ID to assign this task to.' },
+        blocked_by: { type: 'array', items: { type: 'string' }, description: 'List of task IDs that must complete before this task can start.' },
+        report_to: { type: 'string', description: 'Session ID to report results back to when completed.' },
+        repo_path: { type: 'string', description: 'Target repository path (for worktree isolation).' },
+        worktree_path: { type: 'string', description: 'Pre-set worktree working directory path.' },
+        branch: { type: 'string', description: 'Git branch name for the worktree.' },
+      },
+      required: ['subject'],
+    },
+  },
+  {
+    name: 'get_task',
+    description: 'Get a task by its ID, including status, dependencies, and assignment.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'The task ID.' },
+      },
+      required: ['task_id'],
+    },
+  },
+  {
+    name: 'update_task',
+    description: 'Update a task\'s fields. Setting status to "completed" automatically triggers dependency resolution and auto-dispatch of unblocked tasks.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'The task ID to update.' },
+        subject: { type: 'string', description: 'New subject.' },
+        description: { type: 'string', description: 'New description.' },
+        status: { type: 'string', description: 'New status: pending, blocked, in_progress, completed.' },
+        assigned_session_id: { type: 'string', description: 'New assigned session ID.' },
+        blocked_by: { type: 'array', items: { type: 'string' }, description: 'New list of blocking task IDs.' },
+        repo_path: { type: 'string', description: 'Target repository path.' },
+        worktree_path: { type: 'string', description: 'Worktree working directory path.' },
+        branch: { type: 'string', description: 'Git branch name.' },
+      },
+      required: ['task_id'],
+    },
+  },
+  {
+    name: 'delete_task',
+    description: 'Delete a task by ID.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'The task ID to delete.' },
+      },
+      required: ['task_id'],
     },
   },
   {
@@ -547,16 +619,65 @@ async function executeTool(name, args) {
     }
 
     case 'submit_report': {
+      const targetId = args.session_id || MY_SESSION_ID || null;
       const res = await apiRequest('POST', '/api/internal/report', {
         title: args.title,
         file_path: args.file_path,
-        session_id: args.session_id,
+        session_id: targetId,
         source: args.source,
       });
       if (res.status === 201) {
         return { content: [{ type: 'text', text: `Report submitted successfully.\nReport ID: ${res.data.reportId}\nTitle: ${args.title}` }] };
       }
       return { isError: true, content: [{ type: 'text', text: `Report submission failed (${res.status}): ${res.data?.error || JSON.stringify(res.data)}` }] };
+    }
+
+    // ---- Task tools ----
+
+    case 'list_tasks': {
+      const params = new URLSearchParams();
+      if (args.status) params.set('status', args.status);
+      if (args.assigned_session_id) params.set('assigned_session_id', args.assigned_session_id);
+      const qs = params.toString();
+      const res = await apiRequest('GET', `/api/tasks${qs ? '?' + qs : ''}`);
+      if (res.status !== 200) return { isError: true, content: [{ type: 'text', text: `Error ${res.status}: ${JSON.stringify(res.data)}` }] };
+      return { content: [{ type: 'text', text: JSON.stringify(res.data, null, 2) }] };
+    }
+
+    case 'create_task': {
+      const body = { subject: args.subject };
+      if (args.description) body.description = args.description;
+      if (args.assigned_session_id) body.assigned_session_id = args.assigned_session_id;
+      if (args.blocked_by) body.blocked_by = args.blocked_by;
+      if (args.report_to) body.report_to = args.report_to;
+      if (args.repo_path) body.repo_path = args.repo_path;
+      if (args.worktree_path) body.worktree_path = args.worktree_path;
+      if (args.branch) body.branch = args.branch;
+      const res = await apiRequest('POST', '/api/tasks', body);
+      if (res.status !== 201) return { isError: true, content: [{ type: 'text', text: `Error ${res.status}: ${JSON.stringify(res.data)}` }] };
+      return { content: [{ type: 'text', text: JSON.stringify(res.data, null, 2) }] };
+    }
+
+    case 'get_task': {
+      const res = await apiRequest('GET', `/api/tasks/${args.task_id}`);
+      if (res.status !== 200) return { isError: true, content: [{ type: 'text', text: `Error ${res.status}: ${JSON.stringify(res.data)}` }] };
+      return { content: [{ type: 'text', text: JSON.stringify(res.data, null, 2) }] };
+    }
+
+    case 'update_task': {
+      const body = {};
+      for (const key of ['subject', 'description', 'status', 'assigned_session_id', 'blocked_by', 'repo_path', 'worktree_path', 'branch']) {
+        if (args[key] !== undefined) body[key] = args[key];
+      }
+      const res = await apiRequest('PATCH', `/api/tasks/${args.task_id}`, body);
+      if (res.status !== 200) return { isError: true, content: [{ type: 'text', text: `Error ${res.status}: ${JSON.stringify(res.data)}` }] };
+      return { content: [{ type: 'text', text: JSON.stringify(res.data, null, 2) }] };
+    }
+
+    case 'delete_task': {
+      const res = await apiRequest('DELETE', `/api/tasks/${args.task_id}`);
+      if (res.status !== 200) return { isError: true, content: [{ type: 'text', text: `Error ${res.status}: ${JSON.stringify(res.data)}` }] };
+      return { content: [{ type: 'text', text: JSON.stringify(res.data, null, 2) }] };
     }
 
     case 'schedule_message': {

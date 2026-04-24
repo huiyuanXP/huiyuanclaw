@@ -1,8 +1,5 @@
 (function () {
   "use strict";
-
-  console.log("hello!");
-
   // Inject copy buttons into all <pre> blocks inside a container
   function addCopyButtons(container) {
     container.querySelectorAll("pre").forEach(pre => {
@@ -20,6 +17,60 @@
       });
       pre.appendChild(btn);
     });
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard?.writeText) {
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise((resolve, reject) => {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.top = "-9999px";
+      document.body.appendChild(textarea);
+      textarea.select();
+      try {
+        document.execCommand("copy");
+        resolve();
+      } catch (err) {
+        reject(err);
+      } finally {
+        textarea.remove();
+      }
+    });
+  }
+
+  function createMessageToolbar(copyTextValue) {
+    const toolbar = document.createElement("div");
+    toolbar.className = "message-toolbar";
+
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "message-toolbar-btn";
+    copyBtn.textContent = "复制";
+
+    if (!copyTextValue) {
+      copyBtn.disabled = true;
+    } else {
+      copyBtn.addEventListener("click", async () => {
+        const originalText = copyBtn.textContent;
+        try {
+          await copyText(copyTextValue);
+          copyBtn.textContent = "已复制";
+        } catch (err) {
+          console.error("Copy failed:", err);
+          copyBtn.textContent = "复制失败";
+        }
+        setTimeout(() => {
+          copyBtn.textContent = originalText;
+        }, 1500);
+      });
+    }
+
+    toolbar.appendChild(copyBtn);
+    return toolbar;
   }
 
   // Reliable touch detection: add class to <html> so CSS can target it
@@ -53,8 +104,6 @@
   const imgBtn = document.getElementById("imgBtn");
   const imgFileInput = document.getElementById("imgFileInput");
   const imgPreviewStrip = document.getElementById("imgPreviewStrip");
-  const fileAttachBtn = document.getElementById("fileAttachBtn");
-  const fileAttachInput = document.getElementById("fileAttachInput");
   const inlineToolSelect = document.getElementById("inlineToolSelect");
   const inlineModelSelect = document.getElementById("inlineModelSelect");
   const thinkingToggle = document.getElementById("thinkingToggle");
@@ -76,8 +125,7 @@
   const headerLogo = document.getElementById("headerLogo");
 
   let ws = null;
-  let pendingImages = [];
-  let pendingFiles = []; // { file: File, name: string }
+  let pendingAttachments = [];
   let currentSessionId = null;
   let sessionStatus = "idle";
   let reconnectTimer = null;
@@ -87,6 +135,7 @@
   let knownFolders = new Set(); // all folders ever seen (active + archived) — avoids O(n) scan per render
   let showArchived = false;
   let currentHistory = []; // raw events for current session (used by Recover)
+  let currentQueuedMessages = [];
   let sessionContextTotal = 0; // latest total context tokens (input + cache)
   let pendingSummary = new Set(); // sessionIds awaiting summary generation
   let currentTaskDetailId = null; // currently viewed task in main content area
@@ -105,10 +154,34 @@
   let sidebarCollapsed = localStorage.getItem("sidebarCollapsed") === "true";
   let themeMode = localStorage.getItem("themeMode") || "auto"; // 'auto' | 'dark' | 'light'
   let selectedThemeId = localStorage.getItem("selectedTheme") || "classic";
+  const settingsBtn = document.getElementById("settingsBtn");
   const themeBtn = document.getElementById("themeBtn");
   const themePicker = document.getElementById("themePicker");
+  const settingsView = document.getElementById("settingsView");
+  const settingsBackBtn = document.getElementById("settingsBackBtn");
+  const settingsSaveStatus = document.getElementById("settingsSaveStatus");
+  const automationSave = document.getElementById("automationSave");
+  const automationChatTool = document.getElementById("automationChatTool");
+  const automationChatCodexModelField = document.getElementById("automationChatCodexModelField");
+  const automationChatCodexModel = document.getElementById("automationChatCodexModel");
+  const automationChatClaudeModelField = document.getElementById("automationChatClaudeModelField");
+  const automationChatClaudeModel = document.getElementById("automationChatClaudeModel");
+  const automationChatNamingTool = document.getElementById("automationChatNamingTool");
+  const automationChatNamingModel = document.getElementById("automationChatNamingModel");
+  const automationWorkflowTool = document.getElementById("automationWorkflowTool");
+  const automationWorkflowModel = document.getElementById("automationWorkflowModel");
+  const automationWorkflowForceModel = document.getElementById("automationWorkflowForceModel");
+  const automationSessionMessageTool = document.getElementById("automationSessionMessageTool");
+  const automationSessionMessageModel = document.getElementById("automationSessionMessageModel");
+  const automationSessionMessageForceModel = document.getElementById("automationSessionMessageForceModel");
+  const workflowOverrideList = document.getElementById("workflowOverrideList");
+  const scheduleOverrideList = document.getElementById("scheduleOverrideList");
   let themePickerOpen = false;
   let toolsList = [];
+  let availableWorkflows = [];
+  let availableSchedules = [];
+  let activeMainView = "chat";
+  const modelCatalogCache = new Map();
   let isDesktop = window.matchMedia("(min-width: 768px)").matches;
   let collapsedFolders = JSON.parse(
     localStorage.getItem("collapsedFolders") || "{}",
@@ -117,6 +190,7 @@
   // Thinking block state
   let currentThinkingBlock = null; // { el, body, tools: Set }
   let inThinkingBlock = false;
+  let queuedFollowUpsEl = null;
 
   // ---- Files tab state & elements ----
   const sessionTabs = document.getElementById("sessionTabs");
@@ -310,6 +384,26 @@
     sidebarOverlay.classList.toggle("collapsed", sidebarCollapsed);
   });
 
+  let chatDefaults = {
+    defaultTool: "codex",
+    codexModel: "gpt-5.4",
+    claudeModel: "opus[1m]",
+    namingTool: "codex",
+    namingModel: "gpt-5.4-mini",
+  };
+  let automationDefaults = {
+    workflowTool: "codex",
+    workflowModel: "gpt-5.4",
+    workflowForceModel: false,
+    sessionMessageTool: "inherit",
+    sessionMessageModel: "gpt-5.4",
+    sessionMessageForceModel: false,
+  };
+  let automationOverrides = {
+    workflowOverrides: {},
+    scheduleOverrides: {},
+  };
+
   // ---- Inline tool select ----
   async function loadInlineTools() {
     try {
@@ -326,7 +420,12 @@
       if (selectedTool && toolsList.some((t) => t.id === selectedTool)) {
         inlineToolSelect.value = selectedTool;
       } else if (toolsList.length > 0) {
-        selectedTool = toolsList[0].id;
+        const preferredTool = toolsList.some((t) => t.id === chatDefaults.defaultTool)
+          ? chatDefaults.defaultTool
+          : toolsList[0].id;
+        selectedTool = preferredTool;
+        inlineToolSelect.value = selectedTool;
+        localStorage.setItem("selectedTool", selectedTool);
       }
     } catch {}
   }
@@ -338,14 +437,34 @@
   });
 
   // ---- Inline model select ----
-  const CLAUDE_MODELS = [
-    { id: "opus[1m]", name: "Opus 1M" },
-    { id: "sonnet[1m]", name: "Sonnet 1M" },
-    { id: "opus", name: "Opus" },
-    { id: "sonnet", name: "Sonnet" },
-    { id: "haiku", name: "Haiku" },
-  ];
   const CLAUDE_DEFAULT_MODEL = "opus[1m]";
+
+  async function fetchModelCatalog(toolId, { refresh = false } = {}) {
+    const normalizedTool = toolId || "";
+    if (!refresh && modelCatalogCache.has(normalizedTool)) {
+      return modelCatalogCache.get(normalizedTool);
+    }
+    const request = fetch(`/api/models?tool=${encodeURIComponent(normalizedTool)}`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        modelCatalogCache.set(normalizedTool, data);
+        return data;
+      });
+    if (!refresh) {
+      modelCatalogCache.set(normalizedTool, request);
+    }
+    return request;
+  }
+
+  function normalizeModelRecords(models) {
+    return (models || []).map((model) => ({
+      id: model.id,
+      name: model.label || model.name || model.id,
+    }));
+  }
 
   function populateModelSelect(models, tool, serverDefault, sessionModel) {
     const storageKey = `selectedModel_${tool || "claude"}`;
@@ -355,7 +474,7 @@
     for (const m of models) {
       const opt = document.createElement("option");
       opt.value = m.id;
-      opt.textContent = m.name;
+      opt.textContent = m.label || m.name || m.id;
       inlineModelSelect.appendChild(opt);
     }
     // Priority: session-persisted > localStorage > server default > first item
@@ -373,18 +492,21 @@
 
   async function loadInlineModels(tool, sessionModel) {
     const activeTool = tool || selectedTool;
-    if (activeTool === "codex") {
-      try {
-        const res = await fetch(`/api/models?tool=codex`);
-        const data = await res.json();
-        if (data.models && data.models.length > 0) {
-          populateModelSelect(data.models, activeTool, data.default, sessionModel);
-          return;
-        }
-      } catch {}
-    }
-    // Claude (or codex fetch failed): use hardcoded list
-    populateModelSelect(CLAUDE_MODELS, activeTool, CLAUDE_DEFAULT_MODEL, sessionModel);
+    try {
+      const data = await fetchModelCatalog(activeTool);
+      const models = normalizeModelRecords(data.models);
+      if (models.length > 0) {
+        populateModelSelect(models, activeTool, data.defaultModel || data.default, sessionModel);
+        return;
+      }
+    } catch {}
+    const fallback = activeTool === "claude"
+      ? [{ id: chatDefaults.claudeModel || CLAUDE_DEFAULT_MODEL, name: chatDefaults.claudeModel || CLAUDE_DEFAULT_MODEL }]
+      : [{ id: chatDefaults.codexModel, name: chatDefaults.codexModel }];
+    const fallbackDefault = activeTool === "claude"
+      ? (chatDefaults.claudeModel || CLAUDE_DEFAULT_MODEL)
+      : chatDefaults.codexModel;
+    populateModelSelect(fallback, activeTool, fallbackDefault, sessionModel);
   }
 
   inlineModelSelect.addEventListener("change", () => {
@@ -491,7 +613,7 @@
           // Mark as pending summary when any session goes running → idle
           if (wasRunning && msg.session.status === "idle") {
             pendingSummary.add(msg.session.id);
-            if (activeTab === "progress") renderProgressPanel(lastProgressState);
+            if (activeTab === "progress") renderProgressPanel();
           }
           const idx = targetArr.findIndex((s) => s.id === msg.session.id);
           if (idx >= 0) {
@@ -509,6 +631,10 @@
           // Update header title if current session was renamed (e.g. auto-title)
           if (msg.session.id === currentSessionId && msg.session.name) {
             headerTitle.textContent = msg.session.name;
+          }
+          if (msg.session.id === currentSessionId) {
+            currentQueuedMessages = Array.isArray(msg.session.queuedMessages) ? msg.session.queuedMessages : [];
+            renderQueuedFollowUps();
           }
           if (isHidden) {
             // workflow sessions update silently; task section refreshes on demand
@@ -528,14 +654,16 @@
         if (msg.events && msg.events.length > 0) {
           currentHistory = [...msg.events];
           for (const evt of msg.events) renderEvent(evt, false);
-          scrollToBottom();
         }
+        renderQueuedFollowUps();
+        scrollToBottom();
         break;
 
       case "event":
         if (msg.event) {
           currentHistory.push(msg.event);
           renderEvent(msg.event, true);
+          renderQueuedFollowUps();
         }
         break;
 
@@ -705,14 +833,13 @@
     statusText.textContent = isRunning ? "running" : (currentSessionId ? "idle" : "connected");
     const hasSession = !!currentSessionId;
     msgInput.disabled = !hasSession;
-    // Show both Send and Stop when running (Send = interrupt & send new message)
+    // Keep Send available while running, but queue follow-ups instead of interrupting.
     sendBtn.style.display = "";
     sendBtn.disabled = !hasSession;
-    sendBtn.title = isRunning ? "Interrupt & send" : "Send";
+    sendBtn.title = isRunning ? "Queue follow-up" : "Send";
     cancelBtn.style.display = isRunning && hasSession ? "flex" : "none";
-    msgInput.placeholder = isRunning ? "Send a correction or hint..." : "Message...";
+    msgInput.placeholder = isRunning ? "Queue a follow-up, correction, or hint..." : "Message...";
     imgBtn.disabled = !hasSession;
-    fileAttachBtn.disabled = !hasSession;
     inlineToolSelect.disabled = !hasSession;
     inlineModelSelect.disabled = !hasSession;
     thinkingToggle.disabled = !hasSession;
@@ -786,6 +913,7 @@
     currentThinkingBlock = null;
     currentHistory = [];
     sessionContextTotal = 0;
+    queuedFollowUpsEl = null;
   }
 
   function showEmpty() {
@@ -793,12 +921,73 @@
     messagesInner.appendChild(emptyState);
     inThinkingBlock = false;
     currentThinkingBlock = null;
+    currentQueuedMessages = [];
+    queuedFollowUpsEl = null;
   }
 
   function scrollToBottom() {
     requestAnimationFrame(() => {
       messagesEl.scrollTop = messagesEl.scrollHeight;
     });
+  }
+
+  function removeQueuedFollowUps() {
+    if (queuedFollowUpsEl?.parentNode) {
+      queuedFollowUpsEl.remove();
+    }
+    queuedFollowUpsEl = null;
+  }
+
+  function renderQueuedFollowUps() {
+    removeQueuedFollowUps();
+    if (!currentSessionId || !Array.isArray(currentQueuedMessages) || currentQueuedMessages.length === 0) {
+      return;
+    }
+
+    const wrap = document.createElement("div");
+    wrap.className = "queued-followups";
+
+    currentQueuedMessages.forEach((queued, index) => {
+      const row = document.createElement("div");
+      row.className = "msg-user pending";
+
+      const bubble = document.createElement("div");
+      bubble.className = "msg-user-bubble pending";
+
+      const badge = document.createElement("div");
+      badge.className = "queued-followup-badge";
+      badge.textContent = currentQueuedMessages.length > 1
+        ? `Pending follow-up ${index + 1}`
+        : "Pending follow-up";
+      bubble.appendChild(badge);
+
+      const messageAttachments = Array.isArray(queued?.attachments) ? queued.attachments : [];
+      if (messageAttachments.length > 0) {
+        const imgWrap = document.createElement("div");
+        imgWrap.className = "msg-images";
+        for (const attachment of messageAttachments) {
+          const node = createMessageAttachmentNode(attachment);
+          if (node) imgWrap.appendChild(node);
+        }
+        bubble.appendChild(imgWrap);
+      }
+
+      if (queued?.text) {
+        const span = document.createElement("span");
+        span.textContent = queued.text;
+        bubble.appendChild(span);
+      } else if (messageAttachments.length === 0) {
+        const span = document.createElement("span");
+        span.textContent = "(empty follow-up)";
+        bubble.appendChild(span);
+      }
+
+      row.appendChild(bubble);
+      wrap.appendChild(row);
+    });
+
+    queuedFollowUpsEl = wrap;
+    messagesInner.appendChild(wrap);
   }
 
   function renderEvent(evt, autoScroll) {
@@ -832,10 +1021,10 @@
         renderUsage(evt);
         break;
       case "question":
-        renderQuestion(evt);
+        renderQuestion(evt, !autoScroll);
         break;
       case "plan_approval":
-        renderPlanApproval(evt);
+        renderPlanApproval(evt, !autoScroll);
         break;
       case "session_error":
         renderSessionError(evt);
@@ -907,9 +1096,71 @@
     return currentThinkingBlock.body;
   }
 
+  function getAttachmentDisplayName(attachment) {
+    return attachment?.originalName || attachment?.filename || "attachment";
+  }
+
+  function getAttachmentSource(attachment) {
+    return attachment?.url || attachment?.downloadUrl || (attachment?.filename && currentSessionId
+      ? `/api/sessions/${encodeURIComponent(currentSessionId)}/attachments/${encodeURIComponent(attachment.filename)}`
+      : "");
+  }
+
+  function getAttachmentDownloadSource(attachment) {
+    return attachment?.downloadUrl || getAttachmentSource(attachment);
+  }
+
+  function getAttachmentKind(attachment) {
+    const mimeType = attachment?.mimeType || "";
+    if (attachment?.renderAs === "file") return "file";
+    if (mimeType.startsWith("image/")) return "image";
+    return "file";
+  }
+
+  function formatAttachmentSize(sizeBytes) {
+    const size = Number(sizeBytes);
+    if (!Number.isFinite(size) || size <= 0) return "";
+    if (size < 1024) return `${size} B`;
+    if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  function createMessageAttachmentNode(attachment) {
+    const kind = getAttachmentKind(attachment);
+    const source = getAttachmentSource(attachment);
+    const downloadSource = getAttachmentDownloadSource(attachment);
+    if (!source) return null;
+
+    if (kind === "image") {
+      const imgEl = document.createElement("img");
+      imgEl.src = source;
+      imgEl.alt = getAttachmentDisplayName(attachment);
+      imgEl.loading = "lazy";
+      imgEl.onclick = () => window.open(source, "_blank");
+      return imgEl;
+    }
+
+    const link = document.createElement("a");
+    link.className = "attachment-file-card";
+    link.href = downloadSource;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    const name = document.createElement("div");
+    name.className = "attachment-file-card-name";
+    name.textContent = getAttachmentDisplayName(attachment);
+    const meta = document.createElement("div");
+    meta.className = "attachment-file-card-meta";
+    const metaParts = [attachment?.mimeType || "file", formatAttachmentSize(attachment?.sizeBytes)].filter(Boolean);
+    meta.textContent = metaParts.join(" · ");
+    link.appendChild(name);
+    link.appendChild(meta);
+    return link;
+  }
+
   // ---- Render functions ----
   function renderMessage(evt) {
     const role = evt.role || "assistant";
+    const messageText = typeof evt.content === "string" ? evt.content : "";
 
     if (role === "assistant" && inThinkingBlock) {
       finalizeThinkingBlock();
@@ -920,16 +1171,15 @@
       wrap.className = "msg-user";
       const bubble = document.createElement("div");
       bubble.className = "msg-user-bubble";
-      if (evt.images && evt.images.length > 0) {
+      const messageAttachments = Array.isArray(evt.attachments) && evt.attachments.length > 0
+        ? evt.attachments
+        : evt.images || [];
+      if (messageAttachments.length > 0) {
         const imgWrap = document.createElement("div");
         imgWrap.className = "msg-images";
-        for (const img of evt.images) {
-          const imgEl = document.createElement("img");
-          imgEl.src = `/api/images/${img.filename}`;
-          imgEl.alt = "attached image";
-          imgEl.loading = "lazy";
-          imgEl.onclick = () => window.open(imgEl.src, "_blank");
-          imgWrap.appendChild(imgEl);
+        for (const attachment of messageAttachments) {
+          const node = createMessageAttachmentNode(attachment);
+          if (node) imgWrap.appendChild(node);
         }
         bubble.appendChild(imgWrap);
       }
@@ -938,15 +1188,31 @@
         span.textContent = evt.content;
         bubble.appendChild(span);
       }
+      bubble.appendChild(createMessageToolbar(messageText));
       wrap.appendChild(bubble);
       messagesInner.appendChild(wrap);
     } else {
       const div = document.createElement("div");
       div.className = "msg-assistant md-content";
-      if (evt.content) {
-        div.innerHTML = marked.parse(evt.content);
-        addCopyButtons(div);
+      const messageAttachments = Array.isArray(evt.attachments) && evt.attachments.length > 0
+        ? evt.attachments
+        : evt.images || [];
+      if (messageAttachments.length > 0) {
+        const attachmentWrap = document.createElement("div");
+        attachmentWrap.className = "msg-images";
+        for (const attachment of messageAttachments) {
+          const node = createMessageAttachmentNode(attachment);
+          if (node) attachmentWrap.appendChild(node);
+        }
+        div.appendChild(attachmentWrap);
       }
+      if (evt.content) {
+        const contentWrap = document.createElement("div");
+        contentWrap.innerHTML = marked.parse(evt.content);
+        addCopyButtons(contentWrap);
+        div.appendChild(contentWrap);
+      }
+      div.appendChild(createMessageToolbar(messageText));
       messagesInner.appendChild(div);
     }
   }
@@ -1286,7 +1552,7 @@
     wsSend(msg);
   }
 
-  function renderQuestion(evt) {
+  function renderQuestion(evt, isResolved) {
     if (inThinkingBlock) finalizeThinkingBlock();
 
     const questions = evt.questions;
@@ -1408,25 +1674,54 @@
     card.appendChild(submitWrap);
 
     messagesInner.appendChild(card);
+    if (isResolved) {
+      submitBtn.disabled = true;
+      card.querySelectorAll(".interactive-option-btn").forEach(b => b.disabled = true);
+      card.querySelectorAll(".interactive-other-input").forEach(i => i.disabled = true);
+      card.classList.add("submitted");
+    }
   }
 
-  function renderPlanApproval(evt) {
+  function renderPlanApproval(evt, isResolved) {
     if (inThinkingBlock) finalizeThinkingBlock();
 
     const card = document.createElement("div");
     card.className = "interactive-card plan-approval-card";
 
+    // Header row: tag + expand button
+    const header = document.createElement("div");
+    header.className = "plan-header";
     const tag = document.createElement("span");
     tag.className = "interactive-tag";
     tag.textContent = "Plan";
-    card.appendChild(tag);
+    header.appendChild(tag);
 
+    let planHtml = "";
     if (evt.plan) {
+      planHtml = marked.parse(evt.plan);
+    }
+
+    const expandBtn = document.createElement("button");
+    expandBtn.className = "plan-expand-btn";
+    expandBtn.innerHTML = "&#x26F6; Fullscreen";
+    expandBtn.addEventListener("click", () => openPlanFullscreen(planHtml));
+    header.appendChild(expandBtn);
+    card.appendChild(header);
+
+    if (planHtml) {
       const planBody = document.createElement("div");
       planBody.className = "plan-body md-content";
-      planBody.innerHTML = marked.parse(evt.plan);
+      planBody.innerHTML = planHtml;
       addCopyButtons(planBody);
       card.appendChild(planBody);
+    }
+
+    function resolveCard() {
+      card.classList.add("resolved");
+      approveBtn.disabled = true;
+      rejectBtn.disabled = true;
+      feedbackInput.disabled = true;
+      feedbackBtn.disabled = true;
     }
 
     const actions = document.createElement("div");
@@ -1436,8 +1731,7 @@
     approveBtn.className = "plan-btn approve";
     approveBtn.textContent = "Approve";
     approveBtn.addEventListener("click", () => {
-      approveBtn.disabled = true;
-      rejectBtn.disabled = true;
+      resolveCard();
       approveBtn.classList.add("selected");
       feedbackWrap.style.display = "none";
       wsSend({ action: "hook_response", toolUseId: evt.toolUseId, decision: "allow" });
@@ -1447,6 +1741,7 @@
     rejectBtn.className = "plan-btn reject";
     rejectBtn.textContent = "Reject";
     rejectBtn.addEventListener("click", () => {
+      if (card.classList.contains("resolved")) return;
       feedbackWrap.style.display = feedbackWrap.style.display === "none" ? "flex" : "none";
     });
 
@@ -1468,11 +1763,8 @@
     feedbackBtn.addEventListener("click", () => {
       const val = feedbackInput.value.trim();
       if (!val) return;
-      approveBtn.disabled = true;
-      rejectBtn.disabled = true;
+      resolveCard();
       rejectBtn.classList.add("selected");
-      feedbackInput.disabled = true;
-      feedbackBtn.disabled = true;
       wsSend({ action: "hook_response", toolUseId: evt.toolUseId, decision: "deny", reason: val });
     });
     feedbackInput.addEventListener("keydown", (e) => {
@@ -1483,6 +1775,39 @@
     card.appendChild(feedbackWrap);
 
     messagesInner.appendChild(card);
+    if (isResolved) resolveCard();
+  }
+
+  function openPlanFullscreen(planHtml) {
+    const overlay = document.createElement("div");
+    overlay.className = "plan-fullscreen-overlay";
+
+    const header = document.createElement("div");
+    header.className = "plan-fullscreen-header";
+    const tag = document.createElement("span");
+    tag.className = "interactive-tag";
+    tag.textContent = "Plan";
+    header.appendChild(tag);
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "plan-fullscreen-close";
+    closeBtn.innerHTML = "&#x2715; Close";
+    closeBtn.addEventListener("click", () => overlay.remove());
+    header.appendChild(closeBtn);
+    overlay.appendChild(header);
+
+    const body = document.createElement("div");
+    body.className = "plan-fullscreen-body md-content";
+    body.innerHTML = planHtml;
+    addCopyButtons(body);
+    overlay.appendChild(body);
+
+    // ESC to close
+    function onKey(e) {
+      if (e.key === "Escape") { overlay.remove(); document.removeEventListener("keydown", onKey); }
+    }
+    document.addEventListener("keydown", onKey);
+
+    document.body.appendChild(overlay);
   }
 
   function esc(s) {
@@ -1506,6 +1831,18 @@
     try {
       const res = await fetch('/api/ui-settings');
       const data = await res.json();
+      if (data.chatDefaults) {
+        chatDefaults = { ...chatDefaults, ...data.chatDefaults };
+      }
+      if (data.automationDefaults) {
+        automationDefaults = { ...automationDefaults, ...data.automationDefaults };
+      }
+      if (data.automationOverrides) {
+        automationOverrides = {
+          workflowOverrides: { ...(automationOverrides.workflowOverrides || {}), ...(data.automationOverrides.workflowOverrides || {}) },
+          scheduleOverrides: { ...(automationOverrides.scheduleOverrides || {}), ...(data.automationOverrides.scheduleOverrides || {}) },
+        };
+      }
       if (data.folderOrder) {
         folderOrderList = data.folderOrder;
         localStorage.setItem("folderOrder", JSON.stringify(folderOrderList));
@@ -1515,6 +1852,391 @@
         localStorage.setItem("collapsedFolders", JSON.stringify(collapsedFolders));
       }
     } catch {}
+  }
+
+  function fillAutomationToolSelect(selectEl, selectedValue) {
+    if (!selectEl) return;
+    selectEl.innerHTML = "";
+    const sourceTools = toolsList.length > 0 ? toolsList : [
+      { id: "codex", name: "OpenAI Codex" },
+      { id: "claude", name: "Claude Code" },
+    ];
+    for (const t of sourceTools) {
+      if (t.available === false) continue;
+      const opt = document.createElement("option");
+      opt.value = t.id;
+      opt.textContent = t.name;
+      selectEl.appendChild(opt);
+    }
+    if ([...selectEl.options].some(opt => opt.value === selectedValue)) {
+      selectEl.value = selectedValue;
+    }
+  }
+
+  function renderOverrideToolOptions(selectedValue, includeInherit = false) {
+    const options = [];
+    if (includeInherit) {
+      options.push('<option value="inherit">Inherit default</option>');
+    }
+    const sourceTools = toolsList.length > 0 ? toolsList : [
+      { id: "codex", name: "OpenAI Codex" },
+      { id: "claude", name: "Claude Code" },
+    ];
+    for (const t of sourceTools) {
+      if (t.available === false) continue;
+      const selected = t.id === selectedValue ? " selected" : "";
+      options.push(`<option value="${esc(t.id)}"${selected}>${esc(t.name)}</option>`);
+    }
+    return options.join("");
+  }
+
+  function syncChatDefaultModelFields() {
+    const activeTool = automationChatTool?.value || chatDefaults.defaultTool || "codex";
+    if (automationChatCodexModelField) {
+      automationChatCodexModelField.classList.toggle("hidden", activeTool !== "codex");
+    }
+    if (automationChatClaudeModelField) {
+      automationChatClaudeModelField.classList.toggle("hidden", activeTool !== "claude");
+    }
+  }
+
+  async function populateSettingsModelSelect(selectEl, toolId, selectedValue, { allowBlank = false, blankLabel = "Inherit default" } = {}) {
+    if (!selectEl) return;
+    const currentValue = selectedValue || "";
+    selectEl.innerHTML = "";
+    if (allowBlank) {
+      const blank = document.createElement("option");
+      blank.value = "";
+      blank.textContent = blankLabel;
+      selectEl.appendChild(blank);
+    }
+    try {
+      const data = await fetchModelCatalog(toolId);
+      const models = normalizeModelRecords(data.models);
+      for (const model of models) {
+        const option = document.createElement("option");
+        option.value = model.id;
+        option.textContent = model.name;
+        selectEl.appendChild(option);
+      }
+      const preferred = currentValue || data.defaultModel || data.default || "";
+      if ([...selectEl.options].some((option) => option.value === preferred)) {
+        selectEl.value = preferred;
+      } else if (allowBlank) {
+        selectEl.value = "";
+      } else if (selectEl.options.length > 0) {
+        selectEl.value = selectEl.options[0].value;
+      }
+    } catch {
+      const fallbackValue = currentValue || (toolId === "claude" ? (chatDefaults.claudeModel || CLAUDE_DEFAULT_MODEL) : chatDefaults.codexModel);
+      const option = document.createElement("option");
+      option.value = fallbackValue;
+      option.textContent = fallbackValue;
+      selectEl.appendChild(option);
+      selectEl.value = fallbackValue;
+    }
+  }
+
+  function renderWorkflowOverrideCards() {
+    if (!workflowOverrideList) return;
+    if (!availableWorkflows.length) {
+      workflowOverrideList.innerHTML = '<div class="settings-card-empty">No workflows found.</div>';
+      return;
+    }
+    workflowOverrideList.innerHTML = availableWorkflows.map((workflow) => {
+      const key = workflow.id || workflow.name;
+      const override = automationOverrides.workflowOverrides[key] || {};
+      const enabled = !!override.enabled;
+      const taskCount = (workflow.steps || []).reduce((count, step) => count + ((step.tasks || []).length || 0), 0);
+      return `<article class="settings-override-card" data-workflow-key="${esc(key)}">
+        <div class="settings-card-header">
+          <div>
+            <div class="settings-card-title">${esc(workflow.name || key)}</div>
+            <div class="settings-card-meta">${esc(workflow.description || "No description")}<br>${taskCount} task(s)</div>
+          </div>
+          <label class="settings-check">
+            <input type="checkbox" data-field="enabled"${enabled ? " checked" : ""}>
+            Override
+          </label>
+        </div>
+        <div class="settings-card-grid">
+          <div>
+            <div class="settings-card-label">Tool</div>
+            <select data-field="tool">
+              <option value="">Inherit default</option>
+              ${renderOverrideToolOptions(override.tool)}
+            </select>
+          </div>
+          <div>
+            <div class="settings-card-label">Model</div>
+            <select data-field="model">
+              <option value="">Inherit default</option>
+            </select>
+          </div>
+          <label class="settings-check span-2">
+            <input type="checkbox" data-field="forceModel"${override.forceModel ? " checked" : ""}>
+            Force override even if workflow JSON sets a model
+          </label>
+        </div>
+      </article>`;
+    }).join("");
+  }
+
+  function renderScheduleOverrideCards() {
+    if (!scheduleOverrideList) return;
+    if (!availableSchedules.length) {
+      scheduleOverrideList.innerHTML = '<div class="settings-card-empty">No schedules found.</div>';
+      return;
+    }
+    scheduleOverrideList.innerHTML = availableSchedules.map((schedule) => {
+      const override = automationOverrides.scheduleOverrides[schedule.id] || {};
+      const target = schedule.workflow || schedule.inlineWorkflow?.name || "inline";
+      const cadence = schedule.cron || (schedule.intervalMs ? `Every ${Math.round(schedule.intervalMs / 60000)} min` : schedule.runAt || "Manual");
+      return `<article class="settings-override-card" data-schedule-key="${esc(schedule.id)}">
+        <div class="settings-card-header">
+          <div>
+            <div class="settings-card-title">${esc(schedule.id)}</div>
+            <div class="settings-card-meta">Target: ${esc(target)}<br>${esc(cadence)}</div>
+          </div>
+          <label class="settings-check">
+            <input type="checkbox" data-field="enabled"${override.enabled ? " checked" : ""}>
+            Override
+          </label>
+        </div>
+        <div class="settings-card-grid">
+          <div>
+            <div class="settings-card-label">Workflow Tool</div>
+            <select data-field="workflowTool">
+              <option value="">Inherit default</option>
+              ${renderOverrideToolOptions(override.workflowTool)}
+            </select>
+          </div>
+          <div>
+            <div class="settings-card-label">Workflow Model</div>
+            <select data-field="workflowModel">
+              <option value="">Inherit default</option>
+            </select>
+          </div>
+          <label class="settings-check span-2">
+            <input type="checkbox" data-field="workflowForceModel"${override.workflowForceModel ? " checked" : ""}>
+            Force workflow model override
+          </label>
+          <div>
+            <div class="settings-card-label">Message Tool</div>
+            <select data-field="sessionMessageTool">
+              <option value="">Inherit default</option>
+              <option value="inherit"${override.sessionMessageTool === "inherit" ? " selected" : ""}>Inherit session tool</option>
+              ${renderOverrideToolOptions(override.sessionMessageTool)}
+            </select>
+          </div>
+          <div>
+            <div class="settings-card-label">Message Model</div>
+            <select data-field="sessionMessageModel">
+              <option value="">Inherit default</option>
+            </select>
+          </div>
+          <label class="settings-check span-2">
+            <input type="checkbox" data-field="sessionMessageForceModel"${override.sessionMessageForceModel ? " checked" : ""}>
+            Force scheduled message model override
+          </label>
+        </div>
+      </article>`;
+    }).join("");
+  }
+
+  async function hydrateWorkflowOverrideModelSelects() {
+    const cards = [...document.querySelectorAll("[data-workflow-key]")];
+    await Promise.all(cards.map(async (card) => {
+      const key = card.dataset.workflowKey;
+      const override = automationOverrides.workflowOverrides[key] || {};
+      const toolId = card.querySelector('[data-field="tool"]')?.value || automationDefaults.workflowTool || "codex";
+      await populateSettingsModelSelect(card.querySelector('[data-field="model"]'), toolId, override.model || "", {
+        allowBlank: true,
+      });
+    }));
+  }
+
+  async function hydrateScheduleOverrideModelSelects() {
+    const cards = [...document.querySelectorAll("[data-schedule-key]")];
+    await Promise.all(cards.map(async (card) => {
+      const key = card.dataset.scheduleKey;
+      const override = automationOverrides.scheduleOverrides[key] || {};
+      const workflowToolId = card.querySelector('[data-field="workflowTool"]')?.value || automationDefaults.workflowTool || "codex";
+      const sessionMessageToolValue = card.querySelector('[data-field="sessionMessageTool"]')?.value || "";
+      const sessionMessageToolId = sessionMessageToolValue && sessionMessageToolValue !== "inherit"
+        ? sessionMessageToolValue
+        : (automationDefaults.sessionMessageTool !== "inherit" ? automationDefaults.sessionMessageTool : chatDefaults.defaultTool || "codex");
+      await Promise.all([
+        populateSettingsModelSelect(card.querySelector('[data-field="workflowModel"]'), workflowToolId, override.workflowModel || "", {
+          allowBlank: true,
+        }),
+        populateSettingsModelSelect(card.querySelector('[data-field="sessionMessageModel"]'), sessionMessageToolId, override.sessionMessageModel || "", {
+          allowBlank: true,
+        }),
+      ]);
+    }));
+  }
+
+  async function loadSettingsCatalog() {
+    const [workflowRes, scheduleRes] = await Promise.all([
+      fetch("/api/workflows"),
+      fetch("/api/schedules"),
+    ]);
+    if (!workflowRes.ok) throw new Error("Failed to load workflows");
+    if (!scheduleRes.ok) throw new Error("Failed to load schedules");
+    const workflowData = await workflowRes.json();
+    const scheduleData = await scheduleRes.json();
+    availableWorkflows = workflowData.workflows || [];
+    availableSchedules = scheduleData.schedules || [];
+  }
+
+  async function populateSettingsForm() {
+    fillAutomationToolSelect(automationChatTool, chatDefaults.defaultTool);
+    fillAutomationToolSelect(automationChatNamingTool, chatDefaults.namingTool || "codex");
+    syncChatDefaultModelFields();
+    fillAutomationToolSelect(automationWorkflowTool, automationDefaults.workflowTool);
+    automationWorkflowForceModel.checked = !!automationDefaults.workflowForceModel;
+    automationSessionMessageTool.value = automationDefaults.sessionMessageTool || "inherit";
+    automationSessionMessageForceModel.checked = !!automationDefaults.sessionMessageForceModel;
+    renderWorkflowOverrideCards();
+    renderScheduleOverrideCards();
+    await Promise.all([
+      populateSettingsModelSelect(automationChatCodexModel, "codex", chatDefaults.codexModel || "gpt-5.4"),
+      populateSettingsModelSelect(automationChatClaudeModel, "claude", chatDefaults.claudeModel || CLAUDE_DEFAULT_MODEL),
+      populateSettingsModelSelect(
+        automationChatNamingModel,
+        automationChatNamingTool.value || chatDefaults.namingTool || "codex",
+        chatDefaults.namingModel || "gpt-5.4-mini"
+      ),
+      populateSettingsModelSelect(
+        automationWorkflowModel,
+        automationWorkflowTool.value || automationDefaults.workflowTool || "codex",
+        automationDefaults.workflowModel || "gpt-5.4"
+      ),
+      populateSettingsModelSelect(
+        automationSessionMessageModel,
+        automationSessionMessageTool.value && automationSessionMessageTool.value !== "inherit"
+          ? automationSessionMessageTool.value
+          : (chatDefaults.defaultTool || "codex"),
+        automationDefaults.sessionMessageModel || "gpt-5.4"
+      ),
+      hydrateWorkflowOverrideModelSelects(),
+      hydrateScheduleOverrideModelSelects(),
+    ]);
+  }
+
+  function collectWorkflowOverrides() {
+    const next = {};
+    document.querySelectorAll("[data-workflow-key]").forEach((card) => {
+      const key = card.dataset.workflowKey;
+      const enabled = !!card.querySelector('[data-field="enabled"]')?.checked;
+      if (!enabled) return;
+      next[key] = {
+        enabled: true,
+        tool: card.querySelector('[data-field="tool"]')?.value || "",
+        model: card.querySelector('[data-field="model"]')?.value.trim() || "",
+        forceModel: !!card.querySelector('[data-field="forceModel"]')?.checked,
+      };
+    });
+    return next;
+  }
+
+  function collectScheduleOverrides() {
+    const next = {};
+    document.querySelectorAll("[data-schedule-key]").forEach((card) => {
+      const key = card.dataset.scheduleKey;
+      const enabled = !!card.querySelector('[data-field="enabled"]')?.checked;
+      if (!enabled) return;
+      next[key] = {
+        enabled: true,
+        workflowTool: card.querySelector('[data-field="workflowTool"]')?.value || "",
+        workflowModel: card.querySelector('[data-field="workflowModel"]')?.value.trim() || "",
+        workflowForceModel: !!card.querySelector('[data-field="workflowForceModel"]')?.checked,
+        sessionMessageTool: card.querySelector('[data-field="sessionMessageTool"]')?.value || "",
+        sessionMessageModel: card.querySelector('[data-field="sessionMessageModel"]')?.value.trim() || "",
+        sessionMessageForceModel: !!card.querySelector('[data-field="sessionMessageForceModel"]')?.checked,
+      };
+    });
+    return next;
+  }
+
+  function showMainView(view) {
+    activeMainView = view;
+    const inputArea = document.getElementById("inputArea");
+    const isSettings = view === "settings";
+    settingsView.style.display = isSettings ? "" : "none";
+    workflowView.style.display = view === "workflow" ? "" : "none";
+    messagesEl.style.display = view === "chat" ? "" : "none";
+    if (inputArea) inputArea.style.display = view === "chat" ? "" : "none";
+    if (view !== "files") filesView.classList.remove("visible");
+    if (view !== "git") gitView.classList.remove("visible");
+    if (isSettings) {
+      sessionTabs.classList.remove("visible");
+      headerTitle.textContent = "Settings";
+      resetHeaderContext();
+    }
+  }
+
+  async function openSettingsView() {
+    if (activeSessionTab === "files" && !checkUnsavedEdits()) return;
+    settingsSaveStatus.textContent = "";
+    if (!availableWorkflows.length && !availableSchedules.length) {
+      await loadSettingsCatalog();
+    }
+    await populateSettingsForm();
+    showMainView("settings");
+  }
+
+  function closeSettingsView() {
+    showMainView("chat");
+    if (currentSessionId) {
+      const currentSession = [...sessions, ...workflowSessions, ...archivedSessions].find((s) => s.id === currentSessionId);
+      headerTitle.textContent = currentSession?.name || currentSession?.folder?.split("/").pop() || "RemoteLab Chat";
+      sessionTabs.classList.add("visible");
+      switchSessionTab(activeSessionTab || "chat");
+    } else {
+      headerTitle.textContent = "RemoteLab Chat";
+      sessionTabs.classList.remove("visible");
+    }
+  }
+
+  async function saveAutomationSettings() {
+    const patch = {
+      chatDefaults: {
+        defaultTool: automationChatTool.value || "codex",
+        codexModel: automationChatCodexModel.value.trim() || "gpt-5.4",
+        claudeModel: automationChatClaudeModel.value.trim() || "opus[1m]",
+        namingTool: automationChatNamingTool.value || "codex",
+        namingModel: automationChatNamingModel.value.trim() || "gpt-5.4-mini",
+      },
+      automationDefaults: {
+        workflowTool: automationWorkflowTool.value || "codex",
+        workflowModel: automationWorkflowModel.value.trim() || "gpt-5.4",
+        workflowForceModel: !!automationWorkflowForceModel.checked,
+        sessionMessageTool: automationSessionMessageTool.value || "inherit",
+        sessionMessageModel: automationSessionMessageModel.value.trim() || "gpt-5.4",
+        sessionMessageForceModel: !!automationSessionMessageForceModel.checked,
+      },
+      automationOverrides: {
+        workflowOverrides: collectWorkflowOverrides(),
+        scheduleOverrides: collectScheduleOverrides(),
+      },
+    };
+    const res = await fetch('/api/ui-settings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    if (!res.ok) throw new Error('Failed to save settings');
+    chatDefaults = { ...chatDefaults, ...patch.chatDefaults };
+    automationDefaults = { ...automationDefaults, ...patch.automationDefaults };
+    automationOverrides = { ...automationOverrides, ...patch.automationOverrides };
+    settingsSaveStatus.textContent = "Saved";
+    setTimeout(() => {
+      if (settingsSaveStatus.textContent === "Saved") settingsSaveStatus.textContent = "";
+    }, 1800);
+    await loadInlineTools();
+    await loadInlineModels(selectedTool, null);
   }
 
   function getLabelById(id) {
@@ -1808,13 +2530,18 @@
 
         const displayName = s.name || s.tool || "session";
         const label = s.label ? getLabelById(s.label) : null;
+        const queuedMeta = s.queuedMessageCount > 0
+          ? `<span class="queued-count">${s.queuedMessageCount} queued</span>`
+          : "";
         let metaHtml;
         if (s.status === "running") {
-          metaHtml = `<span class="status-running">● running</span>`;
+          metaHtml = `<span class="status-running">● running</span>${queuedMeta ? ` <span class="queued-count-sep">·</span> ${queuedMeta}` : ""}`;
         } else if (label) {
-          metaHtml = `<span style="color:${label.color}">● ${esc(label.name)}</span>`;
+          metaHtml = `<span style="color:${label.color}">● ${esc(label.name)}</span>${queuedMeta ? ` <span class="queued-count-sep">·</span> ${queuedMeta}` : ""}`;
         } else if (s.tool && s.name) {
-          metaHtml = `<span>${esc(s.tool)}</span>`;
+          metaHtml = `<span>${esc(s.tool)}</span>${queuedMeta ? ` <span class="queued-count-sep">·</span> ${queuedMeta}` : ""}`;
+        } else if (queuedMeta) {
+          metaHtml = queuedMeta;
         } else {
           metaHtml = "";
         }
@@ -2269,11 +2996,10 @@
   function showTaskDetailView() {
     // Switch main content to show task detail (same pattern as workflowView)
     currentSessionId = null;
-    messagesEl.style.display = "none";
-    document.getElementById("inputArea").style.display = "none";
     filesView.classList.remove("visible");
+    gitView.classList.remove("visible");
     sessionTabs.classList.remove("visible");
-    workflowView.style.display = "";
+    showMainView("workflow");
     resetHeaderContext();
     renderSessionList();
   }
@@ -2942,12 +3668,15 @@
 
   function switchSessionTab(tab) {
     if (tab !== "files" && !checkUnsavedEdits()) return;
+    activeMainView = "chat";
     activeSessionTab = tab;
     sessionTabChat.classList.toggle("active", tab === "chat");
     sessionTabFiles.classList.toggle("active", tab === "files");
     sessionTabGit.classList.toggle("active", tab === "git");
     messagesEl.style.display = tab === "chat" ? "" : "none";
     document.getElementById("inputArea").style.display = tab === "chat" ? "" : "none";
+    settingsView.style.display = "none";
+    workflowView.style.display = "none";
     filesView.classList.toggle("visible", tab === "files");
     gitView.classList.toggle("visible", tab === "git");
     if (tab === "files" && currentSessionId) {
@@ -3599,9 +4328,7 @@
 
   function attachSession(id, session) {
     // Hide workflow/task-detail view and restore normal chat layout
-    workflowView.style.display = "none";
-    messagesEl.style.display = "";
-    document.getElementById("inputArea").style.display = "";
+    showMainView("chat");
     // Show session tabs, reset to Chat tab
     sessionTabs.classList.add("visible");
     switchSessionTab("chat");
@@ -3633,10 +4360,10 @@
     const displayName =
       session?.name || session?.folder?.split("/").pop() || "Session";
     headerTitle.textContent = displayName;
+    currentQueuedMessages = Array.isArray(session?.queuedMessages) ? session.queuedMessages : [];
     msgInput.disabled = false;
     sendBtn.disabled = false;
     imgBtn.disabled = false;
-    fileAttachBtn.disabled = false;
     inlineToolSelect.disabled = false;
     inlineModelSelect.disabled = false;
     thinkingToggle.disabled = false;
@@ -3649,6 +4376,7 @@
     }
 
     loadQuickReplies(session?.folder);
+    renderQueuedFollowUps();
     msgInput.focus();
     renderSessionList();
     pushHashState();
@@ -3720,12 +4448,22 @@
       const res = await fetch("/api/tools");
       const data = await res.json();
       toolSelect.innerHTML = "";
+      let preferredTool = null;
       for (const t of data.tools || []) {
         if (!t.available) continue;
         const opt = document.createElement("option");
         opt.value = t.id;
         opt.textContent = t.name;
         toolSelect.appendChild(opt);
+        if (!preferredTool && t.id === chatDefaults.defaultTool) {
+          preferredTool = t.id;
+        }
+        if (!preferredTool) {
+          preferredTool = t.id;
+        }
+      }
+      if (preferredTool) {
+        toolSelect.value = preferredTool;
       }
     } catch {}
   }
@@ -3775,54 +4513,67 @@
     });
   }
 
-  async function addImageFiles(files) {
+  function randomId() {
+    return Math.random().toString(36).slice(2, 10);
+  }
+
+  async function addAttachmentFiles(files) {
     for (const file of files) {
-      if (!file.type.startsWith("image/")) continue;
-      if (pendingImages.length >= 4) break;
-      pendingImages.push(await fileToBase64(file));
+      if (file.type.startsWith("image/")) {
+        if (pendingAttachments.filter((attachment) => attachment.mimeType?.startsWith("image/")).length >= 4) continue;
+        const image = await fileToBase64(file);
+        pendingAttachments.push({
+          localId: randomId(),
+          file,
+          originalName: file.name || "image",
+          mimeType: image.mimeType,
+          data: image.data,
+          objectUrl: image.objectUrl,
+          renderAs: "image",
+        });
+        continue;
+      }
+      pendingAttachments.push({
+        localId: randomId(),
+        file,
+        originalName: file.name || "attachment",
+        mimeType: file.type || "application/octet-stream",
+        renderAs: "file",
+      });
     }
     renderImagePreviews();
   }
 
   function renderImagePreviews() {
     imgPreviewStrip.innerHTML = "";
-    if (pendingImages.length === 0 && pendingFiles.length === 0) {
+    if (pendingAttachments.length === 0) {
       imgPreviewStrip.classList.remove("has-images");
       return;
     }
     imgPreviewStrip.classList.add("has-images");
-    pendingImages.forEach((img, i) => {
+    pendingAttachments.forEach((attachment, i) => {
+      const isImage = attachment.mimeType?.startsWith("image/") && attachment.objectUrl;
       const item = document.createElement("div");
-      item.className = "img-preview-item";
-      const imgEl = document.createElement("img");
-      imgEl.src = img.objectUrl;
+      item.className = isImage ? "img-preview-item" : "file-preview-item";
+      if (isImage) {
+        const imgEl = document.createElement("img");
+        imgEl.src = attachment.objectUrl;
+        item.appendChild(imgEl);
+      } else {
+        const nameEl = document.createElement("span");
+        nameEl.className = "file-preview-name";
+        nameEl.textContent = attachment.originalName;
+        nameEl.title = attachment.originalName;
+        item.appendChild(nameEl);
+      }
       const removeBtn = document.createElement("button");
       removeBtn.className = "remove-img";
       removeBtn.innerHTML = "&times;";
       removeBtn.onclick = () => {
-        URL.revokeObjectURL(img.objectUrl);
-        pendingImages.splice(i, 1);
+        if (attachment.objectUrl) URL.revokeObjectURL(attachment.objectUrl);
+        pendingAttachments.splice(i, 1);
         renderImagePreviews();
       };
-      item.appendChild(imgEl);
-      item.appendChild(removeBtn);
-      imgPreviewStrip.appendChild(item);
-    });
-    pendingFiles.forEach((pf, i) => {
-      const item = document.createElement("div");
-      item.className = "file-preview-item";
-      const nameEl = document.createElement("span");
-      nameEl.className = "file-preview-name";
-      nameEl.textContent = pf.name;
-      nameEl.title = pf.name;
-      const removeBtn = document.createElement("button");
-      removeBtn.className = "remove-img";
-      removeBtn.innerHTML = "&times;";
-      removeBtn.onclick = () => {
-        pendingFiles.splice(i, 1);
-        renderImagePreviews();
-      };
-      item.appendChild(nameEl);
       item.appendChild(removeBtn);
       imgPreviewStrip.appendChild(item);
     });
@@ -3830,56 +4581,41 @@
 
   imgBtn.addEventListener("click", () => imgFileInput.click());
   imgFileInput.addEventListener("change", () => {
-    if (imgFileInput.files.length > 0) addImageFiles(imgFileInput.files);
+    if (imgFileInput.files.length > 0) addAttachmentFiles(imgFileInput.files);
     imgFileInput.value = "";
-  });
-
-  // ---- File attachment (queued, uploaded on send) ----
-  fileAttachBtn.addEventListener("click", () => fileAttachInput.click());
-  fileAttachInput.addEventListener("change", () => {
-    const files = Array.from(fileAttachInput.files);
-    fileAttachInput.value = "";
-    if (!files.length) return;
-    for (const file of files) {
-      pendingFiles.push({ file, name: file.name });
-    }
-    renderImagePreviews();
   });
 
   msgInput.addEventListener("paste", (e) => {
     const items = e.clipboardData?.items;
     if (!items) return;
-    const imageFiles = [];
+    const attachmentFiles = [];
     for (const item of items) {
-      if (item.type.startsWith("image/")) {
+      if (item.type.startsWith("image/") || item.kind === "file") {
         const file = item.getAsFile();
-        if (file) imageFiles.push(file);
+        if (file) attachmentFiles.push(file);
       }
     }
-    if (imageFiles.length > 0) {
+    if (attachmentFiles.length > 0) {
       e.preventDefault();
-      addImageFiles(imageFiles);
+      addAttachmentFiles(attachmentFiles);
     }
   });
 
   // ---- Send message ----
   async function sendMessage() {
     const text = msgInput.value.trim();
-    if ((!text && pendingImages.length === 0 && pendingFiles.length === 0) || !currentSessionId) return;
+    if ((!text && pendingAttachments.length === 0) || !currentSessionId) return;
 
-    let fullText = text;
-
-    // Upload pending files before sending
-    if (pendingFiles.length > 0) {
-      const filesToUpload = [...pendingFiles];
-      pendingFiles = [];
+    let uploadedAttachments = [];
+    if (pendingAttachments.length > 0) {
+      const attachmentsToUpload = [...pendingAttachments];
+      pendingAttachments = [];
       renderImagePreviews();
-      const paths = [];
-      for (const pf of filesToUpload) {
+      for (const attachment of attachmentsToUpload) {
         try {
           const res = await fetch(
-            `/api/upload?name=${encodeURIComponent(pf.name)}&sessionId=${encodeURIComponent(currentSessionId)}`,
-            { method: "POST", body: pf.file }
+            `/api/attachments?name=${encodeURIComponent(attachment.originalName)}&mimeType=${encodeURIComponent(attachment.mimeType || "application/octet-stream")}&sessionId=${encodeURIComponent(currentSessionId)}`,
+            { method: "POST", body: attachment.file || (attachment.data ? Uint8Array.from(atob(attachment.data), c => c.charCodeAt(0)) : null) }
           );
           if (!res.ok) {
             const err = await res.json().catch(() => ({}));
@@ -3887,30 +4623,28 @@
             continue;
           }
           const data = await res.json();
-          paths.push(data.path);
+          uploadedAttachments.push({
+            filename: data.filename,
+            originalName: data.originalName || attachment.originalName,
+            mimeType: data.mimeType || attachment.mimeType,
+            sizeBytes: data.sizeBytes,
+            url: data.url,
+            downloadUrl: data.downloadUrl,
+            renderAs: attachment.renderAs || data.renderAs || "file",
+          });
         } catch (e) {
           alert(`Upload failed: ${e.message}`);
         }
       }
-      if (paths.length > 0) {
-        const fileRefs = paths.map((p) => `📎 ${p}`).join("\n");
-        fullText = [fullText, fileRefs].filter(Boolean).join("\n").trim();
-      }
     }
 
-    const msg = { action: "send", text: fullText || "(image)" };
-    if (currentSessionId) sessionLastMessage[currentSessionId] = fullText || "(image)";
+    const msg = { action: "send", text: text || "(attachment)" };
+    if (currentSessionId) sessionLastMessage[currentSessionId] = text || "(attachment)";
     if (selectedTool) msg.tool = selectedTool;
     msg.model = selectedModel;
     msg.thinking = thinkingEnabled;
-    if (pendingImages.length > 0) {
-      msg.images = pendingImages.map((img) => ({
-        data: img.data,
-        mimeType: img.mimeType,
-      }));
-      pendingImages.forEach((img) => URL.revokeObjectURL(img.objectUrl));
-      pendingImages = [];
-      renderImagePreviews();
+    if (uploadedAttachments.length > 0) {
+      msg.attachments = uploadedAttachments;
     }
     wsSend(msg);
     msgInput.value = "";
@@ -4046,13 +4780,9 @@
     taskPanel.classList.toggle("visible", tab === "tasks");
     newSessionBtn.classList.toggle("hidden", tab !== "sessions");
     if (tab === "progress") {
-      fetchSidebarState();
-      if (!progressPollTimer) {
-        progressPollTimer = setInterval(fetchSidebarState, 30_000);
-      }
+      startTaskFlowPolling();
     } else {
-      clearInterval(progressPollTimer);
-      progressPollTimer = null;
+      stopTaskFlowPolling();
     }
     if (tab === "tasks") {
       loadTaskSection();
@@ -4071,152 +4801,100 @@
     return `${Math.floor(diff / 86_400_000)}d ago`;
   }
 
-  function renderProgressPanel(state) {
+  // ---- Task Flow board (kanban by status) ----
+
+  let _taskFlowTimer = null;
+
+  function renderProgressPanel() {
+    // Fetch tasks from API and render kanban board
+    fetch("/api/tasks")
+      .then(r => r.ok ? r.json() : Promise.reject(r.status))
+      .then(data => renderTaskFlowBoard(data.tasks || []))
+      .catch(() => renderTaskFlowBoard([]));
+  }
+
+  function renderTaskFlowBoard(tasks) {
     progressPanel.innerHTML = "";
 
-    const stateEntries = Object.entries(state.sessions || {});
-    const pendingOnly = [...pendingSummary].filter(id => !state.sessions[id]);
-    const allActiveEntries = [
-      ...stateEntries,
-      ...pendingOnly.map(id => {
-        const s = sessions.find(sess => sess.id === id);
-        return [id, { folder: s?.folder || "", name: s?.name || "", _pendingOnly: true }];
-      }),
-    ];
-
-    // Enrich with metadata (label, running status) from sessions array
-    const enriched = allActiveEntries.map(([id, entry]) => {
-      const sess = sessions.find(s => s.id === id);
-      return {
-        id,
-        entry,
-        isRunning: !!(sess && sess.status === "running"),
-        isSummarizing: pendingSummary.has(id),
-        label: sess?.label || null,
-      };
-    });
-
-    // Priority buckets: pending-review > running > other labeled > unlabeled
-    const grpPendingReview = enriched.filter(e => e.label === "pending-review");
-    const grpRunning = enriched.filter(e => e.isRunning && e.label !== "pending-review");
-    const grpOtherLabeled = enriched.filter(e => !e.isRunning && e.label && e.label !== "pending-review");
-    const grpUnlabeled = enriched.filter(e => !e.isRunning && !e.label);
-
-    const sortByRecency = (a, b) => {
-      if (a.isSummarizing !== b.isSummarizing) return a.isSummarizing ? -1 : 1;
-      return (b.entry.updatedAt || 0) - (a.entry.updatedAt || 0);
-    };
-    [grpPendingReview, grpRunning, grpOtherLabeled, grpUnlabeled].forEach(g => g.sort(sortByRecency));
-
-    // Archived sessions (may or may not have sidebar summary data)
-    const archivedEnriched = archivedSessions.map(sess => {
-      const entry = state.sessions[sess.id] || { folder: sess.folder || "", name: sess.name || "" };
-      return { id: sess.id, entry, isRunning: false, isSummarizing: false, label: sess.label || null };
-    });
-    // Newest first — recently archived sessions are more likely to be needed
-    archivedEnriched.sort((a, b) => {
-      const ca = archivedSessions.find(s => s.id === a.id)?.created || "";
-      const cb = archivedSessions.find(s => s.id === b.id)?.created || "";
-      return cb.localeCompare(ca);
-    });
-
-    if (enriched.length === 0 && archivedSessions.length === 0) {
+    if (tasks.length === 0) {
       const empty = document.createElement("div");
-      empty.className = "progress-empty";
-      empty.textContent = "No summaries yet. Send a message in any session to generate one.";
+      empty.className = "tf-empty";
+      empty.textContent = "No tasks. Create tasks via Orchestrator.";
       progressPanel.appendChild(empty);
       return;
     }
 
-    const renderCard = ({ id: sessionId, entry, isRunning, isSummarizing, label }) => {
-      const card = document.createElement("div");
-      card.className = "progress-card";
-      const folderName = (entry.folder || "").split("/").pop() || entry.folder || "unknown";
-      const displayName = entry.name || folderName;
-      const labelObj = label ? getLabelById(label) : null;
-      const labelHtml = labelObj
-        ? `<span class="progress-card-label" style="background:${escapeHtml(labelObj.color)}20;color:${escapeHtml(labelObj.color)};border-color:${escapeHtml(labelObj.color)}40">${escapeHtml(labelObj.name)}</span>`
-        : label
-          ? `<span class="progress-card-label">${escapeHtml(label)}</span>`
-          : "";
+    const board = document.createElement("div");
+    board.className = "tf-board";
 
-      if (entry._pendingOnly) {
+    const columns = [
+      { key: "in_progress", label: "In Progress" },
+      { key: "blocked", label: "Blocked" },
+      { key: "pending", label: "Pending" },
+      { key: "completed", label: "Completed" },
+    ];
+
+    for (const col of columns) {
+      const colTasks = tasks.filter(t => t.status === col.key);
+      if (colTasks.length === 0) continue;
+
+      const colEl = document.createElement("div");
+      colEl.className = "tf-column";
+
+      const header = document.createElement("div");
+      header.className = `tf-column-header status-${col.key}`;
+      header.innerHTML = `<span class="tf-status-dot ${col.key}"></span> ${escapeHtml(col.label)} <span class="tf-count">${colTasks.length}</span>`;
+      colEl.appendChild(header);
+
+      for (const task of colTasks) {
+        const card = document.createElement("div");
+        card.className = "tf-card";
+
+        // Find session name for display
+        let sessionLabel = "";
+        if (task.assigned_session_id) {
+          const sess = sessions.find(s => s.id === task.assigned_session_id);
+          sessionLabel = sess ? (sess.name || sess.id.slice(0, 8)) : task.assigned_session_id.slice(0, 8);
+        }
+
         card.innerHTML = `
-          <div class="progress-card-header">
-            <div class="progress-card-name">${escapeHtml(displayName)}</div>
-            ${labelHtml}
+          <div class="tf-card-title">${escapeHtml(task.subject)}</div>
+          <div class="tf-card-meta">
+            ${sessionLabel ? `<span class="tf-card-session">${escapeHtml(sessionLabel)}</span>` : ""}
+            ${task.created_at ? `<span>${relativeTime(new Date(task.created_at).getTime())}</span>` : ""}
           </div>
-          <div class="progress-card-folder">${escapeHtml(entry.folder || "")}</div>
-          <div class="progress-summarizing">Summarizing...</div>
+          ${task.blocked_by && task.blocked_by.length > 0 ? `<div class="tf-card-deps">Waiting: ${task.blocked_by.map(id => escapeHtml(id.slice(0, 8))).join(", ")}</div>` : ""}
         `;
-      } else {
-        card.innerHTML = `
-          <div class="progress-card-header">
-            ${isRunning ? '<div class="progress-running-dot"></div>' : ''}
-            <div class="progress-card-name">${escapeHtml(displayName)}</div>
-            ${labelHtml}
-          </div>
-          <div class="progress-card-folder">${escapeHtml(entry.folder || "")}</div>
-          <div class="progress-card-bg">${escapeHtml(entry.background || "")}</div>
-          ${entry.lastAction ? `<div class="progress-card-action">↳ ${escapeHtml(entry.lastAction)}</div>` : ""}
-          <div class="progress-card-footer">
-            ${entry.updatedAt ? `<span class="progress-card-time">${relativeTime(entry.updatedAt)}</span>` : ""}
-            ${isSummarizing ? '<span class="progress-summarizing">Summarizing...</span>' : ""}
-          </div>
-        `;
+
+        // Click to jump to assigned session
+        if (task.assigned_session_id) {
+          card.addEventListener("click", () => {
+            const session = sessions.find(s => s.id === task.assigned_session_id);
+            if (session) {
+              switchTab("sessions");
+              attachSession(session.id, session);
+              if (!isDesktop) closeSidebarFn();
+            }
+          });
+        }
+
+        colEl.appendChild(card);
       }
 
-      card.addEventListener("click", () => {
-        const session = sessions.find(s => s.id === sessionId) || archivedSessions.find(s => s.id === sessionId);
-        if (session) {
-          switchTab("sessions");
-          attachSession(session.id, session);
-          if (!isDesktop) closeSidebarFn();
-        }
-      });
-      card.style.cursor = "pointer";
-      return card;
-    };
-
-    const renderSection = (title, items, extraClass) => {
-      if (items.length === 0) return;
-      const header = document.createElement("div");
-      header.className = "progress-section-header" + (extraClass ? " " + extraClass : "");
-      header.textContent = title;
-      progressPanel.appendChild(header);
-      items.forEach(item => progressPanel.appendChild(renderCard(item)));
-    };
-
-    renderSection("Pending Review", grpPendingReview, "is-pending-review");
-    renderSection("Running", grpRunning, "is-running");
-    renderSection("Labeled", grpOtherLabeled, "");
-    renderSection("Other", grpUnlabeled, "");
-
-    // Archived — collapsible section pinned to bottom
-    if (archivedEnriched.length > 0) {
-      const archiveSection = document.createElement("div");
-      archiveSection.className = "progress-archived-section";
-
-      const archiveToggle = document.createElement("div");
-      archiveToggle.className = "progress-section-header progress-archive-toggle";
-
-      let archiveOpen = false;
-      const archiveBody = document.createElement("div");
-      archiveBody.className = "progress-archive-body";
-      archiveBody.style.display = "none";
-      archivedEnriched.forEach(item => archiveBody.appendChild(renderCard(item)));
-
-      const updateToggle = () => {
-        archiveToggle.innerHTML = `<span class="progress-archive-chevron">${archiveOpen ? "▾" : "▸"}</span> Archived (${archivedEnriched.length})`;
-        archiveBody.style.display = archiveOpen ? "" : "none";
-      };
-      archiveToggle.addEventListener("click", () => { archiveOpen = !archiveOpen; updateToggle(); });
-      updateToggle();
-
-      archiveSection.appendChild(archiveToggle);
-      archiveSection.appendChild(archiveBody);
-      progressPanel.appendChild(archiveSection);
+      board.appendChild(colEl);
     }
+
+    progressPanel.appendChild(board);
+  }
+
+  // Auto-refresh task flow every 10 seconds when tab is active
+  function startTaskFlowPolling() {
+    stopTaskFlowPolling();
+    renderProgressPanel();
+    _taskFlowTimer = setInterval(renderProgressPanel, 10000);
+  }
+  function stopTaskFlowPolling() {
+    if (_taskFlowTimer) { clearInterval(_taskFlowTimer); _taskFlowTimer = null; }
   }
 
 
@@ -4357,7 +5035,6 @@
         lastSidebarUpdatedAt[sessionId] = entry.updatedAt || 0;
       }
       lastProgressState = state;
-      renderProgressPanel(state);
     } catch {}
   }
 
@@ -4619,11 +5296,82 @@
   applyTheme();
   setInterval(applyTheme, 60000); // recheck time every minute for auto mode
   themeBtn.addEventListener("click", function (e) { e.stopPropagation(); toggleThemePicker(); });
+  settingsBtn.addEventListener("click", function () { openSettingsView().catch((err) => alert(err.message || "Failed to load settings")); });
+  settingsBackBtn.addEventListener("click", function () { closeSettingsView(); });
+  automationChatTool.addEventListener("change", function () {
+    syncChatDefaultModelFields();
+  });
+  automationChatNamingTool.addEventListener("change", function () {
+    populateSettingsModelSelect(
+      automationChatNamingModel,
+      automationChatNamingTool.value || "codex",
+      automationChatNamingModel.value || chatDefaults.namingModel || "gpt-5.4-mini"
+    ).catch(() => {});
+  });
+  automationWorkflowTool.addEventListener("change", function () {
+    populateSettingsModelSelect(
+      automationWorkflowModel,
+      automationWorkflowTool.value || "codex",
+      automationWorkflowModel.value || automationDefaults.workflowModel || "gpt-5.4"
+    ).catch(() => {});
+  });
+  automationSessionMessageTool.addEventListener("change", function () {
+    const toolId = automationSessionMessageTool.value && automationSessionMessageTool.value !== "inherit"
+      ? automationSessionMessageTool.value
+      : (chatDefaults.defaultTool || "codex");
+    populateSettingsModelSelect(
+      automationSessionMessageModel,
+      toolId,
+      automationSessionMessageModel.value || automationDefaults.sessionMessageModel || "gpt-5.4"
+    ).catch(() => {});
+  });
+  workflowOverrideList.addEventListener("change", function (e) {
+    const target = e.target;
+    if (!(target instanceof HTMLSelectElement)) return;
+    if (target.dataset.field !== "tool") return;
+    const card = target.closest("[data-workflow-key]");
+    if (!card) return;
+    populateSettingsModelSelect(
+      card.querySelector('[data-field="model"]'),
+      target.value || automationDefaults.workflowTool || "codex",
+      ""
+    ).catch(() => {});
+  });
+  scheduleOverrideList.addEventListener("change", function (e) {
+    const target = e.target;
+    if (!(target instanceof HTMLSelectElement)) return;
+    const card = target.closest("[data-schedule-key]");
+    if (!card) return;
+    if (target.dataset.field === "workflowTool") {
+      populateSettingsModelSelect(
+        card.querySelector('[data-field="workflowModel"]'),
+        target.value || automationDefaults.workflowTool || "codex",
+        ""
+      ).catch(() => {});
+    }
+    if (target.dataset.field === "sessionMessageTool") {
+      const toolId = target.value && target.value !== "inherit"
+        ? target.value
+        : (automationDefaults.sessionMessageTool !== "inherit" ? automationDefaults.sessionMessageTool : chatDefaults.defaultTool || "codex");
+      populateSettingsModelSelect(
+        card.querySelector('[data-field="sessionMessageModel"]'),
+        toolId,
+        ""
+      ).catch(() => {});
+    }
+  });
+  automationSave.addEventListener("click", async function () {
+    try {
+      await saveAutomationSettings();
+    } catch (err) {
+      settingsSaveStatus.textContent = err.message || "Failed to save settings";
+    }
+  });
   initResponsiveLayout();
-  loadInlineTools();
-  loadInlineModels();
   loadSessionLabels();
-  loadUiSettings();
+  loadUiSettings().then(() => {
+    loadInlineTools().then(() => loadInlineModels());
+  });
   reportManager.loadReports();
   connect();
 })();

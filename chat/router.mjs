@@ -1,22 +1,25 @@
 import { existsSync, statSync, readdirSync, readFileSync, mkdirSync, writeFileSync, renameSync, createReadStream } from 'fs';
-import { spawn } from 'child_process';
+import { spawn, execFile } from 'child_process';
+import { promisify } from 'util';
 import { readdir, stat } from 'fs/promises';
 import { createHash, randomBytes } from 'crypto';
 import { homedir } from 'os';
 import { join, resolve, dirname, basename } from 'path';
 import { parse as parseUrl, fileURLToPath } from 'url';
 import { SESSION_EXPIRY, CHAT_IMAGES_DIR, QUICK_REPLIES_FILE, REPORT_TO_FILE, UI_SETTINGS_FILE } from '../lib/config.mjs';
+import { loadRuntimeSettings } from '../lib/runtime-settings.mjs';
 import {
   sessions, saveAuthSessions,
   verifyToken, verifyPassword, generateToken,
   parseCookies, setCookie, clearCookie,
 } from '../lib/auth.mjs';
 import { getAvailableTools } from '../lib/tools.mjs';
-import { listSessions, getSession, createSession, deleteSession, sendMessage, getHistory, waitForIdle, receiveHookRequest, getLabels, addLabel, removeLabel, updateLabel, setSessionLabel, archiveSession, restartServer, broadcastReportNew, requestWaitRestart, cancelPendingRestart, getPendingRestart } from './session-manager.mjs';
+import { listSessions, getSession, createSession, deleteSession, sendMessage, getHistory, waitForIdle, receiveHookRequest, getLabels, addLabel, removeLabel, updateLabel, setSessionLabel, archiveSession, restartServer, broadcastReportNew, requestWaitRestart, cancelPendingRestart, getPendingRestart, appendAssistantAttachmentMessage } from './session-manager.mjs';
 import { executeWorkflow, listWorkflowRuns } from './workflow-engine.mjs';
 import { reloadSchedule, updateLastRun } from './scheduler.mjs';
 import { getSidebarState, callHaiku } from './summarizer.mjs';
 import { listReports, getReport, getReportHtml, createReport, markAsRead, deleteReport } from './reports.mjs';
+import { getModelsForTool } from './models.mjs';
 import { initTaskManager, createTask, getTask, listTasks, updateTask, deleteTask } from './task-manager.mjs';
 import { readBody, readBodyBinary } from '../lib/utils.mjs';
 import {
@@ -24,10 +27,49 @@ import {
   setSecurityHeaders, generateNonce, requireAuth,
 } from './middleware.mjs';
 
+const DEFAULT_TOOL = 'codex';
+const DEFAULT_REPORT_WHITELIST = [
+  join(homedir(), 'DailyNews'),
+  join(homedir(), 'RLOrchestrator'),
+  join(homedir(), 'huiyuanclaw', 'DailyNews'),
+  join(homedir(), 'huiyuanclaw', 'RLOrchestrator'),
+];
+
+function getReportWhitelist() {
+  const raw = process.env.REPORT_WHITELIST;
+  if (!raw || !raw.trim()) return DEFAULT_REPORT_WHITELIST;
+  return raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
 // ---- report_to persistence (survives chat-server restarts) ----
 
 // workerSessionId → reportToSessionId
 const pendingReportTo = new Map();
+
+function isLoopbackRequest(req) {
+  const remote = String(req.socket?.remoteAddress || '').trim();
+  return remote === '127.0.0.1'
+    || remote === '::1'
+    || remote === '::ffff:127.0.0.1';
+}
+
+function mergePatch(base, patch) {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+    return patch;
+  }
+  const result = { ...(base && typeof base === 'object' && !Array.isArray(base) ? base : {}) };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      result[key] = mergePatch(result[key], value);
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
 
 function saveReportTo() {
   const data = Object.fromEntries(pendingReportTo);
@@ -167,6 +209,7 @@ initTaskManager(async (task) => {
     `[自动派发] 任务依赖已全部完成，请开始执行。`,
     `任务: ${task.subject}`,
     task.description ? `描述: ${task.description}` : null,
+    task.worktree_path ? `\n你的工作目录是 ${task.worktree_path}（独立 git worktree，branch: ${task.branch}）\n请在此目录下完成任务。完成后执行 git add -A && git commit。` : null,
     `Task ID: ${task.id}`,
     ``,
     `⚠️ 完成后必须调用 mcp__remotelab__update_task，将 task_id="${task.id}" 的 status 设为 "completed"。这会自动触发下游依赖任务的执行。`,
@@ -432,7 +475,7 @@ export async function handleRequest(req, res) {
 
     const { title, file_path: filePath, session_id: sessionId, source } = data;
     // Permission check: only whitelisted folders
-    const REPORT_WHITELIST = process.env.REPORT_WHITELIST ? process.env.REPORT_WHITELIST.split(',') : [];
+    const REPORT_WHITELIST = getReportWhitelist();
     if (sessionId) {
       const session = getSession(sessionId);
       if (!session) {
@@ -468,6 +511,44 @@ export async function handleRequest(req, res) {
     return;
   }
 
+  // ---- Internal session label endpoint (called by local workflow helpers) ----
+  // No auth required: only reachable from 127.0.0.1
+  if (pathname === '/api/internal/session-label' && req.method === 'PATCH') {
+    if (!isLoopbackRequest(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Forbidden' }));
+      return;
+    }
+
+    let body;
+    try { body = await readBody(req, 4096); } catch { body = '{}'; }
+    let data;
+    try { data = JSON.parse(body); } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    const sessionId = data.session_id || null;
+    const label = data.label || null;
+    if (!sessionId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'session_id is required' }));
+      return;
+    }
+
+    const updated = setSessionLabel(sessionId, label);
+    if (!updated) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Session not found' }));
+      return;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, session: updated }));
+    return;
+  }
+
   // Auth required from here on
   if (!requireAuth(req, res)) return;
 
@@ -497,10 +578,10 @@ export async function handleRequest(req, res) {
     }
     try {
       const { folder, tool, name } = JSON.parse(body);
-      if (!folder || !tool) {
-        console.warn('[router] 400 POST /api/sessions missing folder or tool');
+      if (!folder) {
+        console.warn('[router] 400 POST /api/sessions missing folder');
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'folder and tool are required' }));
+        res.end(JSON.stringify({ error: 'folder is required' }));
         return;
       }
       const resolvedFolder = folder.startsWith('~')
@@ -512,7 +593,7 @@ export async function handleRequest(req, res) {
         res.end(JSON.stringify({ error: 'Folder does not exist' }));
         return;
       }
-      const session = createSession(resolvedFolder, tool, name || '');
+      const session = createSession(resolvedFolder, tool || DEFAULT_TOOL, name || '');
       res.writeHead(201, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ session }));
     } catch {
@@ -584,13 +665,19 @@ export async function handleRequest(req, res) {
         throw err;
       }
       try {
-        const { text, images, tool, thinking, model, report_to, isSystemNotification } = JSON.parse(body);
+        const { text, images, attachments, tool, thinking, model, report_to, isSystemNotification } = JSON.parse(body);
         if (!text) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'text is required' }));
           return;
         }
-        sendMessage(id, text.trim(), images, { tool, thinking: !!thinking, model, isSystemNotification: !!isSystemNotification });
+        sendMessage(id, text.trim(), images, {
+          attachments: Array.isArray(attachments) ? attachments : images,
+          tool,
+          thinking: !!thinking,
+          model,
+          isSystemNotification: !!isSystemNotification,
+        });
         res.writeHead(202, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, sessionId: id, status: 'running' }));
 
@@ -1169,31 +1256,9 @@ export async function handleRequest(req, res) {
 
   if (pathname === '/api/models' && req.method === 'GET') {
     const tool = parsedUrl.query.tool || '';
-    if (tool === 'codex') {
-      try {
-        const cacheFile = join(homedir(), '.codex', 'models_cache.json');
-        const configFile = join(homedir(), '.codex', 'config.toml');
-        const cache = JSON.parse(readFileSync(cacheFile, 'utf8'));
-        const models = (cache.models || [])
-          .filter(m => m.visibility !== 'hidden')
-          .map(m => ({ id: m.slug, name: m.display_name }));
-        // Read default model from config.toml
-        let defaultModel = models[0]?.id;
-        if (existsSync(configFile)) {
-          const configText = readFileSync(configFile, 'utf8');
-          const match = configText.match(/^model\s*=\s*"([^"]+)"/m);
-          if (match) defaultModel = match[1];
-        }
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ models, default: defaultModel }));
-      } catch {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ models: [] }));
-      }
-    } else {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ models: [] }));
-    }
+    const result = await getModelsForTool(tool);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result));
     return;
   }
 
@@ -1306,8 +1371,7 @@ export async function handleRequest(req, res) {
   }
 
   if (pathname === '/api/ui-settings' && req.method === 'GET') {
-    let data = {};
-    try { data = JSON.parse(readFileSync(UI_SETTINGS_FILE, 'utf8')); } catch (err) { if (err.code !== 'ENOENT') console.warn('[router] Failed to parse config file:', err.message); }
+    const data = loadRuntimeSettings();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(data));
     return;
@@ -1320,7 +1384,7 @@ export async function handleRequest(req, res) {
       const patch = JSON.parse(body);
       let data = {};
       try { data = JSON.parse(readFileSync(UI_SETTINGS_FILE, 'utf8')); } catch (err) { if (err.code !== 'ENOENT') console.warn('[router] Failed to parse config file:', err.message); }
-      Object.assign(data, patch);
+      data = mergePatch(data, patch);
       writeFileSync(UI_SETTINGS_FILE, JSON.stringify(data, null, 2));
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
@@ -1491,10 +1555,11 @@ export async function handleRequest(req, res) {
     return;
   }
 
-  // File upload — saves to {session.folder}/shared/{filename}
-  if (pathname === '/api/upload' && req.method === 'POST') {
+  // Unified attachment upload — saves to {session.folder}/shared/{filename}
+  if ((pathname === '/api/upload' || pathname === '/api/attachments') && req.method === 'POST') {
     const sessionId = parsedUrl.query.sessionId;
-    const rawName = parsedUrl.query.name || 'upload';
+    const rawName = parsedUrl.query.name || parsedUrl.query.originalName || 'upload';
+    const rawMimeType = parsedUrl.query.mimeType || 'application/octet-stream';
 
     const session = getSession(sessionId);
     if (!session) {
@@ -1503,8 +1568,11 @@ export async function handleRequest(req, res) {
       return;
     }
 
-    // Sanitize: strip directory components, replace unsafe chars
-    const safeName = basename(rawName).replace(/[^\w.\- ]/g, '_').slice(0, 255);
+    // Preserve user-facing filenames, including CJK, while stripping separators/control chars.
+    const safeName = basename(String(rawName || 'upload').replace(/\\/g, '/'))
+      .replace(/[\u0000-\u001f\u007f]/g, '')
+      .trim()
+      .slice(0, 255);
     if (!safeName || safeName === '.' || safeName === '..') {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid filename' }));
@@ -1540,7 +1608,102 @@ export async function handleRequest(req, res) {
     console.log(`[router] upload saved: ${resolvedTarget} (${body.length} bytes)`);
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ path: resolvedTarget, filename: safeName }));
+    res.end(JSON.stringify({
+      path: resolvedTarget,
+      filename: safeName,
+      originalName: safeName,
+      mimeType: rawMimeType,
+      sizeBytes: body.length,
+      url: `/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(safeName)}`,
+      downloadUrl: `/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(safeName)}?download=1`,
+      renderAs: rawMimeType.startsWith('image/') ? 'image' : 'file',
+    }));
+    return;
+  }
+
+  const sessionAttachmentMatch = pathname.match(/^\/api\/sessions\/([a-f0-9]+)\/attachments\/([^/]+)$/);
+  if (sessionAttachmentMatch && req.method === 'GET') {
+    const [, sessionId, encodedFilename] = sessionAttachmentMatch;
+    const session = getSession(sessionId);
+    if (!session) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Session not found' }));
+      return;
+    }
+
+    const filename = basename(decodeURIComponent(encodedFilename).replace(/\\/g, '/'))
+      .replace(/[\u0000-\u001f\u007f]/g, '')
+      .trim();
+    const targetPath = resolve(join(session.folder, 'shared', filename));
+    const sharedRoot = resolve(join(session.folder, 'shared'));
+    if (!targetPath.startsWith(sharedRoot + '/') && targetPath !== sharedRoot) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid path' }));
+      return;
+    }
+    if (!existsSync(targetPath) || !statSync(targetPath).isFile()) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Attachment not found' }));
+      return;
+    }
+
+    const ext = filename.split('.').pop()?.toLowerCase() || '';
+    const mimeTypes = {
+      png: 'image/png',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      gif: 'image/gif',
+      webp: 'image/webp',
+      pdf: 'application/pdf',
+      txt: 'text/plain; charset=utf-8',
+      md: 'text/markdown; charset=utf-8',
+      json: 'application/json; charset=utf-8',
+      csv: 'text/csv; charset=utf-8',
+      html: 'text/html; charset=utf-8',
+    };
+    const mimeType = mimeTypes[ext] || 'application/octet-stream';
+    const downloadRequested = String(parsedUrl.query.download || '') === '1';
+
+    res.writeHead(200, {
+      'Content-Type': mimeType,
+      'Content-Length': String(statSync(targetPath).size),
+      'Content-Disposition': `${downloadRequested ? 'attachment' : 'inline'}; filename="${filename.replace(/"/g, '\\"')}"`,
+      'Cache-Control': 'private, no-store, max-age=0, must-revalidate',
+    });
+    createReadStream(targetPath).pipe(res);
+    return;
+  }
+
+  const assistantAttachmentMatch = pathname.match(/^\/api\/sessions\/([a-f0-9]+)\/assistant-attachments$/);
+  if (assistantAttachmentMatch && req.method === 'POST') {
+    const sessionId = assistantAttachmentMatch[1];
+    let body;
+    try { body = await readBody(req, 65536); } catch { body = '{}'; }
+    try {
+      const payload = JSON.parse(body);
+      const text = typeof payload?.text === 'string' ? payload.text : '';
+      const attachments = Array.isArray(payload?.attachments) ? payload.attachments : [];
+      const normalized = attachments
+        .filter((attachment) => attachment && typeof attachment === 'object' && typeof attachment.localPath === 'string' && attachment.localPath.trim())
+        .map((attachment) => {
+          const savedPath = resolve(attachment.localPath.trim());
+          const sizeBytes = existsSync(savedPath) ? statSync(savedPath).size : undefined;
+          return {
+            filename: basename(savedPath),
+            originalName: attachment.originalName || basename(savedPath),
+            savedPath,
+            mimeType: attachment.mimeType || 'application/octet-stream',
+            ...(Number.isFinite(sizeBytes) ? { sizeBytes } : {}),
+            renderAs: attachment.renderAs || 'file',
+          };
+        });
+      const event = appendAssistantAttachmentMessage(sessionId, text, normalized);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, event }));
+    } catch (error) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error.message || 'Invalid request body' }));
+    }
     return;
   }
 
@@ -1942,6 +2105,9 @@ export async function handleRequest(req, res) {
       assigned_session_id: body.assigned_session_id,
       blocked_by: Array.isArray(body.blocked_by) ? body.blocked_by : [],
       report_to: body.report_to || null,
+      repo_path: body.repo_path || null,
+      worktree_path: body.worktree_path || null,
+      branch: body.branch || null,
     });
     res.writeHead(201, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ task }));
@@ -1970,7 +2136,7 @@ export async function handleRequest(req, res) {
       res.end(JSON.stringify({ error: 'Invalid JSON' }));
       return;
     }
-    const ALLOWED_UPDATES = ['subject', 'description', 'status', 'assigned_session_id', 'blocked_by'];
+    const ALLOWED_UPDATES = ['subject', 'description', 'status', 'assigned_session_id', 'blocked_by', 'repo_path', 'worktree_path', 'branch'];
     const updates = {};
     for (const key of ALLOWED_UPDATES) {
       if (body[key] !== undefined) updates[key] = body[key];
@@ -1996,6 +2162,85 @@ export async function handleRequest(req, res) {
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  // ---- Worktree lifecycle endpoints ----
+
+  const worktreeMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/worktree$/);
+
+  // POST /api/tasks/:id/worktree — create worktree for a task
+  if (worktreeMatch && req.method === 'POST') {
+    const task = getTask(worktreeMatch[1]);
+    if (!task) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Task not found' }));
+      return;
+    }
+    if (!task.repo_path) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Task has no repo_path set' }));
+      return;
+    }
+    const execFileAsync = promisify(execFile);
+    const branchName = `task/${task.id}`;
+    const wtPath = join(task.repo_path, '.worktrees', task.id);
+    try {
+      await execFileAsync('git', ['-C', task.repo_path, 'worktree', 'add', wtPath, '-b', branchName]);
+      // Symlink node_modules if it exists in the repo root
+      const nmPath = join(task.repo_path, 'node_modules');
+      if (existsSync(nmPath)) {
+        const { symlink } = await import('fs/promises');
+        try { await symlink(nmPath, join(wtPath, 'node_modules')); } catch {}
+      }
+      const updated = updateTask(task.id, { worktree_path: wtPath, branch: branchName });
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ task: updated, worktree_path: wtPath, branch: branchName }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Failed to create worktree: ${err.message}` }));
+    }
+    return;
+  }
+
+  // DELETE /api/tasks/:id/worktree — merge and cleanup worktree
+  if (worktreeMatch && req.method === 'DELETE') {
+    const task = getTask(worktreeMatch[1]);
+    if (!task) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Task not found' }));
+      return;
+    }
+    if (!task.repo_path || !task.worktree_path || !task.branch) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Task has no active worktree' }));
+      return;
+    }
+    const execFileAsync = promisify(execFile);
+    const log = [];
+    try {
+      await execFileAsync('git', ['-C', task.repo_path, 'merge', task.branch, '--no-ff', '-m', `merge: task-${task.id}`]);
+      log.push(`Merged ${task.branch} into main`);
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Merge failed: ${err.message}. Resolve conflicts manually.` }));
+      return;
+    }
+    try {
+      await execFileAsync('git', ['-C', task.repo_path, 'worktree', 'remove', task.worktree_path]);
+      log.push(`Removed worktree ${task.worktree_path}`);
+    } catch (err) {
+      log.push(`Warning: worktree remove failed: ${err.message}`);
+    }
+    try {
+      await execFileAsync('git', ['-C', task.repo_path, 'branch', '-d', task.branch]);
+      log.push(`Deleted branch ${task.branch}`);
+    } catch (err) {
+      log.push(`Warning: branch delete failed: ${err.message}`);
+    }
+    const updated = updateTask(task.id, { worktree_path: null, branch: null });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ task: updated, log }));
     return;
   }
 

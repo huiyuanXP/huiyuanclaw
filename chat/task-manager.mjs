@@ -86,7 +86,7 @@ export function initTaskManager(onTaskReady) {
  * Create a new task.
  * Status is automatically set to 'blocked' if blocked_by is non-empty, else 'pending'.
  */
-export function createTask({ subject, description = '', assigned_session_id = null, blocked_by = [], report_to = null }) {
+export function createTask({ subject, description = '', assigned_session_id = null, blocked_by = [], report_to = null, repo_path = null, worktree_path = null, branch = null }) {
   const id = randomBytes(8).toString('hex');
   const task = {
     id,
@@ -96,6 +96,9 @@ export function createTask({ subject, description = '', assigned_session_id = nu
     assigned_session_id,
     blocked_by: [...blocked_by],
     report_to,
+    repo_path,
+    worktree_path,
+    branch,
     created_at: new Date().toISOString(),
     completed_at: null,
   };
@@ -141,6 +144,9 @@ export function updateTask(id, updates) {
   if (updates.assigned_session_id !== undefined) task.assigned_session_id = updates.assigned_session_id;
   if (updates.blocked_by !== undefined) task.blocked_by = updates.blocked_by;
   if (updates.status !== undefined) task.status = updates.status;
+  if (updates.repo_path !== undefined) task.repo_path = updates.repo_path;
+  if (updates.worktree_path !== undefined) task.worktree_path = updates.worktree_path;
+  if (updates.branch !== undefined) task.branch = updates.branch;
 
   // Auto-set completed_at on first completion
   if (task.status === 'completed' && !task.completed_at) {

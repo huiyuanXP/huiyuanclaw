@@ -1,6 +1,6 @@
 import { randomBytes } from 'crypto';
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, statSync, readdirSync, unlinkSync } from 'fs';
-import { dirname, join } from 'path';
+import { basename, dirname, join, resolve } from 'path';
 import { homedir } from 'os';
 import { CHAT_SESSIONS_FILE, CHAT_IMAGES_DIR, INTERRUPTED_SESSIONS_FILE, SESSION_LABELS_FILE } from '../lib/config.mjs';
 import { spawnTool } from './process-runner.mjs';
@@ -25,8 +25,101 @@ function saveImages(images) {
   });
 }
 
+function sanitizeAttachmentName(rawName = 'attachment') {
+  const normalized = basename(String(rawName || 'attachment').replace(/\\/g, '/'))
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .trim();
+  return normalized.slice(0, 255) || 'attachment';
+}
+
+function saveAttachments(session, attachments = []) {
+  if (!Array.isArray(attachments) || attachments.length === 0) return [];
+  const uploadDir = join(session.folder, 'shared');
+  if (!existsSync(uploadDir)) mkdirSync(uploadDir, { recursive: true });
+
+  return attachments.map((attachment) => {
+    const originalName = sanitizeAttachmentName(attachment.originalName || attachment.filename || 'attachment');
+    const isInlineImage = typeof attachment.mimeType === 'string' && attachment.mimeType.startsWith('image/');
+
+    if (attachment.savedPath && existsSync(attachment.savedPath)) {
+      const filename = sanitizeAttachmentName(attachment.filename || `${randomBytes(6).toString('hex')}-${originalName}`);
+      const finalPath = join(uploadDir, filename);
+      if (resolve(attachment.savedPath) !== resolve(finalPath)) {
+        writeFileSync(finalPath, readFileSync(attachment.savedPath));
+      }
+      return {
+        filename,
+        originalName,
+        savedPath: finalPath,
+        mimeType: attachment.mimeType || 'application/octet-stream',
+        sizeBytes: statSync(finalPath).size,
+        ...(attachment.renderAs ? { renderAs: attachment.renderAs } : {}),
+      };
+    }
+
+    if (attachment.filename) {
+      const filename = sanitizeAttachmentName(attachment.filename || originalName);
+      const existingPath = join(uploadDir, filename);
+      if (existsSync(existingPath)) {
+        return {
+          filename,
+          originalName,
+          savedPath: existingPath,
+          mimeType: attachment.mimeType || 'application/octet-stream',
+          sizeBytes: statSync(existingPath).size,
+          ...(attachment.renderAs ? { renderAs: attachment.renderAs } : {}),
+        };
+      }
+    }
+
+    const ext = isInlineImage ? (MIME_EXT[attachment.mimeType] || '.png') : '';
+    const fallbackName = isInlineImage
+      ? `${randomBytes(12).toString('hex')}${ext}`
+      : `${randomBytes(6).toString('hex')}-${originalName}`;
+    const filename = sanitizeAttachmentName(attachment.filename || fallbackName);
+    const filepath = join(uploadDir, filename);
+
+    if (attachment.data) {
+      writeFileSync(filepath, Buffer.from(attachment.data, 'base64'));
+    } else if (Buffer.isBuffer(attachment.buffer)) {
+      writeFileSync(filepath, attachment.buffer);
+    } else {
+      throw new Error(`Attachment data missing for ${originalName}`);
+    }
+
+    return {
+      filename,
+      originalName,
+      savedPath: filepath,
+      mimeType: attachment.mimeType || (isInlineImage ? 'image/png' : 'application/octet-stream'),
+      sizeBytes: statSync(filepath).size,
+      ...(attachment.renderAs ? { renderAs: attachment.renderAs } : {}),
+    };
+  });
+}
+
+function toClientAttachment(sessionId, attachment) {
+  const filename = attachment.filename;
+  return {
+    filename,
+    originalName: attachment.originalName || filename,
+    mimeType: attachment.mimeType || 'application/octet-stream',
+    downloadUrl: `/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(filename)}?download=1`,
+    url: `/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(filename)}`,
+    ...(Number.isFinite(attachment.sizeBytes) ? { sizeBytes: attachment.sizeBytes } : {}),
+    ...(attachment.renderAs ? { renderAs: attachment.renderAs } : {}),
+  };
+}
+
 // In-memory session registry
-// sessionId -> { id, folder, tool, status, runner, listeners: Set<ws> }
+// sessionId -> {
+//   status,
+//   runner,
+//   listeners: Set<ws>,
+//   claudeSessionId,
+//   codexThreadId,
+//   followUpQueue: Array<queuedFollowUp>
+// }
 const liveSessions = new Map();
 
 // Global subscribers: WS clients that receive system-level events
@@ -69,6 +162,102 @@ const completionWaiters = new Map();
 
 function generateId() {
   return randomBytes(16).toString('hex');
+}
+
+function createLiveSessionState(meta = {}) {
+  return {
+    status: 'idle',
+    runner: null,
+    listeners: new Set(),
+    claudeSessionId: meta?.claudeSessionId,
+    codexThreadId: meta?.codexThreadId,
+    followUpQueue: [],
+  };
+}
+
+function getQueuedMessageCount(sessionId) {
+  const live = liveSessions.get(sessionId);
+  return Array.isArray(live?.followUpQueue) ? live.followUpQueue.length : 0;
+}
+
+function getQueuedMessages(sessionId) {
+  const live = liveSessions.get(sessionId);
+  const queue = Array.isArray(live?.followUpQueue) ? live.followUpQueue : [];
+  return queue.map((entry, index) => {
+    const attachments = Array.isArray(entry?.attachments)
+      ? entry.attachments.map((attachment) => toClientAttachment(sessionId, attachment))
+      : [];
+    return {
+      id: entry?.id || `${sessionId}-queued-${index + 1}`,
+      text: typeof entry?.text === 'string' ? entry.text : '',
+      attachments,
+      isSystemNotification: entry?.isSystemNotification === true,
+      queuedAt: entry?.queuedAt || new Date().toISOString(),
+      order: index + 1,
+    };
+  });
+}
+
+function buildSessionPayload(session, statusOverride) {
+  if (!session) return null;
+  const live = liveSessions.get(session.id);
+  const status = statusOverride || live?.status || 'idle';
+  const queuedMessages = getQueuedMessages(session.id);
+  const queuedMessageCount = queuedMessages.length;
+  return {
+    ...session,
+    status,
+    queuedMessageCount,
+    queuedMessages,
+  };
+}
+
+function enqueueFollowUp(sessionId, entry) {
+  const live = liveSessions.get(sessionId);
+  if (!live) return 0;
+  if (!Array.isArray(live.followUpQueue)) {
+    live.followUpQueue = [];
+  }
+  live.followUpQueue.push({
+    ...entry,
+    id: entry?.id || generateId(),
+    queuedAt: entry?.queuedAt || new Date().toISOString(),
+  });
+  return live.followUpQueue.length;
+}
+
+function resolveQueuedFollowUpDispatchOptions(queue, session) {
+  const resolved = {
+    tool: session?.tool || '',
+    model: session?.model,
+    thinking: false,
+  };
+  for (const entry of queue || []) {
+    if (typeof entry?.tool === 'string' && entry.tool.trim()) {
+      resolved.tool = entry.tool.trim();
+    }
+    if (typeof entry?.model === 'string' && entry.model.trim()) {
+      resolved.model = entry.model.trim();
+    }
+    if (entry?.thinking === true) {
+      resolved.thinking = true;
+    }
+  }
+  return resolved;
+}
+
+function buildQueuedFollowUpDispatchText(queue = []) {
+  if (!Array.isArray(queue) || queue.length === 0) return '';
+  if (queue.length === 1) {
+    return String(queue[0]?.text || '').trim();
+  }
+  return [
+    'Queued follow-up messages sent while RemoteLab was busy:',
+    '',
+    ...queue.map((entry, index) => `${index + 1}. ${String(entry?.text || '').trim()}`),
+    '',
+    'Treat the ordered items above as the next user turn. If a later item overrides an earlier one, follow the latest correction.',
+  ].join('\n');
 }
 
 // ---- Hook IPC (PreToolUse HTTP bridge for AskUserQuestion / ExitPlanMode) ----
@@ -357,23 +546,14 @@ export function restartServer(triggerSessionId) {
 
 export function listSessions() {
   const metas = loadSessionsMeta();
-  return metas.map(m => ({
-    ...m,
-    status: liveSessions.has(m.id)
-      ? liveSessions.get(m.id).status
-      : 'idle',
-  }));
+  return metas.map(m => buildSessionPayload(m));
 }
 
 export function getSession(id) {
   const metas = loadSessionsMeta();
   const meta = metas.find(m => m.id === id);
   if (!meta) return null;
-  const live = liveSessions.get(id);
-  return {
-    ...meta,
-    status: live ? live.status : 'idle',
-  };
+  return buildSessionPayload(meta);
 }
 
 /**
@@ -459,7 +639,7 @@ export function createSession(folder, tool, name = '', options = {}) {
   metas.push(session);
   saveSessionsMeta(metas);
 
-  const result = { ...session, status: 'idle' };
+  const result = buildSessionPayload(session, 'idle');
   // Notify all connected clients (e.g. sessions created via REST API or MCP)
   broadcastGlobal({ type: 'session', session: result });
   return result;
@@ -492,8 +672,7 @@ export function archiveSession(id, archived) {
     delete metas[idx].archived;
   }
   saveSessionsMeta(metas);
-  const live = liveSessions.get(id);
-  const updated = { ...metas[idx], status: live ? live.status : 'idle' };
+  const updated = buildSessionPayload(metas[idx]);
   broadcast(id, { type: 'session', session: updated });
   broadcastGlobal({ type: 'session', session: updated });
   return updated;
@@ -505,9 +684,35 @@ export function renameSession(id, name) {
   if (idx === -1) return null;
   metas[idx].name = name;
   saveSessionsMeta(metas);
-  const live = liveSessions.get(id);
-  const updated = { ...metas[idx], status: live ? live.status : 'idle' };
+  const updated = buildSessionPayload(metas[idx]);
   broadcast(id, { type: 'session', session: updated });
+  return updated;
+}
+
+export function updateSessionPreferences(id, { tool, model } = {}) {
+  const metas = loadSessionsMeta();
+  const idx = metas.findIndex(m => m.id === id);
+  if (idx === -1) return null;
+
+  let changed = false;
+  if (typeof tool === 'string' && tool.trim() && metas[idx].tool !== tool.trim()) {
+    metas[idx].tool = tool.trim();
+    changed = true;
+  }
+  if (typeof model === 'string' && model.trim() && metas[idx].model !== model.trim()) {
+    metas[idx].model = model.trim();
+    changed = true;
+  }
+
+  if (changed) {
+    saveSessionsMeta(metas);
+  }
+
+  const updated = buildSessionPayload(metas[idx]);
+  if (changed) {
+    broadcast(id, { type: 'session', session: updated });
+    broadcastGlobal({ type: 'session', session: updated });
+  }
   return updated;
 }
 
@@ -518,13 +723,7 @@ export function subscribe(sessionId, ws) {
   let live = liveSessions.get(sessionId);
   if (!live) {
     const meta = loadSessionsMeta().find(m => m.id === sessionId);
-    live = {
-      status: 'idle',
-      runner: null,
-      listeners: new Set(),
-      claudeSessionId: meta?.claudeSessionId,
-      codexThreadId: meta?.codexThreadId,
-    };
+    live = createLiveSessionState(meta);
     liveSessions.set(sessionId, live);
   }
   live.listeners.add(ws);
@@ -553,6 +752,66 @@ function broadcast(sessionId, msg) {
   }
 }
 
+function buildMessageRefs(sessionId, attachments = []) {
+  const normalized = Array.isArray(attachments) ? attachments : [];
+  const imageRefs = normalized
+    .filter((attachment) => typeof attachment?.mimeType === 'string' && attachment.mimeType.startsWith('image/'))
+    .map((attachment) => {
+      const isGlobalImage = attachment.savedPath && resolve(dirname(attachment.savedPath)) === resolve(CHAT_IMAGES_DIR);
+      if (isGlobalImage) {
+        return {
+          filename: attachment.filename,
+          originalName: attachment.originalName || attachment.filename,
+          mimeType: attachment.mimeType,
+          url: `/api/images/${encodeURIComponent(attachment.filename)}`,
+          downloadUrl: `/api/images/${encodeURIComponent(attachment.filename)}`,
+        };
+      }
+      const ref = toClientAttachment(sessionId, attachment);
+      return {
+        filename: ref.filename,
+        originalName: ref.originalName,
+        mimeType: ref.mimeType,
+        url: ref.url,
+        downloadUrl: ref.downloadUrl,
+        ...(ref.renderAs ? { renderAs: ref.renderAs } : {}),
+      };
+    });
+  const attachmentRefs = normalized.map((attachment) => toClientAttachment(sessionId, attachment));
+  return { imageRefs, attachmentRefs };
+}
+
+function flushQueuedMessages(sessionId) {
+  const live = liveSessions.get(sessionId);
+  if (!live || live.runner || !Array.isArray(live.followUpQueue) || live.followUpQueue.length === 0) {
+    return false;
+  }
+  const queue = live.followUpQueue.slice();
+  if (queue.length === 0) return false;
+  const dispatchText = buildQueuedFollowUpDispatchText(queue);
+  const dispatchOptions = resolveQueuedFollowUpDispatchOptions(queue, getSession(sessionId));
+  const flattenedAttachments = queue.flatMap((entry) => Array.isArray(entry?.attachments) ? entry.attachments : []);
+  const shouldPreserveSystemNotification = queue.length === 1 && queue[0]?.isSystemNotification === true;
+  live.followUpQueue = [];
+  try {
+    sendMessage(sessionId, dispatchText, undefined, {
+      tool: dispatchOptions.tool,
+      model: dispatchOptions.model,
+      thinking: dispatchOptions.thinking,
+      isSystemNotification: shouldPreserveSystemNotification,
+      preSavedAttachments: flattenedAttachments,
+    });
+    return true;
+  } catch (error) {
+    live.followUpQueue = [...queue, ...live.followUpQueue];
+    console.error(`[session-mgr] Failed to flush queued follow-up for ${sessionId.slice(0,8)}: ${error.message}`);
+    const evt = statusEvent(`error: failed to send queued follow-up: ${error.message}`);
+    appendEvent(sessionId, evt);
+    broadcast(sessionId, { type: 'event', event: evt });
+    return false;
+  }
+}
+
 /**
  * Send a user message to a session. Spawns a new process if needed.
  */
@@ -560,13 +819,19 @@ export function sendMessage(sessionId, text, images, options = {}) {
   let session = getSession(sessionId);
   if (!session) throw new Error('Session not found');
 
+  let live = liveSessions.get(sessionId);
+  if (!live) {
+    const meta = loadSessionsMeta().find(m => m.id === sessionId);
+    live = createLiveSessionState(meta);
+    liveSessions.set(sessionId, live);
+  }
+
   // Fast path: system notifications to idle sessions — inject into JSONL, don't spawn Claude
   if (options.isSystemNotification) {
-    const live0 = liveSessions.get(sessionId);
-    const isIdle = !live0 || !live0.runner;
+    const isIdle = !live.runner && getQueuedMessageCount(sessionId) === 0;
     if (isIdle) {
       const meta0 = loadSessionsMeta().find(m => m.id === sessionId);
-      const existingClaudeId = live0?.claudeSessionId || meta0?.claudeSessionId;
+      const existingClaudeId = live?.claudeSessionId || meta0?.claudeSessionId;
       if (existingClaudeId) {
         const ok = injectSystemMessageToJSONL(existingClaudeId, session.folder, text);
         if (ok) {
@@ -582,27 +847,38 @@ export function sendMessage(sessionId, text, images, options = {}) {
     // Session is active — fall through to normal spawn (message will interrupt/append)
   }
 
-  // Determine effective tool: per-message override or session default
+  // Determine effective tool/model: per-message override or session default
   const effectiveTool = options.tool || session.tool;
-  console.log(`[session-mgr] sendMessage session=${sessionId.slice(0,8)} tool=${effectiveTool} (session.tool=${session.tool}) thinking=${!!options.thinking} text="${text.slice(0,80)}" images=${images?.length || 0}`);
+  const effectiveModel = options.model || session.model;
+  const rawAttachments = Array.isArray(options.attachments)
+    ? options.attachments
+    : Array.isArray(images)
+      ? images
+      : [];
+  console.log(`[session-mgr] sendMessage session=${sessionId.slice(0,8)} tool=${effectiveTool} (session.tool=${session.tool}) thinking=${!!options.thinking} text="${text.slice(0,80)}" attachments=${rawAttachments.length}`);
 
-  // Save images to disk
-  const savedImages = saveImages(images);
-  // For history/display: store filenames (not base64) so history files stay small
-  const imageRefs = savedImages.map(img => ({ filename: img.filename, mimeType: img.mimeType }));
-
-  // Store user message in history (system notifications use a distinct event type for UI folding)
-  const userEvt = options.isSystemNotification
-    ? systemNotificationEvent(text)
-    : messageEvent('user', text, imageRefs.length > 0 ? imageRefs : undefined);
-  appendEvent(sessionId, userEvt);
-  broadcast(sessionId, { type: 'event', event: userEvt });
+  const imageInputs = rawAttachments.filter((attachment) => typeof attachment?.mimeType === 'string' && attachment.mimeType.startsWith('image/') && attachment.data);
+  const nonImageInputs = rawAttachments.filter((attachment) => !(typeof attachment?.mimeType === 'string' && attachment.mimeType.startsWith('image/') && attachment.data));
+  const allSavedAttachments = Array.isArray(options.preSavedAttachments)
+    ? options.preSavedAttachments
+    : [
+      ...saveImages(imageInputs.map((attachment) => ({
+        data: attachment.data,
+        mimeType: attachment.mimeType,
+      }))).map((img) => ({
+        filename: img.filename,
+        originalName: img.filename,
+        savedPath: img.savedPath,
+        mimeType: img.mimeType,
+      })),
+      ...saveAttachments(session, nonImageInputs),
+    ];
+  const { imageRefs, attachmentRefs } = buildMessageRefs(sessionId, allSavedAttachments);
 
   // Auto-generate title if session has no name and this is the first message
-  if (!session.name) {
+  if (!session.name && !live.runner) {
     const existingHistory = loadHistory(sessionId);
-    // existingHistory includes the message we just appended, so first message means length === 1
-    if (existingHistory.length <= 1) {
+    if (existingHistory.length === 0) {
       generateAutoTitle(text).then(title => {
         if (title) {
           console.log(`[session-mgr] Auto-title for ${sessionId.slice(0,8)}: "${title}"`);
@@ -610,19 +886,6 @@ export function sendMessage(sessionId, text, images, options = {}) {
         }
       }).catch(() => {});
     }
-  }
-
-  let live = liveSessions.get(sessionId);
-  if (!live) {
-    const meta = loadSessionsMeta().find(m => m.id === sessionId);
-    live = {
-      status: 'idle',
-      runner: null,
-      listeners: new Set(),
-      claudeSessionId: meta?.claudeSessionId,
-      codexThreadId: meta?.codexThreadId,
-    };
-    liveSessions.set(sessionId, live);
   }
 
   console.log(`[session-mgr] live state: status=${live.status}, hasRunner=${!!live.runner}, claudeSessionId=${live.claudeSessionId || 'none'}, codexThreadId=${live.codexThreadId || 'none'}, listeners=${live.listeners.size}`);
@@ -635,23 +898,46 @@ export function sendMessage(sessionId, text, images, options = {}) {
     persistSessionIds(sessionId, null, null);
   }
 
-  // If a process is still running, this is an "interrupt & send" — cancel old process
-  let wasInterrupted = false;
-  if (live.runner) {
-    wasInterrupted = true;
-    console.log(`[session-mgr] Interrupting existing runner for new message`);
-    // Increment epoch so the stale onExit is ignored
-    live.runEpoch = (live.runEpoch || 0) + 1;
-    // Capture session/thread IDs before killing
-    if (live.runner.claudeSessionId) {
-      live.claudeSessionId = live.runner.claudeSessionId;
+  if (effectiveTool !== session.tool || (effectiveModel && effectiveModel !== session.model)) {
+    const updatedSession = updateSessionPreferences(sessionId, {
+      tool: effectiveTool,
+      model: effectiveModel,
+    });
+    if (updatedSession) {
+      session = updatedSession;
     }
-    if (live.runner.codexThreadId) {
-      live.codexThreadId = live.runner.codexThreadId;
-    }
-    live.runner.cancel();
-    live.runner = null;
   }
+
+  if (live.runner) {
+    const queueLength = enqueueFollowUp(sessionId, {
+      text,
+      attachments: allSavedAttachments,
+      tool: effectiveTool,
+      model: effectiveModel,
+      thinking: !!options.thinking,
+      isSystemNotification: !!options.isSystemNotification,
+    });
+    const queuedEvt = statusEvent(`Follow-up queued (${queueLength}) — will append after the current turn finishes`);
+    appendEvent(sessionId, queuedEvt);
+    broadcast(sessionId, { type: 'event', event: queuedEvt });
+    const queuedSession = getSession(sessionId) || session;
+    broadcast(sessionId, { type: 'session', session: queuedSession });
+    broadcastGlobal({ type: 'session', session: queuedSession });
+    console.log(`[session-mgr] Queued follow-up for session ${sessionId.slice(0,8)} depth=${queueLength}`);
+    return { queued: true, session: queuedSession };
+  }
+
+  // Store user message in history (system notifications use a distinct event type for UI folding)
+  const userEvt = options.isSystemNotification
+    ? systemNotificationEvent(text)
+    : messageEvent(
+      'user',
+      text,
+      imageRefs.length > 0 ? imageRefs : undefined,
+      attachmentRefs.length > 0 ? attachmentRefs : undefined,
+    );
+  appendEvent(sessionId, userEvt);
+  broadcast(sessionId, { type: 'event', event: userEvt });
 
   // Epoch counter: guards onExit from stale processes overwriting new runner state
   live.runEpoch = (live.runEpoch || 0) + 1;
@@ -668,8 +954,8 @@ export function sendMessage(sessionId, text, images, options = {}) {
       session = metas[idx];
     }
   }
-  broadcast(sessionId, { type: 'session', session: { ...session, status: 'running' } });
-  broadcastGlobal({ type: 'session', session: { ...session, status: 'running' } });
+  broadcast(sessionId, { type: 'session', session: buildSessionPayload(session, 'running') });
+  broadcastGlobal({ type: 'session', session: buildSessionPayload(session, 'running') });
 
   const onEvent = (evt) => {
     console.log(`[session-mgr] onEvent session=${sessionId.slice(0,8)} type=${evt.type} content=${(evt.content || evt.toolName || '').slice(0, 80)}`);
@@ -717,6 +1003,11 @@ export function sendMessage(sessionId, text, images, options = {}) {
       l.status = 'idle';
       l.runner = null;
     }
+    // Re-fetch session from disk to pick up any changes (e.g. auto-title rename)
+    const freshSession = getSession(sessionId) || session;
+    if (flushQueuedMessages(sessionId)) {
+      return;
+    }
     // Notify any waiters (e.g. workflow engine's createAndRun)
     const waiters = completionWaiters.get(sessionId);
     if (waiters && waiters.length > 0) {
@@ -729,13 +1020,11 @@ export function sendMessage(sessionId, text, images, options = {}) {
       pendingHooks.delete(sessionId);
       pending.reject(new Error('Session ended before hook was resolved'));
     }
-    // Re-fetch session from disk to pick up any changes (e.g. auto-title rename)
-    const freshSession = getSession(sessionId) || session;
     broadcast(sessionId, {
       type: 'session',
-      session: { ...freshSession, status: 'idle' },
+      session: buildSessionPayload(freshSession, 'idle'),
     });
-    broadcastGlobal({ type: 'session', session: { ...freshSession, status: 'idle' } });
+    broadcastGlobal({ type: 'session', session: buildSessionPayload(freshSession, 'idle') });
     // Trigger async sidebar summary (non-blocking, does not affect session flow)
     triggerSummary({ id: sessionId, folder: freshSession.folder, name: freshSession.name || '' });
     // Check if a pending restart is waiting for all sessions to be idle
@@ -753,21 +1042,14 @@ export function sendMessage(sessionId, text, images, options = {}) {
     console.log(`[session-mgr] Will resume Codex thread: ${live.codexThreadId}`);
   }
 
-  if (savedImages.length > 0) {
-    spawnOptions.images = savedImages;
+  if (allSavedAttachments.length > 0) {
+    spawnOptions.attachments = allSavedAttachments;
   }
   if (options.thinking) {
     spawnOptions.thinking = true;
   }
-  if (options.model) {
-    spawnOptions.model = options.model;
-    // Persist model selection to session metadata so it survives refresh/reattach
-    const metas = loadSessionsMeta();
-    const idx = metas.findIndex(m => m.id === sessionId);
-    if (idx !== -1 && metas[idx].model !== options.model) {
-      metas[idx].model = options.model;
-      saveSessionsMeta(metas);
-    }
+  if (effectiveModel) {
+    spawnOptions.model = effectiveModel;
   }
   // Register Claude's session_id → our sessionId mapping when Claude announces itself
   spawnOptions.onClaudeSessionId = (claudeSessionId) => {
@@ -793,20 +1075,8 @@ export function sendMessage(sessionId, text, images, options = {}) {
     } catch {}
   }
 
-  // When interrupting a running task, wrap the prompt so the model handles
-  // the interrupt then continues the original task (via --resume context).
-  let promptText = text;
-  if (wasInterrupted) {
-    promptText = [
-      '[INTERRUPT from user — the previous task was interrupted. Handle this message first, then continue the task you were working on. If this message is a correction or clarification, apply it to the ongoing task. Check your conversation history to recall what you were doing.]',
-      '',
-      text,
-    ].join('\n');
-    console.log(`[session-mgr] Wrapped interrupt prompt for session ${sessionId.slice(0,8)}`);
-  }
-
   console.log(`[session-mgr] Spawning tool=${effectiveTool} folder=${session.folder} thinking=${!!options.thinking}`);
-  const runner = spawnTool(effectiveTool, session.folder, promptText, onEvent, onExit, spawnOptions);
+  const runner = spawnTool(effectiveTool, session.folder, text, onEvent, onExit, spawnOptions);
   live.runner = runner;
 }
 
@@ -843,13 +1113,33 @@ export function cancelSession(sessionId) {
     const session = getSession(sessionId);
     broadcast(sessionId, {
       type: 'session',
-      session: { ...session, status: 'idle' },
+      session: buildSessionPayload(session, 'idle'),
     });
-    broadcastGlobal({ type: 'session', session: { ...session, status: 'idle' } });
+    broadcastGlobal({ type: 'session', session: buildSessionPayload(session, 'idle') });
     const evt = statusEvent('cancelled');
     appendEvent(sessionId, evt);
     broadcast(sessionId, { type: 'event', event: evt });
   }
+}
+
+export function appendAssistantAttachmentMessage(sessionId, text = '', attachments = []) {
+  const session = getSession(sessionId);
+  if (!session) throw new Error('Session not found');
+  const savedAttachments = saveAttachments(session, attachments.map((attachment) => ({
+    ...attachment,
+    renderAs: attachment.renderAs || 'file',
+  })));
+  const clientAttachments = savedAttachments.map((attachment) => toClientAttachment(sessionId, attachment));
+  const imageRefs = clientAttachments.filter((attachment) => typeof attachment.mimeType === 'string' && attachment.mimeType.startsWith('image/'));
+  const evt = messageEvent(
+    'assistant',
+    text,
+    imageRefs.length > 0 ? imageRefs : undefined,
+    clientAttachments.length > 0 ? clientAttachments : undefined,
+  );
+  appendEvent(sessionId, evt);
+  broadcast(sessionId, { type: 'event', event: evt });
+  return evt;
 }
 
 /**
@@ -909,7 +1199,7 @@ export async function compactSession(sessionId) {
   // Set up new session in liveSessions
   let newLive = liveSessions.get(newSession.id);
   if (!newLive) {
-    newLive = { status: 'idle', runner: null, listeners: new Set() };
+    newLive = createLiveSessionState();
     liveSessions.set(newSession.id, newLive);
   }
   for (const ws of listeners) {
@@ -960,15 +1250,13 @@ export function waitForIdle(sessionId, timeoutMs = 300000) {
  * Create a session, send a prompt, wait for completion, return last assistant message.
  * Used by the workflow engine to run tasks headlessly.
  */
-export async function createAndRun(folder, model, prompt, { timeoutMs = 5 * 60 * 1000 } = {}) {
-  const home = homedir();
-  const normalizedFolder = folder.startsWith(home + '/') ? folder.slice(home.length + 1) : folder;
-  const session = createSession(normalizedFolder, 'claude', `workflow-${Date.now()}`, { hidden: true });
+export async function createAndRun(folder, model, prompt, { timeoutMs = 5 * 60 * 1000, tool = 'codex' } = {}) {
+  const session = createSession(folder, tool, `workflow-${Date.now()}`, { hidden: true });
 
   // Register waiter BEFORE sendMessage to avoid a race where onExit fires synchronously
   const idlePromise = waitForIdle(session.id, timeoutMs);
 
-  sendMessage(session.id, prompt, undefined, { model });
+  sendMessage(session.id, prompt, undefined, { model, tool });
 
   await idlePromise;
 

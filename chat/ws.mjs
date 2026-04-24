@@ -96,6 +96,8 @@ function wsSend(ws, data) {
   }
 }
 
+const DEFAULT_TOOL = 'codex';
+
 function handleMessage(ws, msg, ctx) {
   switch (msg.action) {
     case 'list': {
@@ -105,11 +107,11 @@ function handleMessage(ws, msg, ctx) {
     }
 
     case 'create': {
-      if (!msg.folder || !msg.tool) {
-        wsSend(ws, { type: 'error', message: 'folder and tool are required' });
+      if (!msg.folder) {
+        wsSend(ws, { type: 'error', message: 'folder is required' });
         return;
       }
-      const session = createSession(msg.folder, msg.tool, msg.name || '');
+      const session = createSession(msg.folder, msg.tool || DEFAULT_TOOL, msg.name || '');
       wsSend(ws, { type: 'session', session });
       break;
     }
@@ -174,6 +176,7 @@ function handleMessage(ws, msg, ctx) {
         return;
       }
       sendMessage(sessionId, msg.text.trim(), msg.images, {
+        attachments: Array.isArray(msg.attachments) ? msg.attachments : msg.images,
         tool: msg.tool || undefined,
         thinking: !!msg.thinking,
         model: msg.model || undefined,

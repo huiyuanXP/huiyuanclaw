@@ -14,9 +14,10 @@ export function resetCounter() {
   counter = 0;
 }
 
-export function messageEvent(role, content, images) {
+export function messageEvent(role, content, images, attachments) {
   const fields = { role, content };
   if (images && images.length > 0) fields.images = images;
+  if (attachments && attachments.length > 0) fields.attachments = attachments;
   return createEvent('message', fields);
 }
 
