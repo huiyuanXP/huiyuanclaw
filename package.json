@@ -48,6 +48,7 @@
     "lib/",
     "chat/",
     "templates/",
+    "channels/",
     "static/",
     "LICENSE",
     "README.md",
@@ -56,13 +57,17 @@
   "scripts": {
     "start": "node auth-proxy.mjs",
     "chat": "node chat-server.mjs",
+    "test": "node tests/test-attachment-prompt.mjs",
     "stop": "./stop.sh",
     "setup": "./setup.sh",
     "generate-token": "node generate-token.mjs",
     "mcp": "node mcp-server.mjs",
+    "channels": "node channels/start.mjs",
     "prepublishOnly": "chmod +x cli.js setup.sh setup-workspace.sh start.sh stop.sh claude-ttyd-session"
   },
   "dependencies": {
+    "discord.js": "^14.25.1",
+    "grammy": "^1.41.1",
     "ws": "^8.19.0"
   }
 }

@@ -56,3 +56,5 @@ notes/
 
 # Debug artifacts
 compact.json
+channels/config.json
+channels/session-mappings.json

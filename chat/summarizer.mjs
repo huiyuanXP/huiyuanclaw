@@ -6,8 +6,10 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { SIDEBAR_STATE_FILE } from '../lib/config.mjs';
 import { loadHistory } from './history.mjs';
-import { fullPath } from '../lib/tools.mjs';
+import { fullPath, getToolCommand } from '../lib/tools.mjs';
+import { getChatSettings } from '../lib/runtime-settings.mjs';
 import { createClaudeAdapter } from './adapters/claude.mjs';
+import { createCodexAdapter } from './adapters/codex.mjs';
 
 function resolveClaudeCmd() {
   const home = process.env.HOME || homedir();
@@ -37,6 +39,105 @@ function resolveClaudeCmd() {
   } catch {
     return 'claude';
   }
+}
+
+function resolveToolCmd(toolId) {
+  const toolCommand = getToolCommand(toolId || 'claude');
+  const home = process.env.HOME || homedir();
+  const isMac = process.platform === 'darwin';
+  const preferred = [
+    join(home, '.local', 'bin', toolCommand),
+    ...(isMac ? [
+      join(home, 'Library', 'pnpm', toolCommand),
+      '/opt/homebrew/bin/' + toolCommand,
+    ] : [
+      '/snap/bin/' + toolCommand,
+    ]),
+    '/usr/local/bin/' + toolCommand,
+    '/usr/bin/' + toolCommand,
+  ];
+  for (const p of preferred) {
+    if (existsSync(p)) return p;
+  }
+  try {
+    return execFileSync('which', [toolCommand], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: fullPath },
+      timeout: 3000,
+    }).trim();
+  } catch {
+    return toolCommand;
+  }
+}
+
+function getConfiguredModel(toolId, fallbackModel = '') {
+  const chatSettings = getChatSettings();
+  if (toolId === 'claude') {
+    return chatSettings.claudeModel || fallbackModel || 'sonnet';
+  }
+  return chatSettings.codexModel || fallbackModel || 'gpt-5.4';
+}
+
+async function runPromptOnce(prompt, {
+  tool = 'codex',
+  model,
+  timeout = 30000,
+  suppressStderr = false,
+  logLabel = 'prompt',
+} = {}) {
+  const resolvedCmd = resolveToolCmd(tool);
+  const isCodex = tool === 'codex';
+  const subEnv = { ...process.env, PATH: fullPath };
+  delete subEnv.CLAUDECODE;
+  delete subEnv.CLAUDE_CODE_ENTRYPOINT;
+
+  return new Promise((resolve, reject) => {
+    const args = isCodex
+      ? ['exec', '--json', '--dangerously-bypass-approvals-and-sandbox', ...(model ? ['--model', model] : []), prompt]
+      : ['-p', prompt, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', ...(model ? ['--model', model] : [])];
+    const proc = spawn(resolvedCmd, args, {
+      env: subEnv,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    proc.stdin.end();
+
+    const adapter = isCodex ? createCodexAdapter({ prompt }) : createClaudeAdapter({ prompt });
+    const rl = createInterface({ input: proc.stdout });
+    const textParts = [];
+
+    rl.on('line', (line) => {
+      const events = adapter.parseLine(line);
+      for (const evt of events) {
+        if (evt.type === 'message' && evt.role === 'assistant') {
+          textParts.push(evt.content || '');
+        }
+      }
+    });
+
+    proc.stderr.on('data', (chunk) => {
+      if (suppressStderr) return;
+      const text = chunk.toString().trim();
+      if (text) console.log(`[summarizer] ${logLabel} stderr: ${text.slice(0, 200)}`);
+    });
+
+    proc.on('error', reject);
+    proc.on('exit', (code) => {
+      const remaining = adapter.flush();
+      for (const evt of remaining) {
+        if (evt.type === 'message' && evt.role === 'assistant') textParts.push(evt.content || '');
+      }
+      const output = textParts.join('').trim();
+      if (!output && code !== 0) {
+        reject(new Error(`${tool} exited with code ${code}`));
+        return;
+      }
+      resolve(output);
+    });
+
+    setTimeout(() => {
+      try { proc.kill(); } catch {}
+    }, timeout);
+  });
 }
 
 function loadSidebarState() {
@@ -141,55 +242,14 @@ async function runSummary(sessionMeta) {
     'Respond with ONLY valid JSON. No markdown, no explanation.',
   ].filter(l => l !== null).join('\n');
 
-  const claudeCmd = resolveClaudeCmd();
-  console.log(`[summarizer] Calling Claude CLI (${claudeCmd}) for session ${sessionId.slice(0, 8)}`);
-
-  const subEnv = { ...process.env, PATH: fullPath };
-  delete subEnv.CLAUDECODE;
-  delete subEnv.CLAUDE_CODE_ENTRYPOINT;
-
-  const modelText = await new Promise((resolve, reject) => {
-    const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'];
-    const proc = spawn(claudeCmd, args, {
-      env: subEnv,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    proc.stdin.end();
-
-    const adapter = createClaudeAdapter();
-    const rl = createInterface({ input: proc.stdout });
-    const textParts = [];
-
-    rl.on('line', (line) => {
-      const events = adapter.parseLine(line);
-      for (const evt of events) {
-        if (evt.type === 'message' && evt.role === 'assistant') {
-          textParts.push(evt.content || '');
-        }
-      }
-    });
-
-    proc.stderr.on('data', (chunk) => {
-      const text = chunk.toString().trim();
-      if (text) console.log(`[summarizer] stderr: ${text.slice(0, 200)}`);
-    });
-
-    proc.on('error', (err) => {
-      console.error(`[summarizer] Claude CLI error for ${sessionId.slice(0, 8)}: ${err.message}`);
-      reject(err);
-    });
-
-    proc.on('exit', (code) => {
-      const remaining = adapter.flush();
-      for (const evt of remaining) {
-        if (evt.type === 'message' && evt.role === 'assistant') textParts.push(evt.content || '');
-      }
-      if (code !== 0 && textParts.length === 0) {
-        reject(new Error(`Claude exited with code ${code}`));
-      } else {
-        resolve(textParts.join(''));
-      }
-    });
+  const chatSettings = getChatSettings();
+  const tool = chatSettings.defaultTool || 'codex';
+  const model = getConfiguredModel(tool);
+  const modelText = await runPromptOnce(prompt, {
+    tool,
+    model,
+    timeout: 30000,
+    logLabel: `sidebar ${sessionId.slice(0, 8)}`,
   });
 
   // The model text itself should be a JSON object
@@ -275,59 +335,19 @@ export async function generateCompactSummary(sessionId, folder) {
     'Be thorough but concise. This summary will be used to continue the conversation in a new context window.',
   ].join('\n');
 
-  const claudeCmd = resolveClaudeCmd();
-  console.log(`[summarizer] Generating compact summary for session ${sessionId.slice(0, 8)}`);
-
-  const subEnv = { ...process.env, PATH: fullPath };
-  delete subEnv.CLAUDECODE;
-  delete subEnv.CLAUDE_CODE_ENTRYPOINT;
-
-  return new Promise((resolve, reject) => {
-    const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'];
-    const proc = spawn(claudeCmd, args, {
-      env: subEnv,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    proc.stdin.end();
-
-    const adapter = createClaudeAdapter();
-    const rl = createInterface({ input: proc.stdout });
-    const textParts = [];
-
-    rl.on('line', (line) => {
-      const events = adapter.parseLine(line);
-      for (const evt of events) {
-        if (evt.type === 'message' && evt.role === 'assistant') {
-          textParts.push(evt.content || '');
-        }
-      }
-    });
-
-    proc.stderr.on('data', (chunk) => {
-      const text = chunk.toString().trim();
-      if (text) console.log(`[summarizer] compact stderr: ${text.slice(0, 200)}`);
-    });
-
-    proc.on('error', reject);
-
-    proc.on('exit', (code) => {
-      const remaining = adapter.flush();
-      for (const evt of remaining) {
-        if (evt.type === 'message' && evt.role === 'assistant') textParts.push(evt.content || '');
-      }
-      const result = textParts.join('');
-      if (!result.trim()) {
-        reject(new Error(`Compact summary generation failed (exit ${code})`));
-      } else {
-        resolve(result);
-      }
-    });
+  const chatSettings = getChatSettings();
+  const tool = chatSettings.defaultTool || 'codex';
+  const model = getConfiguredModel(tool);
+  return runPromptOnce(prompt, {
+    tool,
+    model,
+    timeout: 45000,
+    logLabel: `compact ${sessionId.slice(0, 8)}`,
   });
 }
 
 /**
  * Generate a short title for a session based on the user's first message.
- * Uses Haiku for speed and cost efficiency.
  * Returns the title string, or null on failure.
  */
 export async function generateAutoTitle(userMessage) {
@@ -338,48 +358,17 @@ export async function generateAutoTitle(userMessage) {
     '',
     'Reply with ONLY the title text, nothing else.',
   ].join('\n');
-
-  const claudeCmd = resolveClaudeCmd();
-  const subEnv = { ...process.env, PATH: fullPath };
-  delete subEnv.CLAUDECODE;
-  delete subEnv.CLAUDE_CODE_ENTRYPOINT;
+  const chatSettings = getChatSettings();
+  const namingTool = chatSettings.namingTool || 'codex';
+  const namingModel = chatSettings.namingModel || (namingTool === 'codex' ? 'gpt-5.4-mini' : 'haiku');
 
   try {
-    const modelText = await new Promise((resolve, reject) => {
-      const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose',
-        '--dangerously-skip-permissions', '--model', 'haiku'];
-      const proc = spawn(claudeCmd, args, {
-        env: subEnv,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-      proc.stdin.end();
-
-      const adapter = createClaudeAdapter();
-      const rl = createInterface({ input: proc.stdout });
-      const textParts = [];
-
-      rl.on('line', (line) => {
-        const events = adapter.parseLine(line);
-        for (const evt of events) {
-          if (evt.type === 'message' && evt.role === 'assistant') {
-            textParts.push(evt.content || '');
-          }
-        }
-      });
-
-      proc.stderr.on('data', () => {}); // suppress stderr
-
-      proc.on('error', reject);
-      proc.on('exit', (code) => {
-        const remaining = adapter.flush();
-        for (const evt of remaining) {
-          if (evt.type === 'message' && evt.role === 'assistant') textParts.push(evt.content || '');
-        }
-        resolve(textParts.join(''));
-      });
-
-      // Timeout after 30s
-      setTimeout(() => { try { proc.kill(); } catch {} }, 30000);
+    const modelText = await runPromptOnce(prompt, {
+      tool: namingTool,
+      model: namingModel,
+      timeout: 30000,
+      suppressStderr: true,
+      logLabel: 'auto-title',
     });
 
     const title = modelText.replace(/^["']|["']$/g, '').trim();
@@ -395,51 +384,22 @@ export async function generateAutoTitle(userMessage) {
 }
 
 /**
- * One-shot Haiku call. Returns the model's text response, or null on failure.
- * Reusable for lightweight AI checks (conflict detection, classification, etc.)
+ * Lightweight one-shot model call used for conflict checks and classification.
  */
 export async function callHaiku(prompt, { timeout = 30000 } = {}) {
-  const claudeCmd = resolveClaudeCmd();
-  const subEnv = { ...process.env, PATH: fullPath };
-  delete subEnv.CLAUDECODE;
-  delete subEnv.CLAUDE_CODE_ENTRYPOINT;
+  const chatSettings = getChatSettings();
+  const lightweightTool = chatSettings.namingTool || 'codex';
+  const lightweightModel = chatSettings.namingModel
+    || (lightweightTool === 'codex' ? 'gpt-5.4-mini' : 'haiku');
 
   try {
-    const modelText = await new Promise((resolve, reject) => {
-      const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose',
-        '--dangerously-skip-permissions', '--model', 'haiku'];
-      const proc = spawn(claudeCmd, args, {
-        env: subEnv,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-      proc.stdin.end();
-
-      const adapter = createClaudeAdapter();
-      const rl = createInterface({ input: proc.stdout });
-      const textParts = [];
-
-      rl.on('line', (line) => {
-        const events = adapter.parseLine(line);
-        for (const evt of events) {
-          if (evt.type === 'message' && evt.role === 'assistant') {
-            textParts.push(evt.content || '');
-          }
-        }
-      });
-
-      proc.stderr.on('data', () => {});
-      proc.on('error', reject);
-      proc.on('exit', (code) => {
-        const remaining = adapter.flush();
-        for (const evt of remaining) {
-          if (evt.type === 'message' && evt.role === 'assistant') textParts.push(evt.content || '');
-        }
-        resolve(textParts.join(''));
-      });
-
-      setTimeout(() => { try { proc.kill(); } catch {} }, timeout);
+    const modelText = await runPromptOnce(prompt, {
+      tool: lightweightTool,
+      model: lightweightModel,
+      timeout,
+      suppressStderr: true,
+      logLabel: 'lightweight',
     });
-
     return modelText.trim() || null;
   } catch (err) {
     console.error(`[summarizer] callHaiku failed: ${err.message}`);

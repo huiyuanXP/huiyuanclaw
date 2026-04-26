@@ -2,6 +2,7 @@ import {
   messageEvent, toolUseEvent, toolResultEvent,
   fileChangeEvent, reasoningEvent, statusEvent, usageEvent,
 } from '../normalizer.mjs';
+import { buildAgentContext } from '../agent-context.mjs';
 
 /**
  * Codex CLI adapter.
@@ -201,7 +202,10 @@ export function buildCodexArgs(prompt, options = {}) {
     args.push('--model', options.model);
   }
 
-  const effectivePrompt = CODEX_SYSTEM_PREFIX + prompt;
+  const agentContext = buildAgentContext(options.folder);
+  const effectivePrompt = agentContext
+    ? `${CODEX_SYSTEM_PREFIX}${agentContext}\n\n=== User Request ===\n\n${prompt}`
+    : CODEX_SYSTEM_PREFIX + prompt;
 
   if (options.threadId) {
     args.push('resume', options.threadId, effectivePrompt);

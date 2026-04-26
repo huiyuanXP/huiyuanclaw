@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "remotelab": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/home/ally/huiyuanclaw/remotelab/mcp-server.mjs"]
+    }
+  }
+}

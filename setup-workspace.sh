@@ -153,6 +153,8 @@ SOULEOF
 - Sessions managed via `mcp__remotelab__*` tools
 - Each workspace maps to a remotelab folder
 - Before creating a session, run `list_folders` to confirm path
+- Service restarts must use `mcp__remotelab__restart_server` with `mode: "wait"` (planned) or `mode: "immediate"` whenever the `remotelab` MCP is available
+- Do not use `restart.sh` or raw `systemctl restart` from an agent unless MCP is unavailable or broken
 
 ### Label Protocol
 
@@ -269,6 +271,7 @@ cat > "$ORCH_DIR/AGENTS.md" << AGENTSEOF
 - Delegate execution to sub-workspaces; keep orchestration here
 - Assign models by task difficulty: simple → sonnet, complex/coding → opus
 - **Red lines:** No leaking private data; \`trash\` > \`rm\`; confirm before external sends
+- RemoteLab service restarts must go through \`mcp__remotelab__restart_server\`; if that tool is missing, fix the workspace MCP wiring (\`.mcp.json\`) before using shell fallback
 
 ### Label Protocol
 

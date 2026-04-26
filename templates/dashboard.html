@@ -974,22 +974,19 @@
     }
 
     async function deleteFolder(folder) {
-      if (!confirm(`Delete ALL sessions in "${folder}"? All sessions will be killed.`)) {
+      if (!confirm(`Delete workspace "${folder}" from RemoteLab? This removes all sessions in it, including archived ones.`)) {
         return;
       }
 
       try {
-        const targetFolder = folders.find(f => f.folder === folder);
-        if (!targetFolder) return;
-
-        const deletePromises = targetFolder.sessions.map(s =>
-          fetch(`/api/sessions/${s.id}`, { method: 'DELETE' })
-        );
-        await Promise.all(deletePromises);
+        const res = await fetch(`/api/folders/${encodeURIComponent(folder)}`, { method: 'DELETE' });
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
         await loadFolders();
       } catch (err) {
         console.error('Delete folder failed:', err);
-        alert('Failed to delete folder sessions');
+        alert('Failed to delete workspace');
       }
     }
 

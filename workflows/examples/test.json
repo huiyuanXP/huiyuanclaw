@@ -9,7 +9,6 @@
         {
           "id": "ping-project",
           "workspace": "~/my-project",
-          "model": "haiku",
           "prompt": "Output one line: test"
         }
       ]
