@@ -71,6 +71,54 @@ function mergePatch(base, patch) {
   return result;
 }
 
+function deleteFolderUiState(folder) {
+  let changed = false;
+
+  try {
+    let data = {};
+    try {
+      data = JSON.parse(readFileSync(UI_SETTINGS_FILE, 'utf8'));
+    } catch (err) {
+      if (err.code !== 'ENOENT') console.warn('[router] Failed to parse UI settings:', err.message);
+    }
+
+    if (Array.isArray(data.folderOrder)) {
+      const nextOrder = data.folderOrder.filter((entry) => entry !== folder);
+      if (nextOrder.length !== data.folderOrder.length) {
+        data.folderOrder = nextOrder;
+        changed = true;
+      }
+    }
+
+    if (data.collapsedFolders && typeof data.collapsedFolders === 'object' && data.collapsedFolders[folder] !== undefined) {
+      delete data.collapsedFolders[folder];
+      changed = true;
+    }
+
+    if (changed) {
+      writeFileSync(UI_SETTINGS_FILE, JSON.stringify(data, null, 2));
+    }
+  } catch (err) {
+    console.warn('[router] Failed to update UI settings during folder delete:', err.message);
+  }
+
+  try {
+    let quickReplies = {};
+    try {
+      quickReplies = JSON.parse(readFileSync(QUICK_REPLIES_FILE, 'utf8'));
+    } catch (err) {
+      if (err.code !== 'ENOENT') console.warn('[router] Failed to parse quick replies:', err.message);
+    }
+
+    if (quickReplies && typeof quickReplies === 'object' && quickReplies[folder] !== undefined) {
+      delete quickReplies[folder];
+      writeFileSync(QUICK_REPLIES_FILE, JSON.stringify(quickReplies, null, 2));
+    }
+  } catch (err) {
+    console.warn('[router] Failed to update quick replies during folder delete:', err.message);
+  }
+}
+
 function saveReportTo() {
   const data = Object.fromEntries(pendingReportTo);
   writeFileSync(REPORT_TO_FILE, JSON.stringify(data), 'utf8');
@@ -856,6 +904,19 @@ export async function handleRequest(req, res) {
     }));
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ folders }));
+    return;
+  }
+
+  const folderMatch = pathname.match(/^\/api\/folders\/([^/]+)$/);
+  if (folderMatch && req.method === 'DELETE') {
+    const folderPath = decodeURIComponent(folderMatch[1]);
+    const folderSessions = listSessions().filter((session) => session.folder === folderPath);
+    for (const session of folderSessions) {
+      deleteSession(session.id);
+    }
+    deleteFolderUiState(folderPath);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, deletedSessionCount: folderSessions.length, folder: folderPath }));
     return;
   }
 

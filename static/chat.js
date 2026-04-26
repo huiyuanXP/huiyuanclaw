@@ -2398,6 +2398,22 @@
     fetch('/api/ui-settings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folderOrder: order }) }).catch(() => {});
   }
 
+  async function deleteFolderWorkspace(folder) {
+    const res = await fetch(`/api/folders/${encodeURIComponent(folder)}`, { method: 'DELETE' });
+    if (!res.ok) {
+      let message = 'Failed to delete workspace';
+      try {
+        const data = await res.json();
+        if (data?.error) message = data.error;
+      } catch {}
+      throw new Error(message);
+    }
+    folderOrderList = folderOrderList.filter(f => f !== folder);
+    delete collapsedFolders[folder];
+    localStorage.setItem("folderOrder", JSON.stringify(folderOrderList));
+    localStorage.setItem("collapsedFolders", JSON.stringify(collapsedFolders));
+  }
+
   function rebuildKnownFolders() {
     knownFolders = new Set();
     for (const s of sessions) knownFolders.add(s.folder || "?");
@@ -2504,19 +2520,16 @@
         header.querySelector(".folder-del-btn").addEventListener("click", (e) => {
           e.stopPropagation();
           const count = folderSessions.length;
-          if (count > 0 && !confirm(`This folder has ${count} session${count > 1 ? "s" : ""}. Delete all?`)) return;
-          // Delete all sessions in this folder
-          for (const s of folderSessions) {
-            wsSend({ action: "delete", sessionId: s.id });
-          }
-          // Remove folder from folderOrder and collapsedFolders
-          folderOrderList = folderOrderList.filter(f => f !== folder);
-          delete collapsedFolders[folder];
-          localStorage.setItem("folderOrder", JSON.stringify(folderOrderList));
-          localStorage.setItem("collapsedFolders", JSON.stringify(collapsedFolders));
-          fetch('/api/ui-settings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folderOrder: folderOrderList, collapsedFolders }) }).catch(() => {});
-          // Remove the folder group from DOM immediately
-          group.remove();
+          const countText = count > 0 ? ` This will also remove archived sessions in that workspace.` : "";
+          if (!confirm(`Delete workspace "${folder}" from RemoteLab?${countText}`)) return;
+          deleteFolderWorkspace(folder)
+            .then(() => {
+              group.remove();
+            })
+            .catch((err) => {
+              console.error("Delete folder failed:", err);
+              alert(err.message || "Failed to delete workspace");
+            });
         });
       }
 
